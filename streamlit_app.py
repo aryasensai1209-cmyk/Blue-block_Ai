@@ -137,4 +137,4 @@ with right_col:
 st.divider()
 st.subheader("📋 Traffic Inspection Log")
 if st.session_state.logs:
-    st.dataframe(pd.DataFrame(st.session_state.logs).iloc[::-1], use_container_width=True)
+    st.dataframe(pd.DataFrame(st.session_state.logs).iloc[::-1], use_container_width=True
