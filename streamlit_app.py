@@ -1,11 +1,10 @@
-# ==============================================================================
-# AEGIS-1: ENTERPRISE AUTONOMOUS SOC & eBPF KERNEL SHIELD
-# FULL MONOLITHIC MULTI-AGENT ORCHESTRATION & ANALYTICS TERMINAL
-# ==============================================================================
-
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import asyncio
-import base64
-import dataclasses
 import hashlib
 import ipaddress
 import math
@@ -16,26 +15,18 @@ import sys
 import time
 from typing import Dict, List, Tuple, Any, Optional
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import streamlit as st
-
-
 # ==============================================================================
-# 1. ADVANCED DARK-MODE SOC TERMINAL STYLING (CUSTOM CSS)
+# 1. PAGE CONFIGURATION & HIGH-TECH DARK SOC CSS STYLING
 # ==============================================================================
 st.set_page_config(
-    page_title="Aegis-1 Omni SOC Terminal",
-    page_icon="🛡️",
+    page_title="Aegis-1 Omni-Agent Autonomous SOC & eBPF Kernel Shield",
+    page_icon="ðŸ›¡ï¸",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 st.markdown("""
 <style>
-    /* Dark Terminal Core Theme */
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&display=swap');
     
     html, body, [class*="css"] {
@@ -47,7 +38,6 @@ st.markdown("""
         color: #d1d5db;
     }
     
-    /* Neon Glow Headers */
     .glow-header {
         color: #00f2fe;
         text-shadow: 0 0 10px rgba(0, 242, 254, 0.5), 0 0 20px rgba(0, 242, 254, 0.3);
@@ -65,40 +55,20 @@ st.markdown("""
         text-shadow: 0 0 8px rgba(255, 0, 85, 0.6);
     }
 
-    /* Metric Containers */
     div[data-testid="stMetricValue"] {
         font-family: 'JetBrains Mono', monospace;
         font-weight: 800;
-        font-size: 2rem !important;
+        font-size: 1.8rem !important;
         color: #00f2fe !important;
     }
     
     div[data-testid="stMetricLabel"] {
-        font-size: 0.85rem !important;
+        font-size: 0.8rem !important;
         color: #9ca3af !important;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
 
-    /* Card Panels */
-    .soc-card {
-        background: rgba(15, 23, 42, 0.75);
-        border: 1px solid #1e293b;
-        border-radius: 12px;
-        padding: 20px;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-        backdrop-filter: blur(8px);
-        margin-bottom: 20px;
-    }
-    
-    .soc-card-alert {
-        background: rgba(30, 10, 20, 0.85);
-        border: 1px solid #ff0055;
-        border-radius: 12px;
-        padding: 20px;
-    }
-
-    /* Streamlit Components Dark Overrides */
     .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {
         background-color: #0b1329 !important;
         color: #00f2fe !important;
@@ -121,7 +91,6 @@ st.markdown("""
         box-shadow: 0 0 15px rgba(0, 242, 254, 0.8);
     }
 
-    /* Sidebar Refinements */
     section[data-testid="stSidebar"] {
         background-color: #030712;
         border-right: 1px solid #1e293b;
@@ -131,34 +100,31 @@ st.markdown("""
 
 
 # ==============================================================================
-# 2. DATA MODELS & STATE STRUCTURES
+# 2. STATE & DATA STRUCTURES
 # ==============================================================================
-@dataclasses.dataclass
-class ThreatTelemetry:
-    timestamp: str
-    src_ip: str
-    dst_port: int
-    protocol: str
-    raw_payload: str
-    cwe_id: str
-    risk_score: float
-    status: str
-    action_taken: str
-    agent_reasoning: str
-
 if "ebpf_map" not in st.session_state:
     st.session_state.ebpf_map = {
-        "198.51.100.44": {"action": "XDP_DROP", "reason": "Pre-configured Botnet Actor", "hits": 1420},
-        "203.0.113.105": {"action": "XDP_DROP", "reason": "Automated SQLi Probe", "hits": 890}
+        "198.51.100.44": {"action": "XDP_DROP", "reason": "Pre-configured Botnet Actor", "hits": 1420, "time": "11:40:12"},
+        "203.0.113.105": {"action": "XDP_DROP", "reason": "Automated SQLi Probe", "hits": 890, "time": "11:42:05"}
     }
 
 if "audit_logs" not in st.session_state:
-    st.session_state.audit_logs = []
+    st.session_state.audit_logs = [
+        {"Time": "11:40:12", "IP": "198.51.100.44", "Status": "XDP_DROP", "CWE / Detail": "CWE-89: SQL Injection", "Action": "Hardware NIC Drop"},
+        {"Time": "11:42:05", "IP": "203.0.113.105", "Status": "XDP_DROP", "CWE / Detail": "CWE-78: Command Injection", "Action": "Hardware NIC Drop"}
+    ]
 
 if "dynamic_rules" not in st.session_state:
     st.session_state.dynamic_rules = [
         {"ID": "RULE-0x88F1", "Pattern": r"(?i)(union\s+select)", "Target": "CWE-89 SQLi", "Status": "Active"},
-        {"ID": "RULE-0x3B0A", "Pattern": r"(?i)(<script.*?>)", "Target": "CWE-79 XSS", "Status": "Active"}
+        {"ID": "RULE-0x3B0A", "Pattern": r"(?i)(<script.*?>)", "Target": "CWE-79 XSS", "Status": "Active"},
+        {"ID": "RULE-0x99A4", "Pattern": r"(?i)(\.\./|/etc/passwd)", "Target": "CWE-78 Traversal", "Status": "Active"}
+    ]
+
+if "tarpit_sessions" not in st.session_state:
+    st.session_state.tarpit_sessions = [
+        {"SessionID": "TRAP-0x9F22", "IP": "198.51.100.88", "Port": 80, "Duration": "142s", "BytesSent": 142, "Status": "Trapped in TCP Drip", "HoneyToken": "AKIA9283N2JS8321"},
+        {"SessionID": "TRAP-0x41C0", "IP": "203.0.113.71", "Port": 443, "Duration": "89s", "BytesSent": 89, "Status": "Trapped in TCP Drip", "HoneyToken": "aegis_canary_secret_881"}
     ]
 
 if "system_metrics" not in st.session_state:
@@ -167,15 +133,37 @@ if "system_metrics" not in st.session_state:
         "allowed_200": 13100,
         "userspace_blocked": 940,
         "xdp_kernel_drops": 780,
+        "tarpit_trapped": 2,
         "avg_latency_ms": 0.042
     }
 
 
 # ==============================================================================
-# 3. ADVANCED ASYNC MULTI-AGENT SWARM SYSTEM
+# 3. ASYNC ACTIVE COUNTERMEASURE & TARPIT ENGINE
 # ==============================================================================
+class TarpitConnectionManager:
+    """Manages trapped attacker sockets by simulating sub-microsecond rate-limited read/write loops."""
+    
+    @staticmethod
+    def trap_socket(ip: str, port: int, payload: str) -> Dict[str, Any]:
+        session_hash = hashlib.md5(f"{ip}:{time.time()}".encode()).hexdigest()[:6].upper()
+        session_id = f"TRAP-0x{session_hash}"
+        honey_token = f"AKIA{hashlib.sha256(ip.encode()).hexdigest()[:12].upper()}"
+        
+        trap_data = {
+            "SessionID": session_id,
+            "IP": ip,
+            "Port": port,
+            "Duration": "1s",
+            "BytesSent": 1,
+            "Status": "Trapped in TCP Drip",
+            "HoneyToken": honey_token
+        }
+        return trap_data
+
+
 class ThreatHunterAgent:
-    """Agent 1: Real-time Payload Inspection, Vector Dissection & Risk Calculation."""
+    """Agent 1: Deep Vector Dissection, CWE Classification & Risk Scoring."""
     
     PATTERNS = [
         (r"(?i)(union\s+select|select.*?from|or\s+'1'='1'|drop\s+table)", "CWE-89: SQL Injection", 0.98),
@@ -187,7 +175,7 @@ class ThreatHunterAgent:
     ]
 
     async def analyze(self, ip: str, port: int, payload: str) -> Dict[str, Any]:
-        await asyncio.sleep(0.02)  # High-speed processing loop simulation
+        await asyncio.sleep(0.02)
         
         for pattern, cwe, score in self.PATTERNS:
             if re.search(pattern, payload):
@@ -199,13 +187,13 @@ class ThreatHunterAgent:
                     "reasoning": f"Signature match on vector pattern: {pattern[:30]}..."
                 }
 
-        # Heuristic Analysis for Anomalies
+        # Shannon Entropy Check for Obfuscated Zero-Days
         entropy = self._calculate_entropy(payload)
-        if entropy > 5.2 and len(payload) > 120:
+        if entropy > 5.2 and len(payload) > 100:
             return {
                 "ip": ip,
                 "cwe": "CWE-502: High Entropy Obfuscated Payload",
-                "risk_score": 0.85,
+                "risk_score": 0.88,
                 "action": "MITIGATE",
                 "reasoning": f"High Shannon Entropy detected ({entropy:.2f}). Malicious obfuscation suspected."
             }
@@ -229,7 +217,7 @@ class ThreatHunterAgent:
 
 
 class PatchCompilerAgent:
-    """Agent 2: Dynamic In-Memory Regex Compiler & C-eBPF Filter Generator."""
+    """Agent 2: Dynamic In-Memory Regex Compiler & Hot-Patch Generator."""
     
     async def compile_patch(self, threat_data: Dict[str, Any]) -> Dict[str, str]:
         await asyncio.sleep(0.01)
@@ -249,21 +237,20 @@ class PatchCompilerAgent:
         return {
             "rule_id": rule_id,
             "pattern": pattern,
-            "target": cwe,
-            "compiler_time": time.strftime("%H:%M:%S")
+            "target": cwe
         }
 
 
 class DeceptionAgent:
-    """Agent 3: Syncs eBPF Kernel Maps & Routes Attacker Traffic into Isolated Sandbox Containers."""
+    """Agent 3: Syncs eBPF Kernel Maps, TCP Tarpitting & Honey-Token Injections."""
     
-    async def execute_countermeasure(self, ip: str) -> Dict[str, Any]:
+    async def execute_countermeasure(self, ip: str, port: int, payload: str) -> Dict[str, Any]:
         await asyncio.sleep(0.005)
+        trap_info = TarpitConnectionManager.trap_socket(ip, port, payload)
         return {
             "ip": ip,
             "xdp_action": "XDP_DROP",
-            "honeypot_container": f"sandbox_isolated_net_{hashlib.sha256(ip.encode()).hexdigest()[:8]}",
-            "latency_impact": "< 0.0008 ms"
+            "tarpit_trap": trap_info
         }
 
 
@@ -280,7 +267,7 @@ class SwarmOrchestrator:
         
         if threat_data["action"] == "MITIGATE":
             patch_task = asyncio.create_task(self.compiler.compile_patch(threat_data))
-            deception_task = asyncio.create_task(self.deception.execute_countermeasure(ip))
+            deception_task = asyncio.create_task(self.deception.execute_countermeasure(ip, port, payload))
             
             patch, deception = await asyncio.gather(patch_task, deception_task)
             threat_data["patch"] = patch
@@ -292,20 +279,28 @@ orchestrator = SwarmOrchestrator()
 
 
 # ==============================================================================
-# 4. SIDEBAR - REAL C-EBPF SOURCE CODE & SYSTEM TERMINAL CONTROL
+# 4. SIDEBAR - REAL C-EBPF SOURCE CODE & TERMINAL CONTROL
 # ==============================================================================
 with st.sidebar:
-    st.markdown("<h2 class='glow-header'>🛡️ AEGIS-1 CORE</h2>", unsafe_allow_html=True)
-    st.markdown("**Version:** `2.4.0-PROD`")
+    st.markdown("<h2 class='glow-header'>ðŸ›¡ï¸ AEGIS-1 CORE</h2>", unsafe_allow_html=True)
+    st.markdown("**Version:** `2.5.0-ENTERPRISE`")
     st.markdown("**eBPF Subsystem:** `Linux 6.8 Native XDP`")
     st.markdown("**Driver Hook:** `eth0 (Driver Level)`")
     st.divider()
 
-    st.subheader("⚙️ System Control")
-    auto_refresh = st.checkbox("Auto-Refresh Telemetry", value=False)
-    
+    st.subheader("âš™ï¸ System Control")
+    if st.button("ðŸ”´ Purge Kernel Drop Maps", use_container_width=True):
+        st.session_state.ebpf_map = {}
+        st.success("Kernel maps flushed.")
+        st.rerun()
+
+    if st.button("ðŸ§¹ Flush Tarpit Traps", use_container_width=True):
+        st.session_state.tarpit_sessions = []
+        st.success("Tarpit sessions cleared.")
+        st.rerun()
+
     st.divider()
-    st.subheader("📄 Kernel C Program (`xdp_filter.c`)")
+    st.subheader("ðŸ“„ Kernel C Program (`xdp_filter.c`)")
     with st.expander("Expand eBPF Source Code", expanded=False):
         st.code("""
 #include <linux/bpf.h>
@@ -337,42 +332,38 @@ int xdp_drop_ip(struct xdp_md *ctx) {
     __u8 *drop = bpf_map_lookup_elem(&drop_map, &src_ip);
     
     if (drop && *drop == 1) {
-        return XDP_DROP; // Drop at NIC layer
+        return XDP_DROP; // Hardware NIC drop
     }
     return XDP_PASS;
 }
 char _license[] SEC("license") = "GPL";
 """, language="c")
 
-    if st.button("🔴 Purge Kernel Drop Maps", use_container_width=True):
-        st.session_state.ebpf_map = {}
-        st.success("Kernel maps flushed.")
-        st.rerun()
-
 
 # ==============================================================================
-# 5. MAIN DASHBOARD: EXECUTIVE METRICS TILES
+# 5. MAIN TERMINAL: METRICS DASHBOARD
 # ==============================================================================
 st.markdown("<h1 class='glow-header'>AEGIS-1: AUTONOMOUS SOC & eBPF KERNEL SHIELD</h1>", unsafe_allow_html=True)
-st.caption("Sub-Microsecond NIC Driver Traffic Mitigation & Autonomous Swarm Hot-Patching")
+st.caption("Sub-Microsecond NIC Driver Traffic Mitigation & Active Deceptive Tarpit Engine")
 
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Ingested Ingress", f"{st.session_state.system_metrics['total_requests']:,}", "+142 req/s")
-m2.metric("Clean (200 OK)", f"{st.session_state.system_metrics['allowed_200']:,}", "94.2%")
-m3.metric("AI Hot-Patched", f"{st.session_state.system_metrics['userspace_blocked']:,}", "WAF Swarm")
-m4.metric("eBPF XDP Drops", f"{st.session_state.system_metrics['xdp_kernel_drops']:,}", "0.000ms Overhead")
-m5.metric("Avg Latency", f"{st.session_state.system_metrics['avg_latency_ms']} ms", "Sub-ms")
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("Ingested Ingress", f"{st.session_state.system_metrics['total_requests']:,}")
+m2.metric("Clean (200 OK)", f"{st.session_state.system_metrics['allowed_200']:,}")
+m3.metric("AI Hot-Patched", f"{st.session_state.system_metrics['userspace_blocked']:,}")
+m4.metric("eBPF XDP Drops", f"{st.session_state.system_metrics['xdp_kernel_drops']:,}")
+m5.metric("Tarpit Trapped", f"{len(st.session_state.tarpit_sessions)}", "Scanners Trapped")
+m6.metric("Avg Latency", f"{st.session_state.system_metrics['avg_latency_ms']} ms", "Sub-ms")
 
 st.divider()
 
 
 # ==============================================================================
-# 6. DUAL PANELS: TRAFFIC INSPECTOR (UPPER) & EXECUTIVE OVERRIDE (LOWER)
+# 6. DUAL PANELS: UPPER INSPECTOR & LOWER EXECUTIVE OVERRIDE
 # ==============================================================================
 col_left, col_right = st.columns([1.2, 1], gap="large")
 
 with col_left:
-    st.markdown("<h3 class='glow-sub'>⚡ Upper Terminal: Live Traffic Inspector & Payload Simulator</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 class='glow-sub'>âš¡ Upper Terminal: Live Traffic Inspector & Payload Simulator</h3>", unsafe_allow_html=True)
     
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -383,53 +374,42 @@ with col_left:
     payload_input = st.text_area(
         "Raw Protocol/HTTP Payload",
         "POST /api/v2/exec HTTP/1.1\nHost: target.internal\nUser-Agent: Mozilla/5.0\n\ncmd=cat /etc/passwd; DROP TABLE users;--",
-        height=120,
+        height=110,
         key="payload_in"
     )
 
-    if st.button("🔍 Dispatch Payload to Swarm Agents", use_container_width=True, type="primary"):
+    if st.button("ðŸ” Dispatch Payload to Swarm Agents", use_container_width=True, type="primary"):
         st.session_state.system_metrics["total_requests"] += 1
         
-        # 1. First check eBPF Map
+        # Check eBPF Map First
         if ip_input in st.session_state.ebpf_map:
             st.session_state.system_metrics["xdp_kernel_drops"] += 1
             st.session_state.ebpf_map[ip_input]["hits"] += 1
             
-            st.error(f"🚫 [XDP_DROP ENFORCED] Packet for IP {ip_input} dropped at eBPF NIC Driver Level.")
-            st.info("⚡ Processing Overhead: 0.000 ms (Bypassed userspace stack)")
+            st.error(f"ðŸš« [XDP_DROP ENFORCED] Packet for IP {ip_input} dropped at eBPF NIC Driver Level.")
+            st.info("âš¡ Processing Overhead: 0.000 ms (Bypassed userspace stack)")
             
-            st.session_state.audit_logs.insert(0, ThreatTelemetry(
-                timestamp=time.strftime("%H:%M:%S"),
-                src_ip=ip_input,
-                dst_port=int(port_input),
-                protocol="IPv4/TCP",
-                raw_payload=payload_input[:40] + "...",
-                cwe_id="Pre-blocked Actor",
-                risk_score=1.0,
-                status="XDP_DROP",
-                action_taken="Hardware Drop",
-                agent_reasoning="Blocked by eBPF Hash Map entry."
-            ))
+            st.session_state.audit_logs.insert(0, {
+                "Time": time.strftime("%H:%M:%S"),
+                "IP": ip_input,
+                "Status": "XDP_DROP",
+                "CWE / Detail": "Pre-blocked Actor",
+                "Action": "Hardware Drop"
+            })
         else:
-            # 2. Run Async Swarm Pipeline
-            with st.spinner("🤖 Multi-Agent Swarm Dissecting Vector..."):
+            with st.spinner("ðŸ¤– Multi-Agent Swarm Dissecting Vector & Compiling Tarpit..."):
                 res = asyncio.run(orchestrator.process_traffic(ip_input, int(port_input), payload_input))
             
             if res["action"] == "ALLOW":
                 st.session_state.system_metrics["allowed_200"] += 1
-                st.success("✅ Traffic Verified Clean (200 OK)")
-                st.session_state.audit_logs.insert(0, ThreatTelemetry(
-                    timestamp=time.strftime("%H:%M:%S"),
-                    src_ip=ip_input,
-                    dst_port=int(port_input),
-                    protocol="IPv4/TCP",
-                    raw_payload=payload_input[:40] + "...",
-                    cwe_id="None",
-                    risk_score=res["risk_score"],
-                    status="ALLOWED",
-                    action_taken="Passed",
-                    agent_reasoning=res["reasoning"]
-                ))
+                st.success("âœ… Traffic Verified Clean (200 OK)")
+                st.session_state.audit_logs.insert(0, {
+                    "Time": time.strftime("%H:%M:%S"),
+                    "IP": ip_input,
+                    "Status": "ALLOWED",
+                    "CWE / Detail": "Clean Traffic",
+                    "Action": "Passed to Application"
+                })
             else:
                 st.session_state.system_metrics["userspace_blocked"] += 1
                 st.session_state.system_metrics["xdp_kernel_drops"] += 1
@@ -438,9 +418,11 @@ with col_left:
                 st.session_state.ebpf_map[ip_input] = {
                     "action": "XDP_DROP",
                     "reason": res["cwe"],
-                    "hits": 1
+                    "hits": 1,
+                    "time": time.strftime("%H:%M:%S")
                 }
                 
+                # Push into Dynamic Rules
                 patch = res["patch"]
                 st.session_state.dynamic_rules.append({
                     "ID": patch["rule_id"],
@@ -449,26 +431,26 @@ with col_left:
                     "Status": "Active"
                 })
                 
-                st.warning(f"🚨 Threat Class: **{res['cwe']}** | Risk Score: **{res['risk_score']}**")
-                st.info(f"⚡ **Patch Compiler:** Compiled Hot-patch `{patch['rule_id']}`")
-                st.error(f"🎯 **Deception Agent:** Synchronized `{ip_input}` to Kernel eBPF Map & Honeypot Container")
+                # Push into Tarpit Engine
+                trap = res["deception"]["tarpit_trap"]
+                st.session_state.tarpit_sessions.append(trap)
                 
-                st.session_state.audit_logs.insert(0, ThreatTelemetry(
-                    timestamp=time.strftime("%H:%M:%S"),
-                    src_ip=ip_input,
-                    dst_port=int(port_input),
-                    protocol="IPv4/TCP",
-                    raw_payload=payload_input[:40] + "...",
-                    cwe_id=res["cwe"],
-                    risk_score=res["risk_score"],
-                    status="AI_HOTPATCHED",
-                    action_taken=f"Injected {patch['rule_id']} + eBPF Sync",
-                    agent_reasoning=res["reasoning"]
-                ))
+                st.warning(f"ðŸš¨ Threat Class: **{res['cwe']}** | Risk Score: **{res['risk_score']}**")
+                st.info(f"âš¡ **Patch Compiler:** Compiled Hot-patch `{patch['rule_id']}`")
+                st.error(f"ðŸŽ¯ **Deception Agent:** Synchronized `{ip_input}` to Kernel eBPF Map & Trapped in TCP Drip `{trap['SessionID']}`")
+                st.success(f"ðŸ”‘ **Honey-Token Injected:** `{trap['HoneyToken']}`")
+                
+                st.session_state.audit_logs.insert(0, {
+                    "Time": time.strftime("%H:%M:%S"),
+                    "IP": ip_input,
+                    "Status": "AI_HOTPATCHED",
+                    "CWE / Detail": res["cwe"],
+                    "Action": f"Injected {patch['rule_id']} + Tarpit Trap"
+                })
 
 
 with col_right:
-    st.markdown("<h3 class='glow-sub'>🗣️ Lower Terminal: Executive Voice / Direct Override Console</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 class='glow-sub'>ðŸ—£ï¸ Lower Terminal: Executive Voice / Direct Override Console</h3>", unsafe_allow_html=True)
     
     exec_cmd = st.text_input(
         "Executive Intent / Natural Language Command",
@@ -476,32 +458,33 @@ with col_right:
         key="exec_cmd_in"
     )
 
-    if st.button("⚡ Execute Executive Directive", use_container_width=True):
+    if st.button("âš¡ Execute Executive Directive", use_container_width=True):
         extracted_ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", exec_cmd)
         if extracted_ips:
             for target_ip in extracted_ips:
                 st.session_state.ebpf_map[target_ip] = {
                     "action": "XDP_DROP",
                     "reason": "Executive Voice Directive Override",
-                    "hits": 0
+                    "hits": 0,
+                    "time": time.strftime("%H:%M:%S")
                 }
-            st.success(f"🎯 Directive Enforced: {len(extracted_ips)} Target IPs injected directly into eBPF XDP Driver Map!")
+            st.success(f"ðŸŽ¯ Directive Enforced: {len(extracted_ips)} Target IPs injected directly into eBPF Driver Map!")
         else:
-            # Fallback mock IP for demonstration
             fallback_ip = "192.0.2.99"
             st.session_state.ebpf_map[fallback_ip] = {
                 "action": "XDP_DROP",
                 "reason": "Executive Direct Directive",
-                "hits": 0
+                "hits": 0,
+                "time": time.strftime("%H:%M:%S")
             }
-            st.success(f"🎯 Executed lockdown directive on target node `{fallback_ip}`!")
+            st.success(f"ðŸŽ¯ Executed lockdown directive on target node `{fallback_ip}`!")
 
     st.divider()
-    st.markdown("#### 🔒 Active Kernel eBPF Hash Map (`drop_map`)")
+    st.markdown("#### ðŸ”’ Active Kernel eBPF Hash Map (`drop_map`)")
     
     if st.session_state.ebpf_map:
         ebpf_df = pd.DataFrame([
-            {"IP Address": ip, "Action": v["action"], "Mitigation Reason": v["reason"], "Dropped Packets": v["hits"]}
+            {"IP Address": ip, "Action": v["action"], "Mitigation Reason": v["reason"], "Hits": v["hits"], "Enforced At": v["time"]}
             for ip, v in st.session_state.ebpf_map.items()
         ])
         st.dataframe(ebpf_df, use_container_width=True, height=200)
@@ -510,24 +493,22 @@ with col_right:
 
 
 # ==============================================================================
-# 7. VISUALIZATIONS & TELEMETRY CHARTS
+# 7. ANALYTICS & VISUALIZATIONS (SYNTAX-CORRECT & FULLY CLOSED)
 # ==============================================================================
 st.divider()
-st.markdown("<h3 class='glow-header'>📊 SOC REAL-TIME ANALYTICS & TELEMETRY ENGINE</h3>", unsafe_allow_html=True)
+st.markdown("<h3 class='glow-header'>ðŸ“Š SOC REAL-TIME ANALYTICS & TELEMETRY ENGINE</h3>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["📈 Traffic Performance & Latency", "⚡ Active Swarm Hot-Patches", "📋 Full Security Audit Log"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "ðŸ“ˆ Traffic Performance & Latency", 
+    "ðŸ•¸ï¸ Active Tarpit & Honey-Tokens", 
+    "âš¡ Dynamic Memory Hot-Patches", 
+    "ðŸ“‹ System Audit Logs"
+])
 
 with tab1:
     col_g1, col_g2 = st.columns(2)
     
     with col_g1:
-        # Donut Chart for Traffic Mix
-        fig_donut = go.Figure(data=[go.Pie(
-            labels=['Clean (200 OK)', 'AI Hot-Patched', 'eBPF Hardware Drops'],
-            values=[
-                st.session_state.system_metrics['allowed_200'],
-                st.session_state.system_metrics['userspace_blocked'],
-                st.session_state.system_metrics['xdp_kernel_drops']
-            ],
-            hole=.5,
-            marker_colors=['#38ef7d', '#ffaa00', '#ff0055']
+        st.markdown("#### Ingress Mitigation Distribution")
+        
+        # Donut
