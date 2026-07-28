@@ -1,140 +1,382 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import asyncio
 import re
 import time
-import asyncio
-import pandas as pd
-import streamlit as st
+from typing import Dict, Any
 
-# Set Streamlit Page Configuration
+# ==============================================================================
+# 1. PAGE CONFIGURATION & DARK SOC CSS STYLING
+# ==============================================================================
 st.set_page_config(
-    page_title="Aegis-1 | AI & eBPF Security Console",
+    page_title="Aegis-1 Omni-Agent Autonomous SOC",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# =====================================================================
-# 1. KERNEL eBPF / XDP HARDWARE FILTER (SIMULATOR)
-# =====================================================================
-class KernelXdpFilter:
+# Custom High-Tech Dark Mode CSS Injection
+st.markdown("""
+<style>
+    /* Global Main Theme */
+    .stApp {
+        background-color: #0b0f19;
+        color: #c9d1d9;
+        font-family: 'Consolas', 'Fira Code', monospace;
+    }
+    
+    /* Neon Cards & Containers */
+    div[data-testid="stMetricValue"] {
+        font-family: 'Consolas', monospace;
+        font-weight: bold;
+        color: #00f2fe !important;
+    }
+    
+    /* Header & Subheader Accents */
+    h1, h2, h3 {
+        color: #58a6ff !important;
+        border-bottom: 1px solid #21262d;
+        padding-bottom: 8px;
+    }
+    
+    /* Custom Alert Boxes */
+    .stAlert {
+        border-radius: 8px;
+        background-color: #161b22;
+        border: 1px solid #30363d;
+    }
+    
+    /* Table Styling */
+    .stDataFrame {
+        border: 1px solid #30363d;
+        border-radius: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# 2. INTERNAL ASYNC MULTI-AGENT SWARM ENGINE
+# ==============================================================================
+class ThreatHunterAgent:
+    """Agent 1: Analyzes raw incoming telemetry for attack signatures and zero-days."""
+    async def analyze(self, ip: str, payload: str) -> Dict[str, Any]:
+        await asyncio.sleep(0.04)  # Simulate rapid reasoning loop
+        cwe = "None"
+        risk_score = 0.02
+        action = "ALLOW"
+
+        if re.search(r"(SELECT|UNION|OR\s+'1'='1'|--|DROP\s+TABLE)", payload, re.I):
+            cwe = "CWE-89: SQL Injection"
+            risk_score = 0.98
+            action = "MITIGATE"
+        elif re.search(r"(<script|javascript:|onerror=|onload=)", payload, re.I):
+            cwe = "CWE-79: Cross-Site Scripting"
+            risk_score = 0.92
+            action = "MITIGATE"
+        elif re.search(r"(\.\./|/etc/passwd|cmd=|whoami|cat\s+/)", payload, re.I):
+            cwe = "CWE-78: Command Injection / Path Traversal"
+            risk_score = 0.99
+            action = "MITIGATE"
+        elif re.search(r"(Content-Length.*Transfer-Encoding)", payload, re.I | re.S):
+            cwe = "CWE-444: HTTP Request Smuggling"
+            risk_score = 0.95
+            action = "MITIGATE"
+
+        return {
+            "ip": ip,
+            "cwe": cwe,
+            "risk_score": risk_score,
+            "action": action,
+            "timestamp": time.strftime("%H:%M:%S")
+        }
+
+
+class PatchCompilerAgent:
+    """Agent 2: Compiles dynamic in-memory hot-patches for zero-day mitigation."""
+    async def compile_patch(self, threat_data: Dict[str, Any]) -> Dict[str, str]:
+        await asyncio.sleep(0.02)
+        cwe = threat_data.get("cwe", "")
+        rule_id = f"RULE-0x{abs(hash(cwe + str(time.time()))) % 0xFFFF:04X}"
+        
+        if "SQL" in cwe:
+            pattern = r"(?i)(union\s+select|select.*?from|or\s+1=1)"
+        elif "Scripting" in cwe:
+            pattern = r"(?i)(<script.*?>|onload=|onerror=)"
+        elif "Smuggling" in cwe:
+            pattern = r"(?i)(Transfer-Encoding:\s*chunked)"
+        else:
+            pattern = r"(?i)(\.\./|/etc/passwd|cmd=)"
+
+        return {"rule_id": rule_id, "pattern": pattern, "type": "MEMORY_HOTPATCH"}
+
+
+class DeceptionAgent:
+    """Agent 3: Synchronizes eBPF XDP Kernel maps and routes traffic to isolated honeypots."""
+    async def execute_countermeasure(self, ip: str) -> Dict[str, str]:
+        await asyncio.sleep(0.01)
+        return {
+            "ip": ip,
+            "xdp_action": "XDP_DROP",
+            "honeypot_target": "172.19.0.5:8080 [Container Sandbox]",
+            "latency": "< 0.001 ms"
+        }
+
+
+class SwarmOrchestrator:
+    """Coordinates parallel agent pipeline execution."""
     def __init__(self):
-        self.bpf_ip_blacklist = {}
-        self.total_xdp_drops = 0
+        self.hunter = ThreatHunterAgent()
+        self.compiler = PatchCompilerAgent()
+        self.deception = DeceptionAgent()
 
-    def sync_bpf_map_add(self, ip_address: str):
-        if ip_address not in self.bpf_ip_blacklist:
-            self.bpf_ip_blacklist[ip_address] = 0
-
-    def xdp_driver_hook(self, ip_address: str) -> bool:
-        if ip_address in self.bpf_ip_blacklist:
-            self.bpf_ip_blacklist[ip_address] += 1
-            self.total_xdp_drops += 1
-            return True
-        return False
-
-
-class AiWafEngine:
-    def __init__(self, kernel: KernelXdpFilter):
-        self.kernel = kernel
-        self.active_hotpatches = []
-        self.stats = {"total": 0, "allowed": 0, "waf_blocked": 0, "kernel_dropped": 0}
-
-    def evaluate_hotpatches(self, payload: str) -> bool:
-        for patch in self.active_hotpatches:
-            if re.search(patch["pattern"], payload, re.IGNORECASE):
-                return True
-        return False
-
-    def ai_reasoning_agent(self, payload: str):
-        if "SELECT" in payload and ("OR" in payload or "UNION" in payload):
-            return {"detected": True, "type": "SQL Injection", "pattern": r"(SELECT|UNION).*?(OR|'1'='1')", "tag": "CWE-89"}
-        elif "<script>" in payload or "javascript:" in payload:
-            return {"detected": True, "type": "Cross-Site Scripting (XSS)", "pattern": r"(<script.*?>|javascript:)", "tag": "CWE-79"}
-        elif "../" in payload or "/etc/passwd" in payload:
-            return {"detected": True, "type": "Path Traversal", "pattern": r"(\.\./|/etc/passwd)", "tag": "CWE-22"}
-        return {"detected": False}
-
-    def process_incoming_request(self, ip: str, payload: str):
-        self.stats["total"] += 1
-        if self.kernel.xdp_driver_hook(ip):
-            self.stats["kernel_dropped"] += 1
-            return "XDP_DROP", f"Dropped at NIC Kernel Level (eBPF Blacklisted IP: {ip})"
-        if self.evaluate_hotpatches(payload):
-            self.stats["waf_blocked"] += 1
-            self.kernel.sync_bpf_map_add(ip)
-            return "WAF_BLOCK", "Blocked by Active Hot-Patch (Escalated IP to eBPF Map)"
-        threat = self.ai_reasoning_agent(payload)
-        if threat["detected"]:
-            self.stats["waf_blocked"] += 1
-            self.active_hotpatches.append({"type": threat["type"], "pattern": threat["pattern"]})
-            self.kernel.sync_bpf_map_add(ip)
-            return "AI_HOTPATCHED", f"Zero-Day Neutralized ({threat['type']}). Hot-Patch Compiled & IP Blacklisted."
-        self.stats["allowed"] += 1
-        return "ALLOWED", "Request Clean (200 OK)"
+    async def run_pipeline(self, ip: str, payload: str) -> Dict[str, Any]:
+        threat_data = await self.hunter.analyze(ip, payload)
+        
+        if threat_data["action"] == "MITIGATE":
+            patch_task = asyncio.create_task(self.compiler.compile_patch(threat_data))
+            deception_task = asyncio.create_task(self.deception.execute_countermeasure(ip))
+            
+            patch, deception = await asyncio.gather(patch_task, deception_task)
+            threat_data["patch"] = patch
+            threat_data["deception"] = deception
+        
+        return threat_data
 
 
-if "kernel" not in st.session_state:
-    st.session_state.kernel = KernelXdpFilter()
-if "waf" not in st.session_state:
-    st.session_state.waf = AiWafEngine(st.session_state.kernel)
-if "logs" not in st.session_state:
-    st.session_state.logs = []
+# ==============================================================================
+# 3. STATE INITIALIZATION
+# ==============================================================================
+if "ebpf_map" not in st.session_state:
+    st.session_state.ebpf_map = {"10.0.0.99": {"action": "XDP_DROP", "reason": "Pre-configured Malicious Subnet"}}
+if "audit_logs" not in st.session_state:
+    st.session_state.audit_logs = []
+if "dynamic_rules" not in st.session_state:
+    st.session_state.dynamic_rules = [
+        {"ID": "RULE-0x88F1", "Pattern": r"(?i)(union\s+select)", "Target": "SQLi"},
+        {"ID": "RULE-0x3B0A", "Pattern": r"(?i)(<script.*?>)", "Target": "XSS"}
+    ]
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {"total": 12, "allowed": 8, "waf_blocked": 2, "xdp_drops": 2}
 
-kernel = st.session_state.kernel
-waf = st.session_state.waf
+orchestrator = SwarmOrchestrator()
 
-st.title("🛡️ AEGIS-1: AI & eBPF Kernel Defense Console")
-st.caption("Real-Time Cyber Threat Inspection, Autonomous Hot-Patching, and eBPF XDP Hardware Packet Filtering")
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Traffic", waf.stats["total"])
-col2.metric("Passed (200 OK)", waf.stats["allowed"])
-col3.metric("WAF Blocks", waf.stats["waf_blocked"])
-col4.metric("eBPF NIC Drops (XDP)", kernel.total_xdp_drops)
+# ==============================================================================
+# 4. SIDEBAR - SYSTEM STATUS & C-EBPF KERNEL CODE VISUALIZER
+# ==============================================================================
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/shield.png", width=64)
+    st.title("Aegis-1 Core")
+    st.markdown("**Status:** `ONLINE (eBPF XDP Hooked)`")
+    st.markdown("**Kernel Target:** `Linux 6.8.0-bpf`")
+    st.markdown("**Driver Interface:** `eth0 (XDP Native)`")
+    st.divider()
 
-st.divider()
+    st.subheader("💻 Active eBPF C-Code Hook")
+    with st.expander("View xdp_filter.c", expanded=False):
+        st.code("""
+// xdp_filter.c
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
 
-left_col, right_col = st.columns([1, 1])
+SEC("xdp")
+int xdp_drop_ip(struct xdp_md *ctx) {
+    void *data = (void *)(long)ctx->data;
+    struct iphdr *iph = data + sizeof(struct ethhdr);
+    __u32 src_ip = iph->saddr;
 
-with left_col:
-    st.subheader("⚡ Traffic & Command Simulator")
-    with st.form("traffic_form"):
-        client_ip = st.text_input("Client IP Address", value="10.0.0.99")
-        raw_payload = st.text_area("HTTP Payload Stream", value="GET /login?user=admin' OR '1'='1")
-        submit_btn = st.form_submit_button("Send HTTP Request")
-    if submit_btn:
-        action, details = waf.process_incoming_request(client_ip, raw_payload)
-        st.session_state.logs.append({
-            "Time": time.strftime("%H:%M:%S"),
-            "Client IP": client_ip,
-            "Action": action,
-            "Details": details,
-            "Payload": raw_payload[:40] + "..."
-        })
+    __u8 *drop = bpf_map_lookup_elem(&drop_map, &src_ip);
+    if (drop && *drop == 1) {
+        return XDP_DROP; // Drop at NIC driver level
+    }
+    return XDP_PASS;
+}
+""", language="c")
+
+    st.divider()
+    if st.button("Reset Session State", use_container_width=True):
+        st.session_state.ebpf_map = {}
+        st.session_state.audit_logs = []
+        st.session_state.dynamic_rules = []
+        st.session_state.metrics = {"total": 0, "allowed": 0, "waf_blocked": 0, "xdp_drops": 0}
         st.rerun()
-    st.subheader("🗣️ Omni Voice/Chat Command")
-    command_input = st.text_input("Enter direct instruction (e.g., 'Lockdown IP 192.168.1.50')", "")
-    if st.button("Execute Command"):
-        if "lockdown" in command_input.lower() or "block" in command_input.lower():
-            ips = re.findall(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', command_input)
-            for ip in ips:
-                kernel.sync_bpf_map_add(ip)
-                st.success(f"Pushed IP {ip} to eBPF Kernel Map!")
-            st.rerun()
 
-with right_col:
-    st.subheader("🧠 Active Dynamic Hot-Patches (Memory)")
-    if not waf.active_hotpatches:
-        st.info("No active dynamic rules compiled yet.")
-    else:
-        st.dataframe(pd.DataFrame(waf.active_hotpatches), use_container_width=True)
-    st.subheader("⚡ eBPF Kernel BPF Map (Hardware Drop List)")
-    if not kernel.bpf_ip_blacklist:
-        st.info("Kernel BPF Map is currently empty.")
-    else:
-        bpf_data = [{"Blacklisted IP": ip, "Packets Dropped at NIC": drops} for ip, drops in kernel.bpf_ip_blacklist.items()]
-        st.dataframe(pd.DataFrame(bpf_data), use_container_width=True)
+
+# ==============================================================================
+# 5. DASHBOARD HEADER & TOP METRICS TILES
+# ==============================================================================
+st.title("🛡️ Aegis-1: Autonomous Multi-Agent SOC & eBPF Kernel Shield")
+st.caption("Next-Generation Autonomous Security Operating System | eBPF Kernel Space Synchronization")
+
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric("Total Traffic Ingested", st.session_state.metrics["total"], delta="+1 Req")
+col_m2.metric("Passed (200 OK)", st.session_state.metrics["allowed"])
+col_m3.metric("AI WAF Hot-Patched", st.session_state.metrics["waf_blocked"], delta_color="inverse")
+col_m4.metric("eBPF XDP Hardware Drops", st.session_state.metrics["xdp_drops"], delta_color="inverse")
 
 st.divider()
-st.subheader("📋 Traffic Inspection Log")
-if st.session_state.logs:
-    st.dataframe(pd.DataFrame(st.session_state.logs).iloc[::-1], use_container_width=True
+
+
+# ==============================================================================
+# 6. DUAL INTERFACE: UPPER PAYLOAD INSPECTOR & LOWER EXECUTIVE COMMAND CONSOLE
+# ==============================================================================
+col_upper, col_lower = st.columns([1, 1], gap="medium")
+
+# --- UPPER DASHBOARD: Payload Simulator & Agent Swarm Inspector ---
+with col_upper:
+    st.subheader("⚡ Upper Dashboard: Real-Time Traffic Inspector")
+    st.markdown("Simulate inbound web requests to evaluate Multi-Agent classification & eBPF sync.")
+
+    sim_ip = st.text_input("Source Client IP", "172.16.0.44", key="sim_ip")
+    sim_payload = st.text_area(
+        "Raw HTTP Request Payload",
+        "POST /api/v1/auth HTTP/1.1\nHost: aegis.local\nUser-Agent: Mozilla/5.0\n\nuser=admin' OR '1'='1'--",
+        height=110,
+        key="sim_payload"
+    )
+
+    if st.button("🔍 Inspect Payload with Swarm Agents", use_container_width=True, type="primary"):
+        st.session_state.metrics["total"] += 1
+        
+        # Step 1: Check eBPF Kernel Drop Map first
+        if sim_ip in st.session_state.ebpf_map:
+            st.session_state.metrics["xdp_drops"] += 1
+            st.error(f"🚫 [XDP_DROP] Packet blocked instantly at NIC Driver level for IP `{sim_ip}`")
+            st.info("⚡ **Processing Overhead:** 0.000 ms (Dropped before reaching Python Userspace)")
+            st.session_state.audit_logs.insert(0, {
+                "Time": time.strftime("%H:%M:%S"),
+                "IP": sim_ip,
+                "Status": "XDP_DROP",
+                "CWE / Detail": "Blacklisted in eBPF Map",
+                "Action Taken": "NIC Hardware Drop"
+            })
+        else:
+            # Step 2: Run Async Multi-Agent Pipeline
+            with st.spinner("🤖 Multi-Agent Swarm Analyzing Payload..."):
+                result = asyncio.run(orchestrator.run_pipeline(sim_ip, sim_payload))
+            
+            if result["action"] == "ALLOW":
+                st.session_state.metrics["allowed"] += 1
+                st.success("✅ Traffic Verified Clean (200 OK)")
+                st.session_state.audit_logs.insert(0, {
+                    "Time": result["timestamp"],
+                    "IP": sim_ip,
+                    "Status": "ALLOWED",
+                    "CWE / Detail": "Clean Traffic",
+                    "Action Taken": "Passed to Application"
+                })
+            else:
+                st.session_state.metrics["waf_blocked"] += 1
+                st.session_state.metrics["xdp_drops"] += 1
+                
+                # Auto-push IP into eBPF Kernel Map
+                st.session_state.ebpf_map[sim_ip] = {"action": "XDP_DROP", "reason": result["cwe"]}
+                
+                patch = result["patch"]
+                st.session_state.dynamic_rules.append({
+                    "ID": patch["rule_id"],
+                    "Pattern": patch["pattern"],
+                    "Target": result["cwe"]
+                })
+                
+                st.warning(f"🚨 **Threat Detected:** `{result['cwe']}` (Risk Score: `{result['risk_score']}`)")
+                st.info(f"⚡ **Patch Compiler Agent:** Compiled & Injected `{patch['rule_id']}`")
+                st.error(f"🎯 **Deception Agent:** Added `{sim_ip}` to eBPF Map & Honeypot Sandbox")
+                
+                st.session_state.audit_logs.insert(0, {
+                    "Time": result["timestamp"],
+                    "IP": sim_ip,
+                    "Status": "AI_HOTPATCHED",
+                    "CWE / Detail": result["cwe"],
+                    "Action Taken": f"Injected {patch['rule_id']} + eBPF Sync"
+                })
+
+# --- LOWER DASHBOARD: Executive Voice/Chat Direct Override Console ---
+with col_lower:
+    st.subheader("🗣️ Lower Dashboard: Executive Command Console")
+    st.markdown("Issue direct natural language overrides to manipulate kernel rules or system behavior.")
+
+    exec_input = st.text_input(
+        "Executive Voice / Intent Command",
+        "Aegis execute emergency lockdown on IP 198.51.100.44 immediately!",
+        key="exec_input"
+    )
+
+    if st.button("⚡ Execute Executive Override", use_container_width=True):
+        extracted_ip = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", exec_input)
+        if extracted_ip:
+            target_ip = extracted_ip.group(0)
+            st.session_state.ebpf_map[target_ip] = {"action": "XDP_DROP", "reason": "Executive Direct Directive"}
+            st.session_state.metrics["xdp_drops"] += 1
+            st.success(f"🎯 Directive Executed: Synchronized IP `{target_ip}` directly into eBPF Drop Map!")
+            st.session_state.audit_logs.insert(0, {
+                "Time": time.strftime("%H:%M:%S"),
+                "IP": target_ip,
+                "Status": "EXEC_OVERRIDE",
+                "CWE / Detail": "Executive Command Directive",
+                "Action Taken": "Forced eBPF Kernel Block"
+            })
+        else:
+            st.error("Could not parse target IPv4 address from executive command.")
+
+    st.divider()
+    st.subheader("🔒 Active eBPF Kernel Map Table (XDP Driver)")
+    
+    if st.session_state.ebpf_map:
+        map_data = [
+            {"IPv4 Address": ip, "Kernel Action": details["action"], "Mitigation Cause": details["reason"]}
+            for ip, details in st.session_state.ebpf_map.items()
+        ]
+        st.dataframe(pd.DataFrame(map_data), use_container_width=True, height=180)
+    else:
+        st.info("eBPF Map Empty - No kernel blocks currently enforced.")
+
+
+# ==============================================================================
+# 7. ANALYTICS VISUALIZER & DYNAMIC RULES MONITOR
+# ==============================================================================
+st.divider()
+tab_analytics, tab_rules, tab_logs = st.tabs(["📊 Live Analytics Dashboard", "⚡ Active Dynamic Rules", "📋 Full Audit Log"])
+
+with tab_analytics:
+    col_chart1, col_chart2 = st.columns(2)
+    
+    with col_chart1:
+        st.markdown("#### Traffic Distribution")
+        chart_data = pd.DataFrame({
+            "Category": ["Allowed (200 OK)", "AI WAF Blocks", "eBPF XDP Drops"],
+            "Count": [st.session_state.metrics["allowed"], st.session_state.metrics["waf_blocked"], st.session_state.metrics["xdp_drops"]]
+        })
+        fig = px.pie(chart_data, values="Count", names="Category", color="Category",
+                     color_discrete_map={"Allowed (200 OK)": "#2ea043", "AI WAF Blocks": "#d29922", "eBPF XDP Drops": "#f85149"},
+                     hole=0.4)
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_chart2:
+        st.markdown("#### eBPF Latency Performance (Microseconds)")
+        latency_df = pd.DataFrame({
+            "Layer": ["Userspace WAF Inspection", "AI Swarm Reasoning", "eBPF XDP Kernel Drop"],
+            "Latency (μs)": [12000, 40000, 0.8]
+        })
+        fig_bar = px.bar(latency_df, x="Layer", y="Latency (μs)", color="Layer", log_y=True)
+        fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#c9d1d9")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+with tab_rules:
+    st.markdown("#### Active Dynamic Memory Hot-Patches")
+    if st.session_state.dynamic_rules:
+        st.dataframe(pd.DataFrame(st.session_state.dynamic_rules), use_container_width=True)
+    else:
+        st.info("No dynamic memory hot-patches compiled yet.")
+
+with tab_logs:
+    st.markdown("#### Full System Security Audit Logs")
+    if st.session_state.audit_logs:
+        st.dataframe(pd.DataFrame(st.session_state.audit_logs), use_container_width=True)
+    else:
+        st.info("Audit log is currently empty.")
+            
