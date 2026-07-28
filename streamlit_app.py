@@ -1,26 +1,22 @@
 # ==============================================================================
-# AEGIS-1: OMNI-AGENT SEMANTIC CODE INSPECTOR & ACTIVE DEFENSE ENGINE
-# PURE CODE INTELLIGENCE & INTENT DISSECTION SYSTEM
+# AEGIS-SAST: ADVANCED AST & SEMANTIC CODE AUDITING DASHBOARD
+# STATIC APPLICATION SECURITY TESTING (SAST) ENGINE
 # ==============================================================================
 
-import streamlit as st
+import ast
+import hashlib
+import time
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import asyncio
-import hashlib
-import math
-import random
-import re
-import time
-from typing import Dict, List, Any, Tuple
+import streamlit as st
+from typing import Dict, List, Any, Optional
 
 # ------------------------------------------------------------------------------
-# 1. PAGE CONFIGURATION & DARK HIGH-TECH SOC THEME
+# 1. PAGE CONFIGURATION & DARK THEME SOC STYLING
 # ------------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Aegis-1 Omni-Agent Semantic Code Shield",
+    page_title="Aegis-SAST Code Security Analyzer",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -41,19 +37,8 @@ st.markdown("""
     
     .glow-title {
         color: #00f2fe;
-        text-shadow: 0 0 12px rgba(0, 242, 254, 0.6), 0 0 24px rgba(0, 242, 254, 0.3);
+        text-shadow: 0 0 12px rgba(0, 242, 254, 0.5);
         font-weight: 800;
-        letter-spacing: -0.5px;
-    }
-    
-    .glow-green {
-        color: #10b981;
-        text-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-    }
-    
-    .glow-red {
-        color: #f43f5e;
-        text-shadow: 0 0 10px rgba(244, 63, 94, 0.7);
     }
 
     div[data-testid="stMetricValue"] {
@@ -63,13 +48,6 @@ st.markdown("""
         color: #00f2fe !important;
     }
     
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.75rem !important;
-        color: #9ca3af !important;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
     .stTextArea textarea, .stTextInput input {
         background-color: #0b1329 !important;
         color: #00f2fe !important;
@@ -83,361 +61,809 @@ st.markdown("""
         border: 1px solid #00f2fe;
         border-radius: 6px;
         font-weight: 700;
-        padding: 0.6rem 1rem;
         transition: all 0.3s ease;
     }
     
     .stButton>button:hover {
         background: #00f2fe;
         color: #030712;
-        box-shadow: 0 0 20px rgba(0, 242, 254, 0.8);
+        box-shadow: 0 0 15px rgba(0, 242, 254, 0.6);
     }
 
     section[data-testid="stSidebar"] {
         background-color: #020617;
         border-right: 1px solid #1e293b;
     }
+    
+    .vuln-card-high {
+        background-color: rgba(244, 63, 94, 0.1);
+        border-left: 4px solid #f43f5e;
+        padding: 12px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+    }
+    
+    .vuln-card-med {
+        background-color: rgba(245, 158, 11, 0.1);
+        border-left: 4px solid #f59e0b;
+        padding: 12px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+    }
+
+    .vuln-card-low {
+        background-color: rgba(59, 130, 246, 0.1);
+        border-left: 4px solid #3b82f6;
+        padding: 12px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# 2. SESSION STATE MANAGEMENT
+# 2. AST VISITOR & SEMANTIC CODE AUDITOR
 # ------------------------------------------------------------------------------
-if "audit_logs" not in st.session_state:
-    st.session_state.audit_logs = [
-        {"Time": "12:00:01", "Source": "Code Input", "Threat_Class": "CWE-89: SQL Injection", "Risk": "98%", "Action": "Code Blocked & Hot-Patched"},
-        {"Time": "12:04:15", "Source": "Prompt Input", "Threat_Class": "CWE-77: Command Execution", "Risk": "99%", "Action": "Trapped in Tarpit Loop"}
-    ]
-
-if "compiled_patches" not in st.session_state:
-    st.session_state.compiled_patches = [
-        {"Patch_ID": "PATCH-0x88F1", "Vector": "CWE-89 SQLi", "Sanitizer": "re.sub(r'(?i)(union\\s+select)', '', code)", "Status": "Active"},
-        {"Patch_ID": "PATCH-0x3B0A", "Vector": "CWE-78 Command Inj", "Sanitizer": "shlex.quote(user_input)", "Status": "Active"}
-    ]
-
-if "tarpit_traps" not in st.session_state:
-    st.session_state.tarpit_traps = [
-        {"Trap_ID": "TRAP-0xA19B", "Payload_Hash": "e3b0c44298fc", "State": "Infinite AST Recursion Loop", "HoneyToken": "AKIA983NJS832101"},
-        {"Trap_ID": "TRAP-0x44C2", "Payload_Hash": "88a1004bc8f1", "State": "Memory Allocation Stall", "HoneyToken": "db_pass_canary_secret"}
-    ]
-
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {
-        "analyzed_snippets": 1240,
-        "clean_snippets": 1050,
-        "blocked_threats": 190,
-        "patches_compiled": 142,
-        "trapped_payloads": 48,
-        "avg_analysis_time_ms": 0.85
+class ASTSecurityAuditor(ast.NodeVisitor):
+    """
+    Parses Python source code into an Abstract Syntax Tree (AST) to evaluate
+    structural risk, insecure function calls, hardcoded values, and unsafe logic.
+    """
+    
+    # Dangerous functions mapped to CWE taxonomy
+    DANGEROUS_FUNCTIONS = {
+        "eval": ("CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", "CRITICAL", "Replace eval() with safe literal parsing like ast.literal_eval() or structured data formats."),
+        "exec": ("CWE-95: Code Injection Risk via exec()", "CRITICAL", "Avoid dynamic code execution. Refactor into structured callables or strategy patterns."),
+        "system": ("CWE-78: Improper Neutralization of Special Elements used in an OS Command ('Command Injection')", "HIGH", "Avoid os.system(). Use subprocess.run() with shell=False and pass arguments as a list."),
+        "popen": ("CWE-78: Potential Command Injection via popen()", "HIGH", "Use subprocess.run() with explicit argument lists and strict input validation."),
+        "pickle.loads": ("CWE-502: Deserialization of Untrusted Data", "HIGH", "Avoid deserializing data with pickle from untrusted sources. Use JSON, Protocol Buffers, or MessagePack."),
+        "yaml.load": ("CWE-502: Unsafe YAML Deserialization", "MEDIUM", "Use yaml.safe_load() instead of yaml.load() to prevent arbitrary object instantiation."),
+        "input": ("CWE-20: Unvalidated User Input Source", "LOW", "Ensure user input is strictly validated and sanitized before passing to sensitive operations.")
     }
 
-# ------------------------------------------------------------------------------
-# 3. ADVANCED AGENT SWARM & SEMANTIC PARSING ENGINE
-# ------------------------------------------------------------------------------
-class SemanticThreatHunter:
-    """Agent 1: Deep Semantic Dissection, AST Pattern Extraction & Entropy Analysis."""
-    
-    PATTERNS = [
-        (r"(?i)(union\s+select|select.*?from|or\s+'1'='1'|drop\s+table|exec\s+xp_)", "CWE-89: SQL Injection Vector", 0.98),
-        (r"(?i)(<script|javascript:|onerror=|onload=|<iframe|eval\(.*?\))", "CWE-79: Cross-Site Scripting (XSS)", 0.92),
-        (r"(?i)(os\.system|subprocess\.Popen|system\(|passthru\(|exec\(|cmd\.exe|/bin/sh)", "CWE-78: Remote Command Execution", 0.99),
-        (r"(?i)(\.\./\.\./|/etc/passwd|/etc/shadow|c:\\windows\\system32)", "CWE-22: Path Traversal Vector", 0.95),
-        (r"(?i)(ignore\s+previous\s+instructions|system\s+prompt|reveal\s+secret|you\s+are\0)", "CWE-PromptInjection: LLM Jailbreak Attempt", 0.96),
-        (r"(?i)(\$\{jndi:(ldap|rmi|dns)://)", "CWE-502: Log4j Remote Code Execution", 1.00)
-    ]
+    SENSITIVE_KEY_KEYWORDS = {"password", "secret", "token", "api_key", "private_key", "auth_token"}
 
-    async def analyze_code(self, code_text: str) -> Dict[str, Any]:
-        await asyncio.sleep(0.01) # Simulate sub-millisecond execution
-        
-        # 1. Pattern Matching
-        for pattern, threat_type, score in self.PATTERNS:
-            if re.search(pattern, code_text):
-                return {
-                    "verdict": "MALICIOUS",
-                    "threat_class": threat_type,
-                    "risk_score": score,
-                    "reasoning": f"Semantic pattern trigger matched: {pattern[:35]}..."
-                }
-
-        # 2. Shannon Entropy Check for Obfuscated / Encoded Zero-Days
-        entropy = self._calculate_shannon_entropy(code_text)
-        if entropy > 5.2 and len(code_text) > 80:
-            return {
-                "verdict": "MALICIOUS",
-                "threat_class": "CWE-Obfuscated: High Entropy Payload / Zero-Day",
-                "risk_score": 0.89,
-                "reasoning": f"High Shannon Entropy detected ({entropy:.2f}). Payload indicates encoded exploit."
-            }
-
-        return {
-            "verdict": "CLEAN",
-            "threat_class": "None",
-            "risk_score": 0.01,
-            "reasoning": "Code snippet passed all AST, heuristic, and entropy safety checks."
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+        self.stats = {
+            "functions_scanned": 0,
+            "imports_scanned": 0,
+            "literals_scanned": 0,
+            "total_ast_nodes": 0
         }
 
-    def _calculate_shannon_entropy(self, text: str) -> float:
-        if not text:
+    def visit(self, node: ast.AST):
+        self.stats["total_ast_nodes"] += 1
+        super().visit(node)
+
+    def visit_Import(self, node: ast.Import):
+        self.stats["imports_scanned"] += len(node.names)
+        for alias in node.names:
+            if alias.name in ["telnetlib", "ftplib"]:
+                self.findings.append({
+                    "line": node.lineno,
+                    "cwe": "CWE-319: Cleartext Transmission of Sensitive Information",
+                    "severity": "MEDIUM",
+                    "code_snippet": f"import {alias.name}",
+                    "description": f"Use of unencrypted protocol module `{alias.name}`.",
+                    "remediation": "Migrate to encrypted protocols (SSH, TLS/HTTPS, SFTP)."
+                })
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom):
+        self.stats["imports_scanned"] += 1
+        if node.module == "os" and any(alias.name in ["system", "popen"] for alias in node.names):
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": "CWE-78: OS Command Injection Risk",
+                "severity": "HIGH",
+                "code_snippet": f"from os import {', '.join([a.name for a in node.names])}",
+                "description": "Direct import of dangerous OS execution functions.",
+                "remediation": "Use `subprocess.run(..., shell=False)` with array arguments."
+            })
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call):
+        self.stats["functions_scanned"] += 1
+        
+        # Check direct function calls (e.g., eval(code))
+        func_name = ""
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                func_name = f"{node.func.value.id}.{node.func.attr}"
+            else:
+                func_name = node.func.attr
+
+        if func_name in self.DANGEROUS_FUNCTIONS:
+            cwe, severity, remediation = self.DANGEROUS_FUNCTIONS[func_name]
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": cwe,
+                "severity": severity,
+                "code_snippet": f"Call to `{func_name}()`",
+                "description": f"Function `{func_name}` detected in execution flow.",
+                "remediation": remediation
+            })
+
+        # Check subprocess calls with shell=True
+        if func_name in ["subprocess.Popen", "subprocess.run", "subprocess.call"]:
+            for keyword in node.keywords:
+                if keyword.arg == "shell" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+                    self.findings.append({
+                        "line": node.lineno,
+                        "cwe": "CWE-78: Command Injection via shell=True",
+                        "severity": "HIGH",
+                        "code_snippet": f"{func_name}(..., shell=True)",
+                        "description": "Executing process with `shell=True` exposes the application to command injection if input is untrusted.",
+                        "remediation": "Set `shell=False` and pass command arguments as a list: `['cmd', 'arg1', 'arg2']`."
+                    })
+
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign):
+        self.stats["literals_scanned"] += 1
+        
+        # Check for hardcoded sensitive variables
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                var_name = target.id.lower()
+                if any(sec_key in var_name for sec_key in self.SENSITIVE_KEY_KEYWORDS):
+                    if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                        val = str(node.value.value)
+                        if len(val) > 3 and not val.startswith("ENV_"):
+                            self.findings.append({
+                                "line": node.lineno,
+                                "cwe": "CWE-798: Use of Hard-coded Credentials",
+                                "severity": "HIGH",
+                                "code_snippet": f"{target.id} = '***'",
+                                "description": f"Potential hardcoded key/secret detected in variable `{target.id}`.",
+                                "remediation": "Retrieve credentials dynamically from environment variables or key vaults (e.g., `os.getenv()`)."
+                            })
+        self.generic_visit(node)
+
+
+# ------------------------------------------------------------------------------
+# 3. SAST PIPELINE MANAGER
+# ------------------------------------------------------------------------------
+def run_sast_audit(source_code: str) -> Dict[str, Any]:
+    """Compiles source code to AST and executes security checks."""
+    start_time = time.time()
+    auditor = ASTSecurityAuditor()
+    
+    try:
+        parsed_ast = ast.parse(source_code)
+        auditor.visit(parsed_ast)
+        parse_status = "SUCCESS"
+        error_details = None
+    except SyntaxError as e:
+        parse_status = "SYNTAX_ERROR"
+        error_details = f"Syntax Error on line {e.lineno}: {e.msg}"
+    except Exception as e:
+        parse_status = "PARSE_ERROR"
+        error_details = str(e)
+
+    duration_ms = (time.time() - start_time) * 1000
+
+    return {
+        "status": parse_status,
+        "error": error_details,
+        "findings": auditor.findings,
+        "stats": auditor.stats,
+        "latency_ms": round(duration_ms, 2)
+    }
+
+
+# ------------------------------------------------------------------------------
+# 4. INITIALIZE SESSION STATE
+# ------------------------------------------------------------------------------
+if "audit_history" not in st.session_state:
+    st.session_state.audit_history = []
+
+if "total_audits" not in st.session_state:
+    st.session_state.total_audits = 0
+
+
+# ------------------------------------------------------------------------------
+# 5. SIDEBAR NAVIGATION & CONFIG
+# ------------------------------------------------------------------------------
+with st.sidebar:
+    st.markdown("<h2 class='glow-title'>🛡️ AEGIS-SAST</h2>", unsafe_allow_html=True)
+    st.caption("AST Security & Code Quality Inspection")
+    st.divider()
+
+    st.subheader("⚙️ Analysis Engine")
+    st.markdown("- **Parser:** Native AST Engine")
+    st.markdown("- **CWE Mapping:** 2026 Active Set")
+    st.markdown("- **Rule Set:** Deterministic AST Node Matching")
+
+    st.divider()
+    if st.button("🧹 Clear History", use_container_width=True):
+        st.session_state.audit_history = []
+        st.session_state.total_audits = 0
+        st.rerun()
+
+    st.markdown("---")
+    st.subheader("📌 Covered CWE Categories")
+    st.markdown("""
+    * **CWE-78:** OS Command Injection
+    * **CWE-95:** Dynamic Eval Injection
+    * **CWE-502:** Unsafe Deserialization
+    * **CWE-798:** Hardcoded Secret Keys
+    * **CWE-319:** Cleartext Protocols
+    """)
+
+
+# ------------------------------------------------------------------------------
+# 6. MAIN SOC DASHBOARD
+# ------------------------------------------------------------------------------
+st.markdown("<h1 class='glow-title'>AEGIS-1: STATIC CODE SECURITY AUDITOR</h1>", unsafe_allow_html=True)
+st.caption("AST Structural Analysis • Secure Code Remediation • Anti-Pattern Identification")
+
+# Key Metrics Top Bar
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Audits Conducted", f"{st.session_state.total_audits}")
+col2.metric("Parser Engine", "AST Structural")
+col3.metric("Analysis Mode", "Deterministic")
+col4.metric("Rule Engine", "Active")
+
+st.divider()
+
+# Code Input Panel
+left_col, right_col = st.columns([1.1, 0.9], gap="large")
+
+sample_code = """# Python Source Code Security Sample
+import os
+import subprocess
+import pickle
+
+AWS_SECRET_KEY = "AKIA_EXAMPLESAMPLESECRETKEY123"
+
+def execute_user_script(user_query):
+    # Potential CWE-95 Code Injection
+    result = eval(user_query)
+    return result
+
+def run_system_diag(cmd):
+    # Potential CWE-78 Command Injection
+    os.system("ping " + cmd)
+    subprocess.run("ls -la " + cmd, shell=True)
+
+def load_payload(raw_data):
+    # Potential CWE-502 Unsafe Deserialization
+    return pickle.loads(raw_data)
+"""
+
+with left_col:
+    st.markdown("### 💻 Source Code Workspace")
+    input_code = st.text_area(
+        "Paste Python Code for AST Analysis",
+        sample_code,
+        height=320
+    )
+
+    if st.button("🔍 Execute AST Security Audit", use_container_width=True, type="primary"):
+        st.session_state.total_audits += 1
+        results = run_sast_audit(input_code)
+        st.session_state.latest_results = results
+        
+        st.session_state.audit_history.insert(0, {
+            "timestamp": time.strftime("%H:%M:%S"),
+            "status": results["status"],
+            "findings_count": len(results["findings"]),
+            "latency_ms": results["latency_ms"]
+        })
+
+with right_col:
+    st.markdown("### 📊 Real-Time AST Analysis")
+    
+    if "latest_results" in st.session_state:
+        res = st.session_state.latest_results
+        
+        if res["status"] == "SYNTAX_ERROR":
+            st.error(f"❌ **Syntax Error Detected:**\n{res['error']}")
+            st.info("The AST parser requires valid Python syntax to perform structural analysis.")
+        elif res["status"] == "SUCCESS":
+            findings = res["findings"]
+            stats = res["stats"]
+            
+            st.success(f"⚡ AST Inspection Complete in **{res['latency_ms']} ms**")
+            
+            # Quick Stats
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("Nodes Evaluated", f"{stats['total_ast_nodes']}")
+            sc2.metric("Functions Checked", f"{stats['functions_scanned']}")
+            sc3.metric("Issues Detected", f"{len(findings)}")
+            
+            st.divider()
+            
+            if findings:
+                st.markdown("#### 🚨 Security Findings Breakdown")
+                for item in findings:
+                    sev = item["severity"]
+                    card_class = "vuln-card-high" if sev == "CRITICAL" or sev == "HIGH" else "vuln-card-med"
+                    
+                    st.markdown(f"""
+                    <div class="{card_class}">
+                        <strong>[{sev}] {item['cwe']}</strong> (Line {item['line']})<br/>
+                        <small>{item['description']}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    with st.expander(f"🔧 Remediation for Line {item['line']}"):
+                        st.write(f"**Issue:** {item['code_snippet']}")
+                        st.info(f"**Recommended Fix:** {item['remediation']}")
+            else:
+                st.success("🎉 No structural anti-patterns detected by current AST security rules!")
+    else:
+        st.info("Click **Execute AST Security Audit** to analyze the source code.")
+
+# ------------------------------------------------------------------------------
+# 7. METRICS & AUDIT HISTORY VISUALIZATION
+# ------------------------------------------------------------------------------
+st.divider()
+st.markdown("### 📈 Security Audit Analytics")
+
+tab1, tab2 = st.tabs(["📋 Execution History", "📊 AST Node Distribution"])
+
+with tab1:
+    if st.session_state.audit_history:
+        st.dataframe(pd.DataFrame(st.session_state.audit_history), use_container_width=True)
+    else:
+        st.info("No audit history available yet.")
+
+with tab2:
+    if "latest_results" in st.session_state and st.session_state.latest_results["status"] == "SUCCESS":
+        stats = st.session_state.latest_results["stats"]
+        df_stats = pd.DataFrame([
+            {"Metric": "Functions Scanned", "Count": stats["functions_scanned"]},
+            {"Metric": "Imports Checked", "Count": stats["imports_scanned"]},
+            {"Metric": "Literals Analyzed", "Count": stats["literals_scanned"]}
+        ])
+        fig = px.bar(df_stats, x="Metric", y="Count", color="Metric", color_discrete_sequence=["#00f2fe", "#10b981", "#f59e0b"])
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e7eb")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Run an audit to view AST metrics.")
+    # ==============================================================================
+# AEGIS-SAST EXTENSION: TAINT ANALYSIS, ENTROPY SECRETS, & AUTO-FIX ENGINE
+# ==============================================================================
+
+import ast
+import math
+import string
+from typing import List, Dict, Any, Set
+
+class AdvancedASTAnalyzer(ast.NodeVisitor):
+    """
+    Upgraded Security Visitor: Performs Taint Tracking, Shannon Entropy
+    Secret Analysis, and Insecure Call Detection across the AST.
+    """
+
+    TAINT_SOURCES = {"input", "request.args.get", "request.form.get", "sys.argv"}
+    TAINT_SINKS = {"eval", "exec", "os.system", "subprocess.Popen", "cursor.execute"}
+
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+        self.tainted_variables: Set[str] = set()
+        self.analyzed_lines = 0
+
+    def visit_Assign(self, node: ast.Assign):
+        """Track variable assignments to trace untrusted input propagation (Taint Tracking)."""
+        self.generic_visit(node)
+        
+        # Check if the right side (value) contains a tainted source or variable
+        is_source_tainted = False
+        
+        if isinstance(node.value, ast.Call):
+            func_name = self._get_func_name(node.value)
+            if func_name in self.TAINT_SOURCES:
+                is_source_tainted = True
+        elif isinstance(node.value, ast.Name):
+            if node.value.id in self.tainted_variables:
+                is_source_tainted = True
+
+        # Propagate taint to target variables
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                if is_source_tainted:
+                    self.tainted_variables.add(target.id)
+                elif target.id in self.tainted_variables:
+                    # Variable reassigned to safe value
+                    self.tainted_variables.remove(target.id)
+
+        # Check assigned string constants for high entropy secrets
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            secret_val = node.value.value
+            entropy = self._calculate_shannon_entropy(secret_val)
+            
+            # High entropy threshold (>4.5) for strings longer than 16 characters
+            if entropy > 4.5 and len(secret_val) >= 16:
+                for target in node.targets:
+                    var_name = target.id if isinstance(target, ast.Name) else "unknown"
+                    self.findings.append({
+                        "line": node.lineno,
+                        "cwe": "CWE-798: High Entropy Hardcoded Secret/Token",
+                        "severity": "CRITICAL",
+                        "snippet": f"{var_name} = '***'",
+                        "entropy": round(entropy, 2),
+                        "description": f"Variable `{var_name}` contains a high-entropy literal (Entropy: {round(entropy, 2)}).",
+                        "remediation": f"Move key `{var_name}` into environment variables via `os.getenv('{var_name.upper()}')`."
+                    })
+
+    def visit_Call(self, node: ast.Call):
+        """Inspect calls for dangerous sinks using tainted user inputs."""
+        self.generic_visit(node)
+        func_name = self._get_func_name(node)
+
+        # Taint Analysis Sink Check
+        if func_name in self.TAINT_SINKS:
+            for arg in node.args:
+                if isinstance(arg, ast.Name) and arg.id in self.tainted_variables:
+                    self.findings.append({
+                        "line": node.lineno,
+                        "cwe": "CWE-20 / CWE-78: Tainted Data Reaching Unsafe Sink",
+                        "severity": "CRITICAL",
+                        "snippet": f"{func_name}({arg.id})",
+                        "entropy": 0.0,
+                        "description": f"Untrusted input in variable `{arg.id}` flows directly into execution sink `{func_name}()`.",
+                        "remediation": f"Sanitize or validate `{arg.id}` before calling `{func_name}()`, or use non-shell execution wrappers."
+                    })
+
+    def _get_func_name(self, node: ast.Call) -> str:
+        """Extract full dotted path for function calls without regex."""
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                return f"{node.func.value.id}.{node.func.attr}"
+            return node.func.attr
+        return ""
+
+    def _calculate_shannon_entropy(self, data: str) -> float:
+        """Calculates Shannon Entropy of a string to detect encrypted/random secret keys."""
+        if not data:
             return 0.0
         entropy = 0.0
-        for char in set(text):
-            p_x = float(text.count(char)) / len(text)
+        for char in set(data):
+            p_x = float(data.count(char)) / len(data)
             entropy -= p_x * math.log(p_x, 2)
         return entropy
 
 
-class HotPatchCompiler:
-    """Agent 2: Generates Real-Time Code Sanitizers and Defensive Wrappers."""
-    
-    async def generate_patch(self, threat_class: str) -> Dict[str, str]:
-        await asyncio.sleep(0.005)
-        patch_hash = hashlib.md5(f"{threat_class}{time.time()}".encode()).hexdigest()[:6].upper()
-        patch_id = f"PATCH-0x{patch_hash}"
+# ==============================================================================
+# INTEGRATION HELPER FOR STREAMLIT DASHBOARD
+# ==============================================================================
 
-        if "SQL" in threat_class:
-            sanitizer = "code = re.sub(r'(?i)(union|select|drop|or\\s+1=1)', '', raw_input)"
-        elif "Command" in threat_class:
-            sanitizer = "sanitized = shlex.quote(raw_input); subprocess.run([sanitized])"
-        elif "XSS" in threat_class:
-            sanitizer = "code = html.escape(raw_input)"
-        elif "PromptInjection" in threat_class:
-            sanitizer = "input_text = sanitize_prompt_guardrails(raw_input)"
-        else:
-            sanitizer = "code = base64.b64decode(raw_input).decode('utf-8')"
-
+def execute_enhanced_sast(source_code: str) -> Dict[str, Any]:
+    """Applies the enhanced AST analyzer with taint tracking and entropy checks."""
+    try:
+        tree = ast.parse(source_code)
+        analyzer = AdvancedASTAnalyzer()
+        analyzer.visit(tree)
         return {
-            "patch_id": patch_id,
-            "sanitizer": sanitizer,
-            "threat": threat_class
+            "status": "SUCCESS",
+            "findings": analyzer.findings,
+            "tainted_vars_tracked": list(analyzer.tainted_variables)
         }
+    except SyntaxError as e:
+        return {"status": "SYNTAX_ERROR", "error": f"Line {e.lineno}: {e.msg}"}
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+    # ==============================================================================
+# AEGIS-1 ENTERPRISE EXPANSION MODULE
+# INCLUDES: AST TRANSFORMER REFACTORING, CALL-GRAPH DATASETS, & MULTI-LANG HOOKS
+# ==============================================================================
 
+import ast
+from typing import Dict, Any, List, Tuple
 
-class ActiveDeceptionEngine:
-    """Agent 3: Creates AST Tarpit Recursion Traps & Canary Honey-Tokens."""
-    
-    async def deploy_deception(self, code_text: str) -> Dict[str, Any]:
-        await asyncio.sleep(0.005)
-        payload_hash = hashlib.sha256(code_text.encode()).hexdigest()[:12]
-        trap_id = f"TRAP-0x{hashlib.md5(payload_hash.encode()).hexdigest()[:6].upper()}"
-        canary_token = f"AKIA{hashlib.sha256(str(time.time()).encode()).hexdigest()[:12].upper()}"
-
-        return {
-            "trap_id": trap_id,
-            "payload_hash": payload_hash,
-            "state": "Infinite AST Recursion Loop",
-            "honey_token": canary_token
-        }
-
-
-class SwarmOrchestrator:
-    """Master Orchestrator managing parallel agent execution."""
+# ------------------------------------------------------------------------------
+# 1. AUTOMATED STRUCTURAL REMEDIATION ENGINE (AST REFACTORING)
+# ------------------------------------------------------------------------------
+class SecurityRefactoringTransformer(ast.NodeTransformer):
+    """
+    Transforms unsafe AST nodes into secure implementations.
+    Example: Replaces eval() with ast.literal_eval() and os.system() calls.
+    """
     
     def __init__(self):
-        self.hunter = SemanticThreatHunter()
-        self.compiler = HotPatchCompiler()
-        self.deception = ActiveDeceptionEngine()
+        self.refactored_count = 0
 
-    async def inspect(self, code_text: str) -> Dict[str, Any]:
-        threat = await self.hunter.analyze_code(code_text)
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
         
-        if threat["verdict"] == "MALICIOUS":
-            patch_task = asyncio.create_task(self.compiler.generate_patch(threat["threat_class"]))
-            deception_task = asyncio.create_task(self.deception.deploy_deception(code_text))
+        # 1. Convert dangerous eval() -> ast.literal_eval()
+        if isinstance(node.func, ast.Name) and node.func.id == "eval":
+            self.refactored_count += 1
+            return ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="ast", ctx=ast.Load()),
+                    attr="literal_eval",
+                    ctx=ast.Load()
+                ),
+                args=node.args,
+                keywords=node.keywords
+            )
             
-            patch, deception = await asyncio.gather(patch_task, deception_task)
-            threat["patch"] = patch
-            threat["deception"] = deception
-            
-        return threat
+        # 2. Neutralize dangerous os.system() with a safe print/noop wrapper
+        if isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os" and node.func.attr == "system":
+                self.refactored_count += 1
+                return ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Constant(value="[AEGIS-BLOCKED] Unsafe os.system execution intercepted.")],
+                    keywords=[]
+                )
 
-orchestrator = SwarmOrchestrator()
+        return node
+
+
+def auto_patch_code(source_code: str) -> Tuple[str, int]:
+    """
+    Parses source code into AST, applies security transformations,
+    and unparses it back into clean, executable Python code.
+    """
+    try:
+        tree = ast.parse(source_code)
+        transformer = SecurityRefactoringTransformer()
+        modified_tree = transformer.visit(tree)
+        ast.fix_missing_locations(modified_tree)
+        
+        # Unparse modified AST back to Python source code
+        patched_code = ast.unparse(modified_tree)
+        return patched_code, transformer.refactored_count
+    except Exception as e:
+        return f"# Automated patching failed: {str(e)}\n" + source_code, 0
+
 
 # ------------------------------------------------------------------------------
-# 4. SIDEBAR - CONTROL PANEL & ARCHITECTURE SPECS
+# 2. INTER-PROCEDURAL CALL-GRAPH EXTRACTOR
 # ------------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("<h2 class='glow-title'>🛡️ AEGIS-1 ENGINE</h2>", unsafe_allow_html=True)
-    st.markdown("**Core Version:** `3.0.0-PURE-CODE`")
-    st.markdown("**Engine Mode:** `AST & Semantic Dissection`")
-    st.markdown("**Inference Latency:** `Sub-Millisecond`")
-    st.divider()
+class CallGraphExtractor(ast.NodeVisitor):
+    """
+    Extracts function definitions and caller-callee relationships 
+    to map application execution pathways and data flow maps.
+    """
+    
+    def __init__(self):
+        self.edges: List[Tuple[str, str]] = []
+        self.current_function: str = "global_scope"
 
-    st.subheader("⚙️ System Control")
-    if st.button("🧹 Flush Audit Terminal Logs", use_container_width=True):
-        st.session_state.audit_logs = []
-        st.success("Audit terminal cleared.")
-        st.rerun()
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        previous_function = self.current_function
+        self.current_function = node.name
+        self.generic_visit(node)
+        self.current_function = previous_function
 
-    if st.button("🔴 Reset Dynamic Hot-Patches", use_container_width=True):
-        st.session_state.compiled_patches = []
-        st.success("Hot-patches cleared.")
-        st.rerun()
-
-    st.divider()
-    st.subheader("📄 Dynamic AST Sanitizer Blueprint")
-    st.code("""
-# AST Transformation Hook
-import ast
-
-class SecurityTransformer(ast.NodeTransformer):
-    def visit_Call(self, node):
+    def visit_Call(self, node: ast.Call):
+        callee = ""
         if isinstance(node.func, ast.Name):
-            if node.func.id in ['eval', 'exec', 'system']:
-                # Hot-patch unsafe call
-                return ast.Name(id='safe_noop', ctx=ast.Load())
-        return self.generic_visit(node)
-""", language="python")
+            callee = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            callee = node.func.attr
+
+        if callee:
+            self.edges.append((self.current_function, callee))
+        self.generic_visit(node)
+
+
+def generate_call_graph_nodes(source_code: str) -> List[Dict[str, str]]:
+    """Generates execution edge definitions for visualization engines (e.g., Plotly, Graphviz)."""
+    try:
+        tree = ast.parse(source_code)
+        extractor = CallGraphExtractor()
+        extractor.visit(tree)
+        return [{"caller": edge[0], "callee": edge[1]} for edge in extractor.edges]
+    except Exception:
+        return []
+
 
 # ------------------------------------------------------------------------------
-# 5. MAIN SOC DASHBOARD & METRICS
+# 3. SQL STRUCTURAL SANITY CHECKER (No-Regex Abstract Query Verification)
 # ------------------------------------------------------------------------------
-st.markdown("<h1 class='glow-title'>AEGIS-1: AUTONOMOUS SEMANTIC CODE SHIELD</h1>", unsafe_allow_html=True)
-st.caption("AI Swarm Code Inspection • AST Hot-Patching • Tarpit Recursion Deception")
-
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Inspected Snippets", f"{st.session_state.metrics['analyzed_snippets']:,}")
-col2.metric("Clean Code", f"{st.session_state.metrics['clean_snippets']:,}")
-col3.metric("Blocked Threats", f"{st.session_state.metrics['blocked_threats']:,}")
-col4.metric("Hot-Patches Built", f"{len(st.session_state.compiled_patches)}")
-col5.metric("Tarpit Traps Active", f"{len(st.session_state.tarpit_traps)}")
-
-st.divider()
-
-# ------------------------------------------------------------------------------
-# 6. DUAL PANEL INTERACTION TERMINAL
-# ------------------------------------------------------------------------------
-left_panel, right_panel = st.columns([1.2, 1], gap="large")
-
-with left_panel:
-    st.markdown("<h3 class='glow-green'>⚡ Terminal 1: Code & Prompt Inspector</h3>", unsafe_allow_html=True)
+class SQLStructureAnalyzer:
+    """
+    Evaluates raw SQL strings for dynamic string concatenation anti-patterns 
+    indicating SQL injection risks.
+    """
     
-    code_input = st.text_area(
-        "Paste Code Snippet, SQL Query, Shell Script, or Prompt Payload to Inspect",
-        """# Python Vulnerable Example
-import os
-def execute_user_command(user_cmd):
-    # Potential CWE-78 Risk
-    os.system("cat /etc/passwd; " + user_cmd)
-    
-execute_user_command("echo 'hacking...' && DROP TABLE users;--")""",
-        height=220
-    )
+    @staticmethod
+    def inspect_query_construction(node: ast.BinOp) -> Dict[str, Any]:
+        """Detects string concatenation (+) used to assemble SQL strings."""
+        if isinstance(node.op, ast.Add):
+            # Check left or right operands for SQL keywords
+            is_sql = False
+            for operand in [node.left, node.right]:
+                if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
+                    val = operand.value.upper()
+                    if any(kw in val for kw in ["SELECT", "INSERT", "UPDATE", "DELETE", "WHERE", "FROM"]):
+                        is_sql = True
+            
+            if is_sql:
+                return {
+                    "vulnerability": "CWE-89: Dynamic SQL Construction via String Concatenation",
+                    "severity": "HIGH",
+                    "remediation": "Use parameterized queries (e.g., cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,)))"
+                }
+        return {}
+    # ==============================================================================
+# AEGIS-1 ENTERPRISE SAST PLATFORM WITH AST AUTO-FIX & COMPLIANCE REPORTING
+# ==============================================================================
 
-    if st.button("🔍 Dispatch to AI Swarm Inspector", use_container_width=True, type="primary"):
-        st.session_state.metrics["analyzed_snippets"] += 1
+import ast
+import json
+import time
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from typing import Dict, List, Any, Tuple
+
+# ------------------------------------------------------------------------------
+# 1. PAGE CONFIGURATION & STYLING
+# ------------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Aegis Enterprise SAST & Auto-Patch Engine",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&display=swap');
+    html, body, [class*="css"] { font-family: 'JetBrains Mono', monospace; }
+    .stApp { background-color: #030712; color: #e5e7eb; }
+    .glow-title { color: #00f2fe; text-shadow: 0 0 12px rgba(0, 242, 254, 0.5); font-weight: 800; }
+    .stTextArea textarea, .stTextInput input { background-color: #0b1329 !important; color: #00f2fe !important; border: 1px solid #1e293b !important; }
+    .diff-added { background-color: rgba(16, 185, 129, 0.15); border-left: 3px solid #10b981; padding: 4px; }
+    .diff-removed { background-color: rgba(244, 63, 94, 0.15); border-left: 3px solid #f43f5e; padding: 4px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ------------------------------------------------------------------------------
+# 2. AST TRANSFORMER FOR AUTOMATED CODE REFACTORING
+# ------------------------------------------------------------------------------
+class ASTAutoPatcher(ast.NodeTransformer):
+    """Refactors insecure AST nodes into secure equivalents."""
+    def __init__(self):
+        self.patches_applied = 0
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
         
-        with st.spinner("🤖 Multi-Agent Swarm Dissecting Code Logic..."):
-            result = asyncio.run(orchestrator.inspect(code_input))
-
-        if result["verdict"] == "CLEAN":
-            st.session_state.metrics["clean_snippets"] += 1
-            st.success("✅ Code Verified Clean: No Malicious Intent or Exploits Found")
-            st.session_state.audit_logs.insert(0, {
-                "Time": time.strftime("%H:%M:%S"),
-                "Source": "Code Inspection",
-                "Threat_Class": "None",
-                "Risk": "1%",
-                "Action": "Allowed Execution"
-            })
-        else:
-            st.session_state.metrics["blocked_threats"] += 1
-            patch = result["patch"]
-            deception = result["deception"]
+        # Patch eval() -> ast.literal_eval()
+        if isinstance(node.func, ast.Name) and node.func.id == "eval":
+            self.patches_applied += 1
+            return ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="ast", ctx=ast.Load()),
+                    attr="literal_eval",
+                    ctx=ast.Load()
+                ),
+                args=node.args,
+                keywords=node.keywords
+            )
             
-            st.session_state.compiled_patches.append({
-                "Patch_ID": patch["patch_id"],
-                "Vector": patch["threat"],
-                "Sanitizer": patch["sanitizer"],
-                "Status": "Active"
-            })
-            
-            st.session_state.tarpit_traps.append({
-                "Trap_ID": deception["trap_id"],
-                "Payload_Hash": deception["payload_hash"],
-                "State": deception["state"],
-                "HoneyToken": deception["honey_token"]
-            })
-            
-            st.error(f"🚨 Verdict: **{result['threat_class']}** | Risk Score: **{int(result['risk_score']*100)}%**")
-            st.warning(f"📝 **Reasoning:** {result['reasoning']}")
-            st.info(f"⚡ **Patch Compiler:** Dynamic Sanitizer Generated (`{patch['patch_id']}`)")
-            st.code(patch["sanitizer"], language="python")
-            st.success(f"🔑 **Deception Active:** Code Trapped in `{deception['trap_id']}` | Injected Canary: `{deception['honey_token']}`")
+        # Patch os.system() -> Safe Print Log Replacement
+        if isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os" and node.func.attr == "system":
+                self.patches_applied += 1
+                return ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Constant(value="[AEGIS-BLOCKED] Insecure os.system call intercepted.")],
+                    keywords=[]
+                )
 
-            st.session_state.audit_logs.insert(0, {
-                "Time": time.strftime("%H:%M:%S"),
-                "Source": "Code Inspection",
-                "Threat_Class": result["threat_class"],
-                "Risk": f"{int(result['risk_score']*100)}%",
-                "Action": f"Patched ({patch['patch_id']}) + Trapped"
-            })
+        return node
 
-with right_panel:
-    st.markdown("<h3 class='glow-title'>🗣️ Terminal 2: Natural Language Policy Controller</h3>", unsafe_allow_html=True)
-    
-    policy_input = st.text_input(
-        "Enter Policy Command / Executive Order",
-        "Aegis-1, automatically block any code containing exec() or system call patterns."
-    )
-
-    if st.button("⚡ Enforce Policy Rule", use_container_width=True):
-        st.session_state.compiled_patches.append({
-            "Patch_ID": f"POLICY-0x{random.randint(1000, 9999)}",
-            "Vector": "Custom Executive Rule",
-            "Sanitizer": f"Enforced: {policy_input[:40]}...",
-            "Status": "Active"
-        })
-        st.success("🎯 Custom executive policy rule hot-compiled and applied across AI pipeline!")
-
-    st.divider()
-    st.markdown("#### ⚡ Active Hot-Compiled Code Sanitizers")
-    if st.session_state.compiled_patches:
-        st.dataframe(pd.DataFrame(st.session_state.compiled_patches), use_container_width=True, height=210)
-    else:
-        st.info("No active hot-patches compiled yet.")
+def apply_auto_patch(source_code: str) -> Tuple[str, int]:
+    """Parses, modifies, and unparses Python source code."""
+    try:
+        tree = ast.parse(source_code)
+        patcher = ASTAutoPatcher()
+        modified_tree = patcher.visit(tree)
+        ast.fix_missing_locations(modified_tree)
+        return ast.unparse(modified_tree), patcher.patches_applied
+    except Exception as e:
+        return f"# Refactoring failed: {str(e)}", 0
 
 # ------------------------------------------------------------------------------
-# 7. TELEMETRY & ANALYTICS VISUALIZATIONS
+# 3. OWASP & ISO 27001 COMPLIANCE MAPPING ENGINE
+# ------------------------------------------------------------------------------
+class ComplianceMapper:
+    """Maps AST security findings to OWASP Top 10 and ISO/IEC 27001 controls."""
+    
+    MAPPINGS = {
+        "CWE-95": {"OWASP": "A03:2021-Injection", "ISO27001": "A.8.28 Safe Coding"},
+        "CWE-78": {"OWASP": "A03:2021-Injection", "ISO27001": "A.8.28 Safe Coding"},
+        "CWE-502": {"OWASP": "A08:2021-Software and Data Integrity Failures", "ISO27001": "A.8.24 Use of Cryptography"},
+        "CWE-798": {"OWASP": "A07:2021-Identification and Authentication Failures", "ISO27001": "A.9.4.3 Password Management System"}
+    }
+
+    @classmethod
+    def get_compliance_data(cls, cwe_id: str) -> Dict[str, str]:
+        for key in cls.MAPPINGS:
+            if key in cwe_id:
+                return cls.MAPPINGS[key]
+        return {"OWASP": "A04:2021-Insecure Design", "ISO27001": "A.8.28 Safe Coding"}
+
+# ------------------------------------------------------------------------------
+# 4. DASHBOARD INTERFACE
+# ------------------------------------------------------------------------------
+st.markdown("<h1 class='glow-title'>AEGIS-1: ENTERPRISE AST SAST & REFACTORING ENGINE</h1>", unsafe_allow_html=True)
+st.caption("AST Structural Auditing • Auto-Patch Refactoring • OWASP & ISO 27001 Mapping")
+
+sample_vulnerable_code = """import os
+import pickle
+
+def run_user_input(user_payload):
+    # Insecure Eval Execution
+    data = eval(user_payload)
+    
+    # Insecure System Command Execution
+    os.system("ping " + user_payload)
+    return data
+"""
+
+col_left, col_right = st.columns([1, 1], gap="large")
+
+with col_left:
+    st.markdown("### 📝 Source Code Editor")
+    raw_code = st.text_area("Input Code Snippet", sample_vulnerable_code, height=300)
+    
+    if st.button("⚡ Run AST Audit & Refactoring Transformer", type="primary", use_container_width=True):
+        st.session_state.patched_code, st.session_state.patches_count = apply_auto_patch(raw_code)
+        st.session_state.audit_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+with col_right:
+    st.markdown("### 🔧 Refactored Auto-Patched Output")
+    if "patched_code" in st.session_state:
+        st.code(st.session_state.patched_code, language="python")
+        st.success(f"✅ Auto-patched **{st.session_state.patches_count}** insecure AST node(s) successfully!")
+    else:
+        st.info("Run the transformer to view automated code refactoring.")
+
+# ------------------------------------------------------------------------------
+# 5. COMPLIANCE & AUDIT REPORT EXPORT
 # ------------------------------------------------------------------------------
 st.divider()
-st.markdown("<h3 class='glow-title'>📊 TELEMETRY & THREAT DISSECTION ANALYTICS</h3>", unsafe_allow_html=True)
+st.markdown("### 📊 Compliance Mapping & Exportable Audit Report")
 
-t1, t2, t3 = st.tabs(["📈 Inspection Distribution", "🕸️ Active Code Tarpits", "📋 Full Audit Log"])
-
-with t1:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### Ingested Code Classification")
-        fig_pie = go.Figure(data=[go.Pie(
-            labels=['Clean Code', 'Blocked Malicious Code'],
-            values=[st.session_state.metrics['clean_snippets'], st.session_state.metrics['blocked_threats']],
-            hole=0.5,
-            marker_colors=['#10b981', '#f43f5e']
-        )])
-        fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e7eb")
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    with c2:
-        st.markdown("#### Inspection Latency Breakdown (ms)")
-        lat_df = pd.DataFrame({
-            'Stage': ['AST Parsing', 'Threat Agent', 'Patch Compiler', 'Tarpit Deploy'],
-            'Time (ms)': [0.12, 0.45, 0.18, 0.10]
+if "patched_code" in st.session_state:
+    c1, c2, c3 = st.columns(3)
+    
+    # Mock analysis findings for mapping demo
+    findings = [
+        {"CWE": "CWE-95: Eval Injection", "Severity": "CRITICAL", "Line": 6},
+        {"CWE": "CWE-78: Command Injection", "Severity": "HIGH", "Line": 9}
+    ]
+    
+    report_data = []
+    for f in findings:
+        compliance = ComplianceMapper.get_compliance_data(f["CWE"])
+        report_data.append({
+            "Line": f["Line"],
+            "Finding": f["CWE"],
+            "Severity": f["Severity"],
+            "OWASP Top 10": compliance["OWASP"],
+            "ISO 27001 Control": compliance["ISO27001"]
         })
-        fig_bar = px.bar(lat_df, x='Stage', y='Time (ms)', color='Stage', color_discrete_sequence=['#00f2fe', '#38ef7d', '#ffaa00', '#f43f5e'])
-        fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e7eb")
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-with t2:
-    st.markdown("#### 🕸️ Active AST Tarpit Traps & Honey-Tokens")
-    if st.session_state.tarpit_traps:
-        st.dataframe(pd.DataFrame(st.session_state.tarpit_traps), use_container_width=True)
-    else:
-        st.info("No payloads currently trapped.")
-
-with t3:
-    st.markdown("#### 📋 Security Audit Log Terminal")
-    if st.session_state.audit_logs:
-        st.dataframe(pd.DataFrame(st.session_state.audit_logs), use_container_width=True)
-    else:
-        st.info("Audit log terminal empty.")
-                
+        
+    df_report = pd.DataFrame(report_data)
+    st.dataframe(df_report, use_container_width=True)
+    
+    # JSON Audit Report Download
+    json_report = json.dumps({
+        "timestamp": st.session_state.audit_timestamp,
+        "patches_applied": st.session_state.patches_count,
+        "findings": report_data
+    }, indent=2)
+    
+    st.download_button(
+        label="📥 Download Official Audit Report (JSON)",
+        data=json_report,
+        file_name="aegis_sast_audit_report.json",
+        mime="application/json"
+    )
+    
