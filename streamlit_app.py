@@ -1525,4 +1525,69 @@ def render_upgraded_code_workspace() -> Tuple[str, str]:
     m_col4.caption(f"⚙️ **Language:** {st.session_state.workspace_lang}")
 
     return current_code, st.session_state.workspace_lang
+    from aegis_precision_engine import PrecisionSecurityAnalyzer
+
+def execute_aegis_enterprise_engine(source_code: str, language: str = "Python") -> Dict[str, Any]:
+    start_time = time.time()
+    frameworks = FrameworkDetector.detect_framework(source_code, language)
+    
+    # Instantiate visitors including our new precision analyzer
+    auditor = EnterpriseAnalysisEngine()
+    precision_analyzer = PrecisionSecurityAnalyzer() # 👈 Fixes SQLi, MD5/SHA1, PRNG, and Debug Flag misses
+    file_analyzer = FileSecurityAnalyzer()
+    crypto_analyzer = CryptoSecurityAnalyzer()
+    web_analyzer = WebSecurityAnalyzer()
+    concurrency_analyzer = ConcurrencyAnalyzer()
+    
+    try:
+        tree = ast.parse(source_code)
+        
+        # Traverse tree through all analyzers
+        auditor.visit(tree)
+        precision_analyzer.visit(tree) # 👈 Runs AST precision checks
+        file_analyzer.visit(tree)
+        crypto_analyzer.visit(tree)
+        web_analyzer.visit(tree)
+        concurrency_analyzer.visit(tree)
+        
+        # Merge all findings deterministically
+        all_findings = (
+            auditor.findings + 
+            precision_analyzer.findings + 
+            file_analyzer.findings + 
+            crypto_analyzer.findings + 
+            web_analyzer.findings + 
+            concurrency_analyzer.findings
+        )
+        
+        status = "SUCCESS"
+        error = None
+    except SyntaxError as e:
+        status = "SYNTAX_ERROR"
+        error = f"Line {e.lineno}: {e.msg}"
+        all_findings = []
+    except Exception as e:
+        status = "PARSE_ERROR"
+        error = str(e)
+        all_findings = []
+
+    # Calculate AI Reasoning & Confidence scoring
+    evaluated_findings = []
+    for finding in all_findings:
+        is_tainted = any(var in finding.get("code_snippet", "") for var in auditor.tainted_vars)
+        evaluated_findings.append(
+            AIReasoningLayer.evaluate_finding(finding, is_tainted, frameworks[0])
+        )
+
+    duration_ms = (time.time() - start_time) * 1000
+
+    return {
+        "status": status,
+        "error": error,
+        "frameworks": frameworks,
+        "findings": evaluated_findings,
+        "stats": auditor.stats,
+        "latency_ms": round(duration_ms, 2),
+        "sarif_output": SARIFReportExporter.generate_sarif(evaluated_findings)
+    }
     
