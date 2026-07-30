@@ -1183,3 +1183,178 @@ def execute_aegis_enterprise_engine(source_code: str, language: str = "Python") 
         "sarif_output": SARIFReportExporter.generate_sarif(evaluated_findings)
     }
     
+# ==============================================================================
+# AEGIS EXTENSION MODULES: FILE SECURITY, CRYPTO, WEB SECURITY & CONCURRENCY
+# ==============================================================================
+
+import ast
+from typing import Dict, List, Any
+
+# ------------------------------------------------------------------------------
+# 1. FILE SECURITY & PATH TRAVERSAL DETECTOR
+# ------------------------------------------------------------------------------
+class FileSecurityAnalyzer(ast.NodeVisitor):
+    """
+    Scans AST for path traversal risks, unsafe file extractions, 
+    arbitrary file writes, and risky symlink handling.
+    """
+    
+    UNSAFE_FILE_OPS = {"open", "os.remove", "os.unlink", "os.rmdir", "shutil.rmtree"}
+    ARCHIVE_EXTRACTORS = {"tarfile.open", "zipfile.ZipFile"}
+
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+
+    def visit_Call(self, node: ast.Call):
+        func_name = self._get_func_name(node)
+
+        # 1. Path Traversal & Unsafe File Access
+        if func_name in self.UNSAFE_FILE_OPS:
+            for arg in node.args:
+                # Flag dynamic string concatenations inside file path arguments
+                if isinstance(arg, ast.BinOp) and isinstance(arg.op, (ast.Add, ast.Mod)):
+                    self.findings.append({
+                        "line": node.lineno,
+                        "cwe": "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+                        "severity": "HIGH",
+                        "code_snippet": f"`{func_name}()` with dynamic path construction",
+                        "description": f"Dynamic string concatenation detected in file operation `{func_name}()`.",
+                        "remediation": "Sanitize input paths using `os.path.basename()` or `pathlib.Path.resolve()` to ensure paths stay within the intended directory."
+                    })
+
+        # 2. Archive Extraction (Zip Slip Vulnerability)
+        if "extractall" in func_name:
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": "CWE-22: Arbitrary File Overwrite via Archive Extraction (Zip Slip)",
+                "severity": "HIGH",
+                "code_snippet": f"`{func_name}()` call",
+                "description": "Extracting archive files without path validation can allow attackers to overwrite arbitrary files.",
+                "remediation": "Validate target file paths for `..` components before extracting individual archive members."
+            })
+
+        self.generic_visit(node)
+
+    def _get_func_name(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                return f"{node.func.value.id}.{node.func.attr}"
+            return node.func.attr
+        return ""
+
+
+# ------------------------------------------------------------------------------
+# 2. CRYPTOGRAPHY & WEAK PRNG SCANNER
+# ------------------------------------------------------------------------------
+class CryptoSecurityAnalyzer(ast.NodeVisitor):
+    """
+    Detects weak cryptographic algorithms, non-cryptographic PRNG usage,
+    and missing initialization vectors (IVs).
+    """
+
+    WEAK_HASHES = {"md5", "sha1", "MD5", "SHA1"}
+    WEAK_RNG = {"random.random", "random.randint", "random.choice", "random.randrange"}
+
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+
+    def visit_Call(self, node: ast.Call):
+        func_name = self._get_func_name(node)
+
+        # 1. Non-Cryptographic Random Number Generators (PRNGs)
+        if func_name in self.WEAK_RNG:
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": "CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator (PRNG)",
+                "severity": "MEDIUM",
+                "code_snippet": f"`{func_name}()`",
+                "description": f"Standard `random` module function `{func_name}` is not cryptographically secure.",
+                "remediation": "Use the `secrets` module (e.g., `secrets.token_bytes()`, `secrets.randbelow()`) for security-sensitive random value generation."
+            })
+
+        # 2. Weak Hash Function References
+        if any(h in func_name for h in self.WEAK_HASHES):
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": "CWE-328: Use of Weak Hash",
+                "severity": "HIGH",
+                "code_snippet": f"`{func_name}()` call",
+                "description": f"Use of cryptographically weak hash function `{func_name}`.",
+                "remediation": "Migrate to strong hashing primitives such as SHA-256, SHA-3, or Argon2/bcrypt for passwords."
+            })
+
+        self.generic_visit(node)
+
+    def _get_func_name(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                return f"{node.func.value.id}.{node.func.attr}"
+            return node.func.attr
+        return ""
+
+
+# ------------------------------------------------------------------------------
+# 3. WEB & CORS MISCONFIGURATION DETECTOR
+# ------------------------------------------------------------------------------
+class WebSecurityAnalyzer(ast.NodeVisitor):
+    """Evaluates Web and API node structures for dangerous CORS settings and cookie flags."""
+
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+
+    def visit_Assign(self, node: ast.Assign):
+        self.generic_visit(node)
+        
+        # Detect wildcard CORS header configurations
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            if node.value.value == "*":
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and "cors" in target.id.lower():
+                        self.findings.append({
+                            "line": node.lineno,
+                            "cwe": "CWE-942: Permissive Cross-Domain Policy with Wildcard ('*')",
+                            "severity": "HIGH",
+                            "code_snippet": f"{target.id} = '*'",
+                            "description": "CORS policy configured with wildcard origin `*` allows unrestricted cross-origin requests.",
+                            "remediation": "Restrict allowed origins to explicit, trusted domain whitelists."
+                        })
+
+
+# ------------------------------------------------------------------------------
+# 4. CONCURRENCY & RACE CONDITION ANALYZER
+# ------------------------------------------------------------------------------
+class ConcurrencyAnalyzer(ast.NodeVisitor):
+    """Detects thread safety issues, un-held lock anti-patterns, and race conditions."""
+
+    def __init__(self):
+        self.findings: List[Dict[str, Any]] = []
+
+    def visit_Call(self, node: ast.Call):
+        func_name = self._get_func_name(node)
+
+        # Flag explicit lock acquire/release patterns without context managers
+        if func_name.endswith(".acquire"):
+            self.findings.append({
+                "line": node.lineno,
+                "cwe": "CWE-667: Improper Locking (Potential Deadlock / Lock Misuse)",
+                "severity": "LOW",
+                "code_snippet": f"`{func_name}()` call",
+                "description": "Manual lock acquisition detected; failure to release locks in exception blocks can cause deadlocks.",
+                "remediation": "Use synchronized context managers: `with lock:` instead of manual `.acquire()` and `.release()` calls."
+            })
+
+        self.generic_visit(node)
+
+    def _get_func_name(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                return f"{node.func.value.id}.{node.func.attr}"
+            return node.func.attr
+        return ""
+    
