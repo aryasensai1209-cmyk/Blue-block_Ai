@@ -1358,3 +1358,171 @@ class ConcurrencyAnalyzer(ast.NodeVisitor):
             return node.func.attr
         return ""
     
+# ==============================================================================
+# AEGIS-1 UPGRADED SOURCE CODE WORKSPACE TOOLBAR & COMPONENT
+# ==============================================================================
+
+import io
+import zipfile
+import streamlit as st
+from typing import Tuple, Dict
+
+# ------------------------------------------------------------------------------
+# 1. BUILT-IN VULNERABLE CODE TEMPLATES FOR TESTING
+# ------------------------------------------------------------------------------
+SECURITY_TEMPLATES: Dict[str, Dict[str, str]] = {
+    "Python: SQL & Command Injection": {
+        "language": "Python",
+        "code": """import os
+import sqlite3
+
+def handle_user_request(user_id, command_input):
+    # CWE-89: SQL Injection
+    conn = sqlite3.connect("app.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = '" + user_id + "'")
+    
+    # CWE-78: OS Command Injection
+    os.system("ping -c 1 " + command_input)
+    return cursor.fetchall()
+"""
+    },
+    "Python: Zip Slip & Path Traversal": {
+        "language": "Python",
+        "code": """import tarfile
+import os
+
+def extract_archive(uploaded_archive_path, extract_to):
+    # CWE-22: Path Traversal via Archive Extraction
+    with tarfile.open(uploaded_archive_path) as tar:
+        tar.extractall(path=extract_to)
+"""
+    },
+    "Python: Weak Crypto & Hardcoded Key": {
+        "language": "Python",
+        "code": """import hashlib
+import random
+
+JWT_SECRET_KEY = "3b7042a18eef9a8bc0112aef89a1" # High Entropy Secret
+
+def generate_user_token(user_id):
+    # CWE-338: Weak PRNG
+    nonce = random.randint(1000, 9999)
+    # CWE-328: Weak Hash (MD5)
+    return hashlib.md5(f"{user_id}:{nonce}".encode()).hexdigest()
+"""
+    },
+    "JavaScript: Eval Injection & CORS": {
+        "language": "JavaScript",
+        "code": """const express = require('express');
+const app = express();
+
+// CWE-942: Permissive Wildcard CORS
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    next();
+});
+
+app.get('/run', (req, res) => {
+    // CWE-95: Dynamic Eval Execution
+    let result = eval(req.query.user_code);
+    res.send(result);
+});
+"""
+    }
+}
+
+# ------------------------------------------------------------------------------
+# 2. WORKSPACE COMPONENT WITH TOOLBAR, FILE UPLOADER & METRICS
+# ------------------------------------------------------------------------------
+def render_upgraded_code_workspace() -> Tuple[str, str]:
+    """
+    Renders an interactive Source Code Workspace with a control toolbar,
+    template loader, file uploader/ZIP unpacker, and real-time statistics.
+    
+    Returns:
+        Tuple[str, str]: (source_code_string, selected_language)
+    """
+    st.markdown("### 💻 Source Code Workspace")
+
+    # Initialize workspace session state if not present
+    if "workspace_code" not in st.session_state:
+        st.session_state.workspace_code = SECURITY_TEMPLATES["Python: SQL & Command Injection"]["code"]
+    if "workspace_lang" not in st.session_state:
+        st.session_state.workspace_lang = "Python"
+
+    # --- WORKSPACE TOOLBAR ---
+    tb_col1, tb_col2, tb_col3 = st.columns([1.2, 1.8, 1])
+
+    with tb_col1:
+        selected_language = st.selectbox(
+            "🌐 Target Language",
+            ["Python", "JavaScript", "Java", "PHP", "Go", "C#"],
+            index=["Python", "JavaScript", "Java", "PHP", "Go", "C#"].index(st.session_state.workspace_lang),
+            key="lang_select"
+        )
+        st.session_state.workspace_lang = selected_language
+
+    with tb_col2:
+        template_choice = st.selectbox(
+            "🧪 Load Test Vulnerability Template",
+            ["-- Select Vulnerability Template --"] + list(SECURITY_TEMPLATES.keys()),
+            key="template_select"
+        )
+        if template_choice != "-- Select Vulnerability Template --":
+            st.session_state.workspace_code = SECURITY_TEMPLATES[template_choice]["code"]
+            st.session_state.workspace_lang = SECURITY_TEMPLATES[template_choice]["language"]
+            st.rerun()
+
+    with tb_col3:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("🧹 Clear Workspace", use_container_width=True):
+            st.session_state.workspace_code = ""
+            st.rerun()
+
+    # --- FILE UPLOAD / ZIP DROPZONE EXPANDER ---
+    with st.expander("📁 Drag & Drop File / Unpack ZIP Archive", expanded=False):
+        uploaded_file = st.file_uploader(
+            "Upload source file (.py, .js, .java, .php, .go, .cs, .zip)",
+            type=["py", "js", "java", "php", "go", "cs", "zip"]
+        )
+
+        if uploaded_file is not None:
+            if uploaded_file.name.endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(uploaded_file, "r") as z:
+                        # Extract first readable Python or code file from the ZIP
+                        code_files = [f for f in z.namelist() if f.endswith(('.py', '.js', '.java'))]
+                        if code_files:
+                            st.session_state.workspace_code = z.read(code_files[0]).decode("utf-8", errors="ignore")
+                            st.success(f"Successfully extracted `{code_files[0]}` from ZIP archive!")
+                        else:
+                            st.warning("No compatible source code files found inside ZIP archive.")
+                except Exception as e:
+                    st.error(f"Failed to extract ZIP archive: {str(e)}")
+            else:
+                st.session_state.workspace_code = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+                st.success(f"Loaded file `{uploaded_file.name}` into editor workspace.")
+
+    # --- CODE TEXT EDITOR ---
+    current_code = st.text_area(
+        "Source Code Buffer",
+        value=st.session_state.workspace_code,
+        height=320,
+        key="code_editor_textarea"
+    )
+    st.session_state.workspace_code = current_code
+
+    # --- REAL-TIME EDITOR METRICS HEADER ---
+    line_count = len(current_code.splitlines()) if current_code else 0
+    char_count = len(current_code)
+    est_tokens = len(current_code.split())
+
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    m_col1.caption(f"📏 **Lines:** {line_count}")
+    m_col2.caption(f"🔤 **Characters:** {char_count}")
+    m_col3.caption(f"🧩 **Token Density:** ~{est_tokens}")
+    m_col4.caption(f"⚙️ **Language:** {st.session_state.workspace_lang}")
+
+    return current_code, st.session_state.workspace_lang
+    
