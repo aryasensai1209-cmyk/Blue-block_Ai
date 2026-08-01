@@ -1581,7 +1581,26 @@ def dotted_name(node: Optional[ast.AST], aliases: Dict[str, str]) -> Optional[st
 
 
 def matches_any(name: Optional[str], patterns: Set[str]) -> bool:
-    """Supports exact dotted matches and '*.suffix' wildcard (any-receiver) matches."""
+    """Supports exact dotted matches, '*.suffix' wildcard (any-receiver) matches,
+    AND suffix matches — but ONLY for patterns that already contain a dot.
+
+    The suffix check exists because `from flask import request` causes our own
+    import-alias resolver to (correctly, in general) rewrite the bare name
+    'request' to its fully-qualified origin 'flask.request' — which means a
+    call like `request.args.get(...)` resolves to 'flask.request.args.get'
+    rather than 'request.args.get'. Without this suffix fallback, every
+    SOURCE_PATTERNS/sink/sanitizer entry written in the common bare form
+    (matching how virtually all real Flask/Django/etc. code is actually
+    written) would silently never match once the import is resolved to its
+    fully-qualified form. This was caught by testing against a real Flask
+    app with a standard `from flask import request` import — the engine's
+    own benchmark had never exercised that import style and so missed it.
+
+    The dot-only restriction matters: applying suffix-matching to BARE
+    single-token patterns like 'eval'/'exec'/'input' would wrongly match
+    unrelated method calls such as `some_object.eval(...)` against the
+    builtin eval() sink. Only qualified patterns (which already encode a
+    specific receiver/module) get the more permissive suffix check."""
     if not name:
         return False
     for pattern in patterns:
@@ -1589,8 +1608,12 @@ def matches_any(name: Optional[str], patterns: Set[str]) -> bool:
             suffix = pattern[2:]
             if name == suffix or name.endswith("." + suffix):
                 return True
-        elif pattern == name:
-            return True
+        elif "." in pattern:
+            if name == pattern or name.endswith("." + pattern):
+                return True
+        else:
+            if name == pattern:
+                return True
     return False
 
 
@@ -2062,6 +2085,19 @@ class TaintWalker:
             self._walk_body(stmt.finalbody, taint_state, path, return_taint, func_name)
 
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            # BUGFIX: the context manager expression itself (e.g. the open(...)
+            # call in `with open(path) as f:`) was previously never evaluated —
+            # only stmt.body was walked. That meant sink checks (like path
+            # traversal via open()) silently never fired for the single most
+            # idiomatic way Python code opens files. Found via testing against
+            # a real-world file, not caught by the original benchmark (which
+            # never used a `with` block for its open() case).
+            for item in stmt.items:
+                self._eval_expr(item.context_expr, taint_state, path, func_name)
+                if item.optional_vars is not None and isinstance(item.optional_vars, ast.Name):
+                    ctx_taint = self._eval_expr(item.context_expr, taint_state, path, func_name)
+                    if ctx_taint:
+                        taint_state[item.optional_vars.id] = set(ctx_taint)
             self._walk_body(stmt.body, taint_state, path, return_taint, func_name)
 
         elif isinstance(stmt, ast.Return):
