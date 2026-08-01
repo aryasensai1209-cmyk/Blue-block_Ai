@@ -19,14 +19,19 @@ attack payloads, or perform unauthorized scanning of third-party systems.
 """
 
 import ast
+import base64 as _base64
 import concurrent.futures
 import difflib
 import hashlib
 import io
 import json
+import math
+import os
 import queue as _queue_module
 import random
 import re
+import socket
+import ssl
 import threading
 import time
 from dataclasses import dataclass, field
@@ -3195,8 +3200,6 @@ class LiveFileWatcher:
 # ==============================================================================
 # ==============================================================================
 
-import math
-
 @dataclass
 class SecretFinding:
     file_name: str
@@ -3370,8 +3373,6 @@ class EntropySecretsScanner:
 #  (no secret needed). Flags algorithm confusion, missing claims, weak algs.
 # ==============================================================================
 # ==============================================================================
-
-import base64 as _base64
 
 @dataclass
 class JWTIssue:
@@ -3551,9 +3552,6 @@ class JWTAnalyzer:
 #  Read-only — makes a standard TLS handshake and inspects the certificate.
 # ==============================================================================
 # ==============================================================================
-
-import ssl
-import socket
 
 @dataclass
 class SSLFinding:
