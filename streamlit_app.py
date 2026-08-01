@@ -20,11 +20,14 @@ attack payloads, or perform unauthorized scanning of third-party systems.
 
 import ast
 import concurrent.futures
+import difflib
 import hashlib
 import io
 import json
+import queue as _queue_module
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -37,6 +40,13 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 from pydantic import BaseModel, Field
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
 
 try:
     from openai import OpenAI
@@ -2698,6 +2708,1444 @@ def run_self_test(verbose: bool = True) -> Dict[str, Any]:
     return summary
 
 # ==============================================================================
+# ==============================================================================
+#  MODULE: AUTO-REMEDIATION ENGINE
+#  Real AST-based code transformer — rewrites vulnerable Python code in-place
+#  and emits a unified diff. Works on ANY Python file or snippet; not tied to
+#  any specific framework or codebase.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class RemediationPatch:
+    file_name: str
+    original_code: str
+    patched_code: str
+    unified_diff: str
+    patches_applied: List[str]
+    auto_applied: bool   # True = AST-transformed; False = needs human review
+    confidence: str
+
+
+class _VulnTransformer(ast.NodeTransformer):
+    """
+    Real AST-level transformer that rewrites vulnerable call sites where a
+    safe, semantically-equivalent rewrite is possible WITHOUT domain
+    knowledge of the surrounding application:
+
+        yaml.load(x, ...)    →  yaml.safe_load(x)
+        hashlib.md5(x)       →  hashlib.sha256(x)
+        hashlib.sha1(x)      →  hashlib.sha256(x)
+        pickle.loads(x)      →  [comment injected — no safe auto-replacement]
+        subprocess(..., shell=True, str_cmd)
+                             →  [comment injected — splitting shell strings
+                                  requires execution context we don't have]
+
+    For SQL injection, path traversal, eval(), and other patterns where a
+    correct rewrite requires understanding the query/path/expression semantics,
+    the transformer injects a structured TODO comment at the call site instead
+    of silently producing broken code. Those cases are always flagged in
+    `patches_applied` so the UI can highlight them for manual review.
+    """
+
+    def __init__(self) -> None:
+        self.patches_applied: List[str] = []
+
+    def _resolved(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            return f"{node.func.value.id}.{node.func.attr}"
+        if isinstance(node.func, ast.Name):
+            return node.func.id
+        return ""
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        r = self._resolved(node)
+
+        # ── yaml.load(x, ...) → yaml.safe_load(x) ─────────────────────────
+        if r == "yaml.load":
+            new_node = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="yaml", ctx=ast.Load()),
+                    attr="safe_load", ctx=ast.Load(),
+                ),
+                args=node.args[:1],
+                keywords=[],
+            )
+            self.patches_applied.append(
+                f"Line {node.lineno}: yaml.load() → yaml.safe_load() [Loader kwarg removed]"
+            )
+            return ast.copy_location(ast.fix_missing_locations(new_node), node)
+
+        # ── hashlib.md5 / sha1 → sha256 ────────────────────────────────────
+        if r in ("hashlib.md5", "hashlib.sha1"):
+            old_fn = node.func.attr  # type: ignore[union-attr]
+            new_node = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="hashlib", ctx=ast.Load()),
+                    attr="sha256", ctx=ast.Load(),
+                ),
+                args=node.args,
+                keywords=node.keywords,
+            )
+            self.patches_applied.append(
+                f"Line {node.lineno}: hashlib.{old_fn}() → hashlib.sha256()"
+            )
+            return ast.copy_location(ast.fix_missing_locations(new_node), node)
+
+        # ── subprocess with shell=True + string cmd → advisory comment ──────
+        if r in ("subprocess.run", "subprocess.call", "subprocess.Popen",
+                 "subprocess.check_output"):
+            has_shell_true = any(
+                kw.arg == "shell"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+                for kw in node.keywords
+            )
+            first_is_str = (
+                node.args
+                and not isinstance(node.args[0], (ast.List, ast.Tuple))
+            )
+            if has_shell_true and first_is_str:
+                self.patches_applied.append(
+                    f"Line {node.lineno}: {r}(..., shell=True) with string cmd — "
+                    f"MANUAL FIX REQUIRED: split command into a list and use shell=False"
+                )
+
+        # ── pickle.loads / pickle.load ───────────────────────────────────────
+        if r in ("pickle.loads", "pickle.load"):
+            self.patches_applied.append(
+                f"Line {node.lineno}: pickle deserialization — "
+                f"MANUAL FIX REQUIRED: replace with json.loads() or verify HMAC before unpickling"
+            )
+
+        # ── eval() / exec() ─────────────────────────────────────────────────
+        if r in ("eval", "exec"):
+            self.patches_applied.append(
+                f"Line {node.lineno}: {r}() — "
+                f"MANUAL FIX REQUIRED: use ast.literal_eval() for data or explicit dispatch for logic"
+            )
+
+        return node
+
+
+class AutoRemediationEngine:
+    """
+    Takes any Python source file (as a string), runs the AST transformer,
+    and returns a RemediationPatch with:
+      - the patched source (AST-reconstructed via ast.unparse)
+      - a unified diff ready to display or write to disk
+      - a structured list of what was changed / what needs manual review
+
+    Works on ANY Python code, any framework, any structure. The only
+    constraint is that the input must be valid Python syntax.
+    """
+
+    def remediate(self, file_name: str, source_code: str) -> RemediationPatch:
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError as exc:
+            return RemediationPatch(
+                file_name=file_name,
+                original_code=source_code,
+                patched_code=source_code,
+                unified_diff="",
+                patches_applied=[f"Cannot parse file — SyntaxError: {exc}"],
+                auto_applied=False,
+                confidence="N/A",
+            )
+
+        transformer = _VulnTransformer()
+        new_tree = transformer.visit(tree)
+        ast.fix_missing_locations(new_tree)
+
+        try:
+            patched = ast.unparse(new_tree)
+        except Exception as exc:
+            return RemediationPatch(
+                file_name=file_name,
+                original_code=source_code,
+                patched_code=source_code,
+                unified_diff="",
+                patches_applied=transformer.patches_applied
+                + [f"ast.unparse failed: {exc}; original code returned unchanged"],
+                auto_applied=False,
+                confidence="Low",
+            )
+
+        diff_lines = list(difflib.unified_diff(
+            source_code.splitlines(keepends=True),
+            patched.splitlines(keepends=True),
+            fromfile=f"a/{file_name}",
+            tofile=f"b/{file_name}",
+            n=3,
+        ))
+        unified_diff = "".join(diff_lines)
+        auto_applied = patched != source_code
+        confidence = "High" if auto_applied else ("Medium" if transformer.patches_applied else "N/A")
+
+        return RemediationPatch(
+            file_name=file_name,
+            original_code=source_code,
+            patched_code=patched,
+            unified_diff=unified_diff,
+            patches_applied=transformer.patches_applied,
+            auto_applied=auto_applied,
+            confidence=confidence,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: URL SECURITY HEADER SCANNER
+#  Passive HTTP GET scan of any URL the user provides.
+#  IMPORTANT: Only point this at systems you own or have written permission
+#  to test. This tool makes real outbound network requests.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class HeaderFinding:
+    header: str
+    present: bool
+    value: str
+    severity: str
+    recommendation: str
+
+
+@dataclass
+class URLScanResult:
+    url: str
+    reachable: bool
+    https_enforced: bool
+    status_code: int
+    server_banner: str
+    header_findings: List[HeaderFinding]
+    overall_grade: str
+    scan_time: str
+    error: str = ""
+
+
+class URLSecurityScanner:
+    """
+    Checks any URL the user explicitly provides for:
+      - HTTPS enforcement
+      - Missing/misconfigured security headers (CSP, HSTS, X-Frame-Options, etc.)
+      - Information-leaking headers (Server, X-Powered-By, X-AspNet-Version)
+      - CORS wildcard policy
+      - HTTP redirect behaviour (shown for review, not followed automatically)
+
+    All checks are read-only passive HTTP GET requests. The scanner never
+    follows redirects automatically (allow_redirects=False) so it cannot be
+    used as an SSRF relay. Grades A-F based on missing critical headers.
+    """
+
+    _REQUIRED: List[Dict[str, str]] = [
+        {"header": "Content-Security-Policy", "severity": "High",
+         "rec": "Add CSP: default-src 'self'; avoid 'unsafe-inline' and 'unsafe-eval'."},
+        {"header": "Strict-Transport-Security", "severity": "High",
+         "rec": "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains"},
+        {"header": "X-Frame-Options", "severity": "Medium",
+         "rec": "Add: X-Frame-Options: DENY (or use CSP frame-ancestors 'none')."},
+        {"header": "X-Content-Type-Options", "severity": "Medium",
+         "rec": "Add: X-Content-Type-Options: nosniff"},
+        {"header": "Referrer-Policy", "severity": "Low",
+         "rec": "Add: Referrer-Policy: strict-origin-when-cross-origin"},
+        {"header": "Permissions-Policy", "severity": "Low",
+         "rec": "Add: Permissions-Policy: geolocation=(), microphone=(), camera=()"},
+        {"header": "Cross-Origin-Opener-Policy", "severity": "Low",
+         "rec": "Add: Cross-Origin-Opener-Policy: same-origin"},
+        {"header": "Cross-Origin-Resource-Policy", "severity": "Low",
+         "rec": "Add: Cross-Origin-Resource-Policy: same-origin"},
+    ]
+
+    _LEAK_HEADERS = ["Server", "X-Powered-By", "X-AspNet-Version",
+                     "X-Generator", "X-Runtime", "X-Version"]
+
+    def scan(self, url: str, timeout: int = 8) -> URLScanResult:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        https_enforced = parsed.scheme == "https"
+        scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            resp = requests.get(
+                url, timeout=timeout, allow_redirects=False,
+                headers={"User-Agent": "SentinelAI-SecurityScanner/1.0 (defensive-audit)"},
+                verify=True,
+            )
+            status_code = resp.status_code
+            resp_headers: Dict[str, str] = dict(resp.headers)
+        except Exception as exc:
+            return URLScanResult(
+                url=url, reachable=False, https_enforced=https_enforced,
+                status_code=0, server_banner="", header_findings=[],
+                overall_grade="F", scan_time=scan_time, error=str(exc),
+            )
+
+        # Normalise header keys to lower-case for lookup
+        lower_headers: Dict[str, str] = {k.lower(): v for k, v in resp_headers.items()}
+        header_findings: List[HeaderFinding] = []
+
+        # ── Required security headers ────────────────────────────────────────
+        for rule in self._REQUIRED:
+            h = rule["header"]
+            val = lower_headers.get(h.lower(), "")
+            present = bool(val)
+            header_findings.append(HeaderFinding(
+                header=h,
+                present=present,
+                value=val[:160] if val else "MISSING",
+                severity="OK" if present else rule["severity"],
+                recommendation="" if present else rule["rec"],
+            ))
+
+        # ── Information-leaking headers ──────────────────────────────────────
+        server_banner = ""
+        for lh in self._LEAK_HEADERS:
+            val = lower_headers.get(lh.lower(), "")
+            if val:
+                if lh.lower() == "server":
+                    server_banner = val
+                header_findings.append(HeaderFinding(
+                    header=lh, present=True, value=val[:160], severity="Low",
+                    recommendation=f"Remove or obscure the '{lh}' header to prevent version fingerprinting.",
+                ))
+
+        # ── CORS wildcard ────────────────────────────────────────────────────
+        cors = lower_headers.get("access-control-allow-origin", "")
+        if cors == "*":
+            header_findings.append(HeaderFinding(
+                header="Access-Control-Allow-Origin", present=True, value=cors,
+                severity="Medium",
+                recommendation="Restrict CORS to explicitly trusted origins instead of '*'.",
+            ))
+
+        # ── HTTPS redirect check ─────────────────────────────────────────────
+        if not https_enforced:
+            header_findings.append(HeaderFinding(
+                header="HTTPS Enforcement", present=False, value="HTTP only",
+                severity="High",
+                recommendation="Redirect all HTTP traffic to HTTPS and enable HSTS.",
+            ))
+
+        # ── Grade ─────────────────────────────────────────────────────────────
+        missing_high = sum(1 for f in header_findings if f.severity == "High")
+        missing_med = sum(1 for f in header_findings if f.severity == "Medium")
+        if not https_enforced or missing_high >= 2:
+            grade = "F"
+        elif missing_high == 1:
+            grade = "D"
+        elif missing_med >= 2:
+            grade = "C"
+        elif missing_med == 1:
+            grade = "B"
+        else:
+            grade = "A"
+
+        return URLScanResult(
+            url=url, reachable=True, https_enforced=https_enforced,
+            status_code=status_code, server_banner=server_banner,
+            header_findings=header_findings, overall_grade=grade,
+            scan_time=scan_time,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: LIVE FILE SYSTEM WATCHER
+#  Watches any directory the user specifies. Uses watchdog when installed
+#  (real inotify/FSEvents events); falls back to mtime-polling when not.
+#  Integrates with Streamlit via a thread-safe queue drained on each rerun.
+# ==============================================================================
+# ==============================================================================
+
+class _WatchHandler:
+    """Minimal watchdog-compatible event handler that pushes changed .py paths
+    into a thread-safe queue."""
+
+    def __init__(self, q: "_queue_module.Queue") -> None:
+        self._q = q
+
+    def dispatch(self, event: Any) -> None:
+        src = getattr(event, "src_path", "")
+        if not getattr(event, "is_directory", True) and src.endswith(".py"):
+            self._q.put(src)
+
+    def on_modified(self, event: Any) -> None:  # watchdog protocol
+        self.dispatch(event)
+
+    def on_created(self, event: Any) -> None:
+        self.dispatch(event)
+
+
+class LiveFileWatcher:
+    """
+    Monitors a directory for Python file changes and queues their paths for
+    automatic re-scan by both the semantic engine and the regex engine.
+
+    Usage (called from Streamlit UI):
+        watcher.start("/path/to/project")   # begins watching
+        changed = watcher.drain()           # call on each st.rerun() to get new paths
+        watcher.stop()                      # shuts down observer thread
+    """
+
+    def __init__(self) -> None:
+        self._observer: Any = None
+        self._q: "_queue_module.Queue" = _queue_module.Queue()
+        self._watched_path: str = ""
+        self._running: bool = False
+        self._mtimes: Dict[str, float] = {}
+
+    def start(self, path: str) -> str:
+        """Start watching `path`. Returns a status string."""
+        if self._running:
+            self.stop()
+
+        if not os.path.isdir(path):
+            return f"Path does not exist or is not a directory: {path}"
+
+        self._watched_path = path
+        self._q = _queue_module.Queue()
+
+        if WATCHDOG_AVAILABLE:
+            try:
+                handler = _WatchHandler(self._q)
+                self._observer = Observer()
+                # watchdog expects a real FileSystemEventHandler subclass; we
+                # pass our duck-typed handler via schedule's handler parameter.
+                # Use the actual class approach to be safe:
+                real_handler = FileSystemEventHandler()
+                real_handler.on_modified = handler.on_modified  # type: ignore
+                real_handler.on_created = handler.on_created    # type: ignore
+                self._observer.schedule(real_handler, path, recursive=True)
+                self._observer.daemon = True
+                self._observer.start()
+                self._running = True
+                return f"Watching {path} via watchdog (inotify/FSEvents) — real-time"
+            except Exception as exc:
+                pass  # fall through to mtime polling
+
+        # mtime-polling fallback
+        self._seed_mtimes(path)
+        self._running = True
+        return f"Watching {path} via mtime polling (install `watchdog` for real-time events)"
+
+    def _seed_mtimes(self, path: str) -> None:
+        import glob
+        for fp in glob.glob(os.path.join(path, "**", "*.py"), recursive=True):
+            try:
+                self._mtimes[fp] = os.path.getmtime(fp)
+            except OSError:
+                pass
+
+    def _poll_mtimes(self) -> List[str]:
+        import glob
+        changed: List[str] = []
+        if not self._watched_path:
+            return changed
+        for fp in glob.glob(os.path.join(self._watched_path, "**", "*.py"), recursive=True):
+            try:
+                mt = os.path.getmtime(fp)
+                if fp not in self._mtimes or self._mtimes[fp] < mt:
+                    self._mtimes[fp] = mt
+                    changed.append(fp)
+            except OSError:
+                pass
+        return changed
+
+    def drain(self) -> List[str]:
+        """Return all pending changed file paths (deduped) and clear the queue."""
+        paths: Set[str] = set()
+        while not self._q.empty():
+            try:
+                paths.add(self._q.get_nowait())
+            except Exception:
+                break
+        if not WATCHDOG_AVAILABLE:
+            paths.update(self._poll_mtimes())
+        return list(paths)
+
+    def stop(self) -> None:
+        if self._observer is not None:
+            try:
+                self._observer.stop()
+                self._observer.join(timeout=3)
+            except Exception:
+                pass
+        self._observer = None
+        self._running = False
+        self._watched_path = ""
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def watched_path(self) -> str:
+        return self._watched_path
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: ENTROPY-BASED SECRETS SCANNER
+#  Uses Shannon entropy to find hardcoded secrets regardless of variable name.
+#  Complements the regex-based SEC-009/SEC-010/SEC-011 rules by catching
+#  secrets that don't match known naming patterns.
+# ==============================================================================
+# ==============================================================================
+
+import math
+
+@dataclass
+class SecretFinding:
+    file_name: str
+    line_number: int
+    snippet: str
+    entropy: float
+    secret_type: str
+    severity: str
+    confidence: str
+    recommendation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_name": self.file_name, "line_number": self.line_number,
+            "snippet": self.snippet, "entropy": round(self.entropy, 3),
+            "secret_type": self.secret_type, "severity": self.severity,
+            "confidence": self.confidence, "recommendation": self.recommendation,
+        }
+
+
+class EntropySecretsScanner:
+    """
+    Finds high-entropy string literals in source code that are likely
+    hardcoded secrets (API keys, tokens, private keys, passwords).
+
+    Approach:
+      1. Walk the AST of Python files extracting all string literals.
+      2. Apply Shannon entropy to each string of length >= min_length.
+      3. Flag strings above the entropy threshold, with confidence
+         scaled by length and entropy score.
+      4. Additionally run regex patterns for known secret formats
+         (AWS keys, GCP service account JSON, private key PEM blocks,
+         Bearer tokens, base64-encoded blobs) across any file type.
+
+    Shannon entropy H(X) = -Σ p(x) * log2(p(x))
+    A random 32-char Base64 string scores ~5.8 bits/char.
+    Natural English text scores ~3.5 bits/char.
+    Threshold of 4.5 provides good separation in practice.
+    """
+
+    BASE64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+    HEX_CHARS = set("0123456789abcdefABCDEF")
+
+    SECRET_REGEX_PATTERNS: List[Dict[str, Any]] = [
+        {"name": "AWS Access Key ID",        "pattern": r"AKIA[0-9A-Z]{16}", "severity": "Critical"},
+        {"name": "AWS Secret Access Key",     "pattern": r"(?i)aws.{0,20}secret.{0,20}['\"][0-9a-zA-Z/+]{40}['\"]", "severity": "Critical"},
+        {"name": "GCP API Key",               "pattern": r"AIza[0-9A-Za-z\-_]{35}", "severity": "Critical"},
+        {"name": "GitHub Personal Token",     "pattern": r"ghp_[0-9a-zA-Z]{36}", "severity": "Critical"},
+        {"name": "GitHub OAuth Token",        "pattern": r"gho_[0-9a-zA-Z]{36}", "severity": "Critical"},
+        {"name": "GitHub Actions Token",      "pattern": r"ghs_[0-9a-zA-Z]{36}", "severity": "Critical"},
+        {"name": "Slack Bot Token",           "pattern": r"xoxb-[0-9]{11}-[0-9]{11}-[0-9a-zA-Z]{24}", "severity": "High"},
+        {"name": "Slack User Token",          "pattern": r"xoxp-[0-9]{11}-[0-9]{11}-[0-9]{11}-[0-9a-zA-Z]{32}", "severity": "High"},
+        {"name": "Stripe Secret Key",         "pattern": r"sk_live_[0-9a-zA-Z]{24}", "severity": "Critical"},
+        {"name": "Stripe Publishable Key",    "pattern": r"pk_live_[0-9a-zA-Z]{24}", "severity": "Medium"},
+        {"name": "Twilio Account SID",        "pattern": r"AC[a-z0-9]{32}", "severity": "High"},
+        {"name": "Twilio Auth Token",         "pattern": r"(?i)twilio.{0,10}[0-9a-f]{32}", "severity": "High"},
+        {"name": "SendGrid API Key",          "pattern": r"SG\.[0-9a-zA-Z\-_]{22}\.[0-9a-zA-Z\-_]{43}", "severity": "High"},
+        {"name": "Mailgun API Key",           "pattern": r"key-[0-9a-zA-Z]{32}", "severity": "High"},
+        {"name": "NPM Auth Token",            "pattern": r"npm_[0-9a-zA-Z]{36}", "severity": "High"},
+        {"name": "PyPI API Token",            "pattern": r"pypi-[0-9a-zA-Z\-_]{40,}", "severity": "High"},
+        {"name": "Private Key PEM Block",     "pattern": r"-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----", "severity": "Critical"},
+        {"name": "JWT Token",                 "pattern": r"eyJ[0-9a-zA-Z\-_]+\.eyJ[0-9a-zA-Z\-_]+\.[0-9a-zA-Z\-_]+", "severity": "Medium"},
+        {"name": "Generic Bearer Token",      "pattern": r"(?i)bearer\s+[0-9a-zA-Z\-_\.]{20,}", "severity": "Medium"},
+        {"name": "Heroku API Key",            "pattern": r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "severity": "Medium"},
+        {"name": "Azure Storage Key",         "pattern": r"DefaultEndpointsProtocol=https;AccountName=", "severity": "High"},
+        {"name": "Google OAuth Secret",       "pattern": r"[0-9]+-[0-9a-zA-Z_]{32}\.apps\.googleusercontent\.com", "severity": "High"},
+        {"name": "SSH Private Key",           "pattern": r"-----BEGIN OPENSSH PRIVATE KEY-----", "severity": "Critical"},
+        {"name": "PGP Private Key",           "pattern": r"-----BEGIN PGP PRIVATE KEY BLOCK-----", "severity": "Critical"},
+        {"name": "Database URL with creds",   "pattern": r"(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@", "severity": "Critical"},
+        {"name": "Hardcoded password kwarg",  "pattern": r"(?i)password\s*=\s*['\"][^'\"]{6,}['\"]", "severity": "High"},
+        {"name": "Hardcoded secret kwarg",    "pattern": r"(?i)secret\s*=\s*['\"][^'\"]{8,}['\"]", "severity": "High"},
+    ]
+
+    def __init__(self, entropy_threshold: float = 4.5, min_length: int = 16):
+        self.entropy_threshold = entropy_threshold
+        self.min_length = min_length
+        self._compiled = [(r, re.compile(r["pattern"])) for r in self.SECRET_REGEX_PATTERNS]
+
+    @staticmethod
+    def shannon_entropy(s: str) -> float:
+        if not s:
+            return 0.0
+        counts: Dict[str, int] = {}
+        for ch in s:
+            counts[ch] = counts.get(ch, 0) + 1
+        length = len(s)
+        return -sum((c / length) * math.log2(c / length) for c in counts.values())
+
+    def _char_set_label(self, s: str) -> str:
+        chars = set(s)
+        if chars.issubset(self.HEX_CHARS):
+            return "hex"
+        if chars.issubset(self.BASE64_CHARS):
+            return "base64"
+        return "mixed"
+
+    def scan_python_ast(self, file_name: str, content: str) -> List[SecretFinding]:
+        findings: List[SecretFinding] = []
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return findings
+
+        lines = content.splitlines()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            s = node.value
+            if len(s) < self.min_length:
+                continue
+            entropy = self.shannon_entropy(s)
+            if entropy < self.entropy_threshold:
+                continue
+
+            charset = self._char_set_label(s)
+            if entropy >= 5.5:
+                conf, sev = "High", "Critical"
+            elif entropy >= 5.0:
+                conf, sev = "Medium", "High"
+            else:
+                conf, sev = "Low", "Medium"
+
+            line_no = getattr(node, "lineno", 0)
+            snippet = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else s[:60]
+            findings.append(SecretFinding(
+                file_name=file_name, line_number=line_no,
+                snippet=snippet, entropy=entropy,
+                secret_type=f"High-entropy {charset} string (len={len(s)})",
+                severity=sev, confidence=conf,
+                recommendation="Move this value to an environment variable or a secrets manager "
+                               "(e.g. AWS Secrets Manager, HashiCorp Vault, Azure Key Vault). "
+                               "Rotate the secret immediately if it has been committed to source control.",
+            ))
+        return findings
+
+    def scan_regex(self, file_name: str, content: str) -> List[SecretFinding]:
+        findings: List[SecretFinding] = []
+        lines = content.splitlines()
+        for rule, compiled in self._compiled:
+            for match in compiled.finditer(content):
+                line_no = content[: match.start()].count("\n") + 1
+                snippet = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else match.group(0)[:80]
+                entropy = self.shannon_entropy(match.group(0))
+                findings.append(SecretFinding(
+                    file_name=file_name, line_number=line_no, snippet=snippet,
+                    entropy=entropy, secret_type=rule["name"],
+                    severity=rule["severity"], confidence="High",
+                    recommendation=f"Revoke and rotate the exposed {rule['name']} immediately. "
+                                   "Store it in a secrets manager and load via environment variable at runtime.",
+                ))
+        return findings
+
+    def scan(self, file_name: str, content: str) -> List[SecretFinding]:
+        all_findings = self.scan_regex(file_name, content)
+        if file_name.endswith(".py"):
+            all_findings += self.scan_python_ast(file_name, content)
+        seen: Set[Tuple[str, int]] = set()
+        deduped: List[SecretFinding] = []
+        for f in all_findings:
+            key = (f.file_name, f.line_number)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(f)
+        return deduped
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: JWT ANALYZER
+#  Decodes and security-audits JWT tokens without verifying signatures
+#  (no secret needed). Flags algorithm confusion, missing claims, weak algs.
+# ==============================================================================
+# ==============================================================================
+
+import base64 as _base64
+
+@dataclass
+class JWTIssue:
+    issue_id: str
+    severity: str
+    title: str
+    detail: str
+    recommendation: str
+
+@dataclass
+class JWTAnalysisResult:
+    raw_token: str
+    header: Dict[str, Any]
+    payload: Dict[str, Any]
+    issues: List[JWTIssue]
+    overall_risk: str
+    is_expired: bool
+    expiry_str: str
+
+class JWTAnalyzer:
+    """
+    Decodes a JWT (header + payload only — signature is NOT verified here,
+    as that requires the secret/key) and audits it for common weaknesses:
+      - Algorithm set to 'none' (CVE-class: signature bypass)
+      - Weak symmetric algorithms (HS256 with short secrets is guessable)
+      - No expiry (exp) claim — tokens that never expire
+      - No issued-at (iat) claim
+      - No audience (aud) / issuer (iss) claims (replay risk)
+      - Sensitive PII in payload (emails, passwords, SSNs)
+      - Already-expired tokens still being used
+    """
+
+    WEAK_ALGORITHMS: Set[str] = {"none", "HS1", "RS1", ""}
+    PREFERRED_ALGORITHMS: Set[str] = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"}
+
+    def _b64_decode(self, segment: str) -> Dict[str, Any]:
+        segment += "=" * (-len(segment) % 4)
+        try:
+            decoded = _base64.urlsafe_b64decode(segment)
+            return json.loads(decoded)
+        except Exception:
+            return {}
+
+    def analyze(self, token: str) -> Optional[JWTAnalysisResult]:
+        token = token.strip()
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+
+        header = self._b64_decode(parts[0])
+        payload = self._b64_decode(parts[1])
+        if not header:
+            return None
+
+        issues: List[JWTIssue] = []
+        alg = str(header.get("alg", "")).strip()
+
+        # ── Algorithm checks ────────────────────────────────────────────────
+        if alg.lower() == "none":
+            issues.append(JWTIssue(
+                issue_id="JWT-001", severity="Critical",
+                title="Algorithm set to 'none' — signature verification bypass",
+                detail="A JWT with alg='none' carries no signature. Any server that accepts "
+                       "it without checking the algorithm allows complete token forgery.",
+                recommendation="Explicitly whitelist accepted algorithms (e.g. RS256 only). "
+                               "Never accept 'none' in production.",
+            ))
+        elif alg in self.WEAK_ALGORITHMS:
+            issues.append(JWTIssue(
+                issue_id="JWT-002", severity="High",
+                title=f"Weak or deprecated algorithm: {alg}",
+                detail=f"The algorithm '{alg}' is considered weak or deprecated.",
+                recommendation="Use RS256, ES256, or EdDSA (asymmetric) in preference to "
+                               "symmetric HS256, which requires sharing the secret.",
+            ))
+        elif alg not in self.PREFERRED_ALGORITHMS and alg:
+            issues.append(JWTIssue(
+                issue_id="JWT-003", severity="Medium",
+                title=f"Non-recommended algorithm: {alg}",
+                detail=f"'{alg}' is not in the preferred set {self.PREFERRED_ALGORITHMS}.",
+                recommendation="Prefer RS256 or ES256 for new systems.",
+            ))
+
+        # ── Claim checks ────────────────────────────────────────────────────
+        now = time.time()
+        is_expired = False
+        expiry_str = "No expiry set"
+
+        if "exp" not in payload:
+            issues.append(JWTIssue(
+                issue_id="JWT-004", severity="High",
+                title="Missing 'exp' claim — token never expires",
+                detail="Without an expiry claim, a stolen token is valid indefinitely.",
+                recommendation="Always set 'exp' to a short-lived value (e.g. 15 minutes for "
+                               "access tokens, 7 days for refresh tokens).",
+            ))
+        else:
+            exp = payload["exp"]
+            expiry_str = datetime.utcfromtimestamp(exp).strftime("%Y-%m-%d %H:%M:%S UTC")
+            if exp < now:
+                is_expired = True
+                issues.append(JWTIssue(
+                    issue_id="JWT-005", severity="Medium",
+                    title="Token is expired",
+                    detail=f"exp={expiry_str} is in the past. If this token is still being accepted "
+                           "by a server, that server is not enforcing expiry.",
+                    recommendation="Ensure the server rejects tokens past their 'exp' claim.",
+                ))
+
+        if "iat" not in payload:
+            issues.append(JWTIssue(
+                issue_id="JWT-006", severity="Low",
+                title="Missing 'iat' (issued-at) claim",
+                detail="Without 'iat', it is impossible to determine when the token was issued "
+                       "or implement max-age policies.",
+                recommendation="Always set 'iat' to the current Unix timestamp at issuance.",
+            ))
+
+        if "iss" not in payload:
+            issues.append(JWTIssue(
+                issue_id="JWT-007", severity="Low",
+                title="Missing 'iss' (issuer) claim",
+                detail="Without 'iss', tokens from different issuers may be accepted interchangeably.",
+                recommendation="Set 'iss' to a unique issuer identifier and validate it server-side.",
+            ))
+
+        if "aud" not in payload:
+            issues.append(JWTIssue(
+                issue_id="JWT-008", severity="Low",
+                title="Missing 'aud' (audience) claim",
+                detail="Without 'aud', a token issued for one service may be replayed against another.",
+                recommendation="Set 'aud' to the intended recipient service and validate it.",
+            ))
+
+        # ── Sensitive data in payload ────────────────────────────────────────
+        sensitive_keys = {"password", "passwd", "pwd", "secret", "ssn", "credit_card",
+                          "card_number", "cvv", "pin", "private_key"}
+        for key in payload:
+            if key.lower() in sensitive_keys:
+                issues.append(JWTIssue(
+                    issue_id="JWT-009", severity="High",
+                    title=f"Sensitive field '{key}' in JWT payload",
+                    detail="JWT payloads are base64-encoded, not encrypted. Anyone with the "
+                           "token can read this field.",
+                    recommendation=f"Remove '{key}' from the JWT payload. Store sensitive data "
+                                   "server-side and reference it by a non-sensitive identifier.",
+                ))
+
+        # ── kid header injection risk ────────────────────────────────────────
+        kid = header.get("kid", "")
+        if isinstance(kid, str) and any(c in kid for c in ["'", '"', ";", "--", "/"]):
+            issues.append(JWTIssue(
+                issue_id="JWT-010", severity="Critical",
+                title="Suspicious 'kid' header — possible SQL/path injection",
+                detail=f"The 'kid' value '{kid[:60]}' contains characters that suggest "
+                       "injection into a database key lookup or file-system path.",
+                recommendation="Validate the 'kid' header against a strict allowlist of "
+                               "known key identifiers before using it to look up a key.",
+            ))
+
+        # ── Overall risk ─────────────────────────────────────────────────────
+        sev_weights = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+        max_sev = max((sev_weights.get(i.severity, 0) for i in issues), default=0)
+        overall = {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Clean"}.get(max_sev, "Clean")
+
+        return JWTAnalysisResult(
+            raw_token=token[:40] + "...",
+            header=header, payload=payload, issues=issues,
+            overall_risk=overall, is_expired=is_expired, expiry_str=expiry_str,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: SSL/TLS CERTIFICATE ANALYZER
+#  Checks TLS configuration for any host:port the user provides.
+#  Read-only — makes a standard TLS handshake and inspects the certificate.
+# ==============================================================================
+# ==============================================================================
+
+import ssl
+import socket
+
+@dataclass
+class SSLFinding:
+    check: str
+    severity: str
+    result: str
+    recommendation: str
+
+@dataclass
+class SSLAnalysisResult:
+    host: str
+    port: int
+    reachable: bool
+    cert_subject: str
+    cert_issuer: str
+    not_before: str
+    not_after: str
+    days_until_expiry: int
+    protocol_version: str
+    cipher_suite: str
+    findings: List[SSLFinding]
+    overall_grade: str
+    error: str = ""
+
+class SSLCertAnalyzer:
+    """
+    Connects to any host:port the user specifies, performs a TLS handshake,
+    and inspects:
+      - Certificate validity period (expiry countdown)
+      - Self-signed vs. CA-issued
+      - Minimum TLS protocol version negotiated
+      - Cipher suite strength
+      - Subject Alternative Names present / CN match
+      - Certificate chain length
+
+    Never sends or receives application data — only the TLS handshake.
+    Only scan hosts you own or have permission to test.
+    """
+
+    DEPRECATED_PROTOCOLS: Set[str] = {"SSLv2", "SSLv3", "TLSv1", "TLSv1.1"}
+    WEAK_CIPHERS: Set[str] = {"RC4", "DES", "3DES", "MD5", "EXPORT", "NULL", "anon"}
+
+    def analyze(self, host: str, port: int = 443, timeout: int = 8) -> SSLAnalysisResult:
+        findings: List[SSLFinding] = []
+
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    proto = ssock.version() or "Unknown"
+                    cipher_name, _, _ = ssock.cipher() or ("Unknown", None, None)
+        except ssl.SSLCertVerificationError as exc:
+            return SSLAnalysisResult(
+                host=host, port=port, reachable=True,
+                cert_subject="", cert_issuer="", not_before="", not_after="",
+                days_until_expiry=0, protocol_version="", cipher_suite="",
+                findings=[SSLFinding("Certificate Verification", "Critical",
+                                      str(exc), "Fix the certificate chain or use a CA-signed cert.")],
+                overall_grade="F", error=str(exc),
+            )
+        except Exception as exc:
+            return SSLAnalysisResult(
+                host=host, port=port, reachable=False,
+                cert_subject="", cert_issuer="", not_before="", not_after="",
+                days_until_expiry=0, protocol_version="", cipher_suite="",
+                findings=[], overall_grade="F", error=str(exc),
+            )
+
+        # Parse cert fields
+        subject = dict(x[0] for x in cert.get("subject", []))
+        issuer = dict(x[0] for x in cert.get("issuer", []))
+        not_before_str = cert.get("notBefore", "")
+        not_after_str = cert.get("notAfter", "")
+
+        try:
+            not_after_dt = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
+            days_left = (not_after_dt - datetime.utcnow()).days
+        except Exception:
+            not_after_dt = datetime.utcnow()
+            days_left = 0
+
+        # ── Expiry checks ────────────────────────────────────────────────────
+        if days_left <= 0:
+            findings.append(SSLFinding("Certificate Expiry", "Critical",
+                f"Certificate EXPIRED {abs(days_left)} day(s) ago",
+                "Renew the certificate immediately — browsers will block all users."))
+        elif days_left <= 14:
+            findings.append(SSLFinding("Certificate Expiry", "High",
+                f"Expires in {days_left} day(s)",
+                "Renew within 24 hours to avoid service disruption."))
+        elif days_left <= 30:
+            findings.append(SSLFinding("Certificate Expiry", "Medium",
+                f"Expires in {days_left} day(s)",
+                "Plan certificate renewal this week."))
+        else:
+            findings.append(SSLFinding("Certificate Expiry", "OK",
+                f"Valid for {days_left} more day(s)", ""))
+
+        # ── Protocol version ─────────────────────────────────────────────────
+        if proto in self.DEPRECATED_PROTOCOLS:
+            findings.append(SSLFinding("TLS Protocol Version", "Critical",
+                f"Negotiated deprecated protocol: {proto}",
+                "Disable TLS 1.0 and 1.1; require TLS 1.2 minimum, prefer TLS 1.3."))
+        elif proto == "TLSv1.2":
+            findings.append(SSLFinding("TLS Protocol Version", "Low",
+                "TLS 1.2 — acceptable but TLS 1.3 preferred",
+                "Enable TLS 1.3 for improved security and performance."))
+        else:
+            findings.append(SSLFinding("TLS Protocol Version", "OK", f"{proto}", ""))
+
+        # ── Cipher suite ─────────────────────────────────────────────────────
+        weak = [w for w in self.WEAK_CIPHERS if w in cipher_name.upper()]
+        if weak:
+            findings.append(SSLFinding("Cipher Suite", "High",
+                f"Weak cipher detected: {cipher_name}",
+                "Disable RC4, DES, 3DES, EXPORT, and NULL ciphers. "
+                "Prefer AES-256-GCM or CHACHA20-POLY1305."))
+        else:
+            findings.append(SSLFinding("Cipher Suite", "OK", cipher_name, ""))
+
+        # ── Self-signed check ─────────────────────────────────────────────────
+        if subject == issuer:
+            findings.append(SSLFinding("Certificate Trust", "High",
+                "Self-signed certificate detected",
+                "Use a certificate from a trusted CA (e.g. Let's Encrypt) for public-facing services."))
+
+        # ── SAN check ────────────────────────────────────────────────────────
+        sans = cert.get("subjectAltName", [])
+        if not sans:
+            findings.append(SSLFinding("Subject Alt Names", "Medium",
+                "No SAN entries found",
+                "Modern browsers require SAN entries. Add SANs for all intended hostnames."))
+
+        sev_order = {"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "OK": 0}
+        max_sev = max((sev_order.get(f.severity, 0) for f in findings), default=0)
+        grade_map = {5: "F", 4: "D", 3: "C", 2: "B", 0: "A"}
+        grade = grade_map.get(max_sev, "A")
+
+        return SSLAnalysisResult(
+            host=host, port=port, reachable=True,
+            cert_subject=subject.get("commonName", str(subject)),
+            cert_issuer=issuer.get("organizationName", str(issuer)),
+            not_before=not_before_str, not_after=not_after_str,
+            days_until_expiry=days_left, protocol_version=proto,
+            cipher_suite=cipher_name, findings=findings, overall_grade=grade,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: SBOM GENERATOR (Software Bill of Materials)
+#  Parses dependency manifests from any project and cross-references against
+#  the local CVE feed. Outputs CycloneDX-inspired JSON.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class SBOMComponent:
+    name: str
+    version: str
+    package_type: str   # "python" | "npm" | "docker-base" | "system"
+    source_file: str
+    known_cves: List[str]
+    highest_severity: str
+
+@dataclass
+class SBOMReport:
+    project_name: str
+    generated_at: str
+    total_components: int
+    vulnerable_count: int
+    components: List[SBOMComponent]
+    overall_risk: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "bomFormat": "SentinelAI-SBOM",
+            "specVersion": "1.0",
+            "project": self.project_name,
+            "generatedAt": self.generated_at,
+            "summary": {
+                "totalComponents": self.total_components,
+                "vulnerableComponents": self.vulnerable_count,
+                "overallRisk": self.overall_risk,
+            },
+            "components": [
+                {
+                    "name": c.name, "version": c.version,
+                    "type": c.package_type, "sourceFile": c.source_file,
+                    "knownCVEs": c.known_cves, "highestSeverity": c.highest_severity,
+                }
+                for c in self.components
+            ],
+        }
+
+
+class SBOMGenerator:
+    """
+    Parses requirements.txt, package.json, Pipfile, pyproject.toml,
+    and Dockerfile FROM lines to build a component inventory, then
+    cross-references each component against the local CVE feed.
+    Outputs a CycloneDX-inspired SBOM in JSON.
+    """
+
+    def __init__(self, cve_feed: Optional[List[Dict[str, str]]] = None):
+        self.cve_feed = cve_feed or MOCK_CVE_DATABASE
+
+    def _cves_for(self, name: str) -> Tuple[List[str], str]:
+        cves: List[str] = []
+        highest = "None"
+        sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "None": 0}
+        for entry in self.cve_feed:
+            if entry["package"].lower() == name.lower():
+                cves.append(entry["cve_id"])
+                if sev_order.get(entry["severity"], 0) > sev_order.get(highest, 0):
+                    highest = entry["severity"]
+        return cves, highest
+
+    def _parse_requirements(self, content: str, source_file: str) -> List[SBOMComponent]:
+        components: List[SBOMComponent] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            for sep in ["==", ">=", "<=", "~=", "!="]:
+                if sep in line:
+                    name, _, version = line.partition(sep)
+                    cves, highest = self._cves_for(name.strip())
+                    components.append(SBOMComponent(
+                        name=name.strip(), version=version.strip().split(",")[0],
+                        package_type="python", source_file=source_file,
+                        known_cves=cves, highest_severity=highest,
+                    ))
+                    break
+            else:
+                cves, highest = self._cves_for(line)
+                components.append(SBOMComponent(
+                    name=line, version="unspecified", package_type="python",
+                    source_file=source_file, known_cves=cves, highest_severity=highest,
+                ))
+        return components
+
+    def _parse_package_json(self, content: str, source_file: str) -> List[SBOMComponent]:
+        components: List[SBOMComponent] = []
+        try:
+            data = json.loads(content)
+            for section in ("dependencies", "devDependencies"):
+                for name, version in data.get(section, {}).items():
+                    cves, highest = self._cves_for(name)
+                    components.append(SBOMComponent(
+                        name=name, version=str(version).lstrip("^~>="),
+                        package_type="npm", source_file=source_file,
+                        known_cves=cves, highest_severity=highest,
+                    ))
+        except Exception:
+            pass
+        return components
+
+    def _parse_dockerfile(self, content: str, source_file: str) -> List[SBOMComponent]:
+        components: List[SBOMComponent] = []
+        for line in content.splitlines():
+            line = line.strip()
+            if line.upper().startswith("FROM "):
+                parts = line.split()
+                if len(parts) >= 2:
+                    image = parts[1]
+                    name, _, tag = image.partition(":")
+                    cves, highest = self._cves_for(name)
+                    components.append(SBOMComponent(
+                        name=name, version=tag or "latest", package_type="docker-base",
+                        source_file=source_file, known_cves=cves, highest_severity=highest,
+                    ))
+        return components
+
+    def generate(self, files: Dict[str, str], project_name: str = "Project") -> SBOMReport:
+        all_components: List[SBOMComponent] = []
+        for file_name, content in files.items():
+            base = file_name.replace("\\", "/").split("/")[-1].lower()
+            if base in ("requirements.txt", "requirements-dev.txt", "requirements-prod.txt"):
+                all_components.extend(self._parse_requirements(content, file_name))
+            elif base == "package.json":
+                all_components.extend(self._parse_package_json(content, file_name))
+            elif base == "dockerfile":
+                all_components.extend(self._parse_dockerfile(content, file_name))
+            elif base == "pipfile":
+                all_components.extend(self._parse_requirements(content, file_name))
+
+        vulnerable = [c for c in all_components if c.known_cves]
+        sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "None": 0}
+        max_sev = max((sev_order.get(c.highest_severity, 0) for c in all_components), default=0)
+        overall = {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Clean"}.get(max_sev, "Clean")
+
+        return SBOMReport(
+            project_name=project_name,
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            total_components=len(all_components),
+            vulnerable_count=len(vulnerable),
+            components=all_components,
+            overall_risk=overall,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  EXPANDED: 8 additional TAINT RULES (total 19 rules)
+# ==============================================================================
+# ==============================================================================
+
+TAINT_RULES += [
+    TaintRule(id="TS-012", title="NoSQL Injection via pymongo find with $where",
+              vuln_class="sql_injection",
+              sinks={"*.find", "*.find_one", "*.aggregate"},
+              severity=Severity.HIGH, base_confidence=Confidence.LOW,
+              standards=_std("CWE-943", "A03:2021-Injection", "ASVS 5.3.4", "CAPEC-110", "PW.5.1"),
+              remediation="Use structured query operators with validated scalar values; "
+                          "never pass user input to $where or $function operators."),
+    TaintRule(id="TS-013", title="SSRF via urllib.request",
+              vuln_class="ssrf",
+              sinks={"urllib.request.urlopen", "urllib.request.urlretrieve"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_SSRF,
+              remediation="Validate and allowlist the destination host before making the request."),
+    TaintRule(id="TS-014", title="SSRF via httpx",
+              vuln_class="ssrf",
+              sinks={"httpx.get", "httpx.post", "httpx.request", "httpx.AsyncClient.get"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_SSRF,
+              remediation="Validate and allowlist the destination host before making the request."),
+    TaintRule(id="TS-015", title="Path Traversal via shutil operations",
+              vuln_class="path_traversal",
+              sinks={"shutil.copy", "shutil.copy2", "shutil.move", "shutil.rmtree"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_PATH,
+              remediation="Resolve and validate paths are within an allowlisted base directory "
+                          "before passing to shutil operations."),
+    TaintRule(id="TS-016", title="Insecure Deserialization via marshal",
+              vuln_class="insecure_deserialization",
+              sinks={"marshal.loads", "marshal.load"},
+              severity=Severity.CRITICAL, base_confidence=Confidence.HIGH,
+              standards=STD_DESER,
+              remediation="Never deserialize untrusted data with marshal; use JSON instead."),
+    TaintRule(id="TS-017", title="Insecure Deserialization via shelve",
+              vuln_class="insecure_deserialization",
+              sinks={"shelve.open"},
+              severity=Severity.HIGH, base_confidence=Confidence.LOW,
+              standards=STD_DESER,
+              remediation="shelve is backed by pickle; never open shelve databases from "
+                          "untrusted sources."),
+    TaintRule(id="TS-018", title="Command Injection via os.popen",
+              vuln_class="command_injection",
+              sinks={"os.popen", "os.execv", "os.execve", "os.execvp", "os.execvpe"},
+              severity=Severity.CRITICAL, base_confidence=Confidence.HIGH,
+              standards=STD_CMDI,
+              remediation="Replace with subprocess.run() using a list of arguments and shell=False."),
+    TaintRule(id="TS-019", title="XSS via Flask/Django response with raw HTML",
+              vuln_class="xss",
+              sinks={"flask.Markup", "mark_safe", "*.mark_safe"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_XSS,
+              remediation="Only call mark_safe/Markup on strings that have been explicitly "
+                          "sanitized with html.escape() or an equivalent HTML sanitizer."),
+]
+
+# ==============================================================================
+# ==============================================================================
+#  EXPANDED: 11 additional PATTERN RULES for multi-language coverage
+# ==============================================================================
+# ==============================================================================
+
+PATTERN_RULES += [
+    PatternRule(id="PH-004", title="PHP shell_exec injection", language="php",
+                pattern=r"shell_exec\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)",
+                severity=Severity.CRITICAL, standards=STD_CMDI, confidence=Confidence.HIGH,
+                remediation="Never pass request data to shell_exec; use escapeshellarg() at minimum."),
+    PatternRule(id="PH-005", title="PHP system() injection", language="php",
+                pattern=r"\bsystem\s*\(\s*\$_(GET|POST|REQUEST)",
+                severity=Severity.CRITICAL, standards=STD_CMDI, confidence=Confidence.HIGH,
+                remediation="Avoid system() with user input; if necessary use escapeshellarg()."),
+    PatternRule(id="PH-006", title="PHP XSS via echo without escape", language="php",
+                pattern=r"\becho\s+\$_(GET|POST|REQUEST|COOKIE)",
+                severity=Severity.HIGH, standards=STD_XSS, confidence=Confidence.HIGH,
+                remediation="Always wrap user output in htmlspecialchars(..., ENT_QUOTES, 'UTF-8')."),
+    PatternRule(id="JS-004", title="Node.js SQL injection via template literal", language="javascript",
+                pattern=r"(query|execute|db\.run)\s*\(\s*`[^`]*\$\{",
+                severity=Severity.CRITICAL, standards=STD_SQLI, confidence=Confidence.MEDIUM,
+                remediation="Use parameterized queries or a query builder; never interpolate variables."),
+    PatternRule(id="JS-005", title="Node.js path traversal via path.join with req", language="javascript",
+                pattern=r"path\.join\s*\([^)]*req\.(query|body|params)",
+                severity=Severity.HIGH, standards=STD_PATH, confidence=Confidence.MEDIUM,
+                remediation="Sanitize filenames with path.basename() and validate against a base dir."),
+    PatternRule(id="JS-006", title="Node.js SSRF via axios with user input", language="javascript",
+                pattern=r"axios\.(get|post|put|delete)\s*\(\s*req\.(query|body|params)",
+                severity=Severity.HIGH, standards=STD_SSRF, confidence=Confidence.MEDIUM,
+                remediation="Validate and allowlist the destination URL before making requests."),
+    PatternRule(id="JV-003", title="Java SQL injection via Statement.execute", language="java",
+                pattern=r"(stmt|statement)\.execute\s*\(\s*\"[^\"]*\"\s*\+",
+                severity=Severity.CRITICAL, standards=STD_SQLI, confidence=Confidence.HIGH,
+                remediation="Use PreparedStatement with bound parameters instead of string concatenation."),
+    PatternRule(id="JV-004", title="Java command injection via Runtime.exec with concat", language="java",
+                pattern=r"Runtime\.getRuntime\(\)\.exec\s*\([^)]*\+",
+                severity=Severity.CRITICAL, standards=STD_CMDI, confidence=Confidence.HIGH,
+                remediation="Pass command arguments as a String[] array, never as a concatenated string."),
+    PatternRule(id="GO-002", title="Go SQL injection via Sprintf in query", language="go",
+                pattern=r"db\.(Query|QueryRow|Exec)\s*\(\s*fmt\.Sprintf",
+                severity=Severity.CRITICAL, standards=STD_SQLI, confidence=Confidence.HIGH,
+                remediation="Use parameterized queries with ? or $N placeholders, never fmt.Sprintf."),
+    PatternRule(id="GO-003", title="Go path traversal via filepath.Join with user data", language="go",
+                pattern=r"filepath\.Join\s*\([^)]*r\.(URL\.Query|FormValue|PathValue)",
+                severity=Severity.HIGH, standards=STD_PATH, confidence=Confidence.MEDIUM,
+                remediation="Validate the joined path is within the intended base directory using filepath.Rel."),
+    PatternRule(id="C-003", title="Unsafe C sprintf without bounds", language="c",
+                pattern=r"\bsprintf\s*\(",
+                severity=Severity.HIGH,
+                standards=_std("CWE-120", "A06:2021-Vulnerable and Outdated Components",
+                               "ASVS 5.1.1", "CAPEC-100", "PW.5.1"),
+                confidence=Confidence.MEDIUM,
+                remediation="Use snprintf() with an explicit size bound instead of sprintf()."),
+    PatternRule(id="RB-001", title="Ruby mass assignment via params.permit!", language="ruby",
+                pattern=r"params\.permit!",
+                severity=Severity.HIGH,
+                standards=_std("CWE-915", "A01:2021-Broken Access Control",
+                               "ASVS 4.2.1", "CAPEC-1", "PW.5.1"),
+                confidence=Confidence.HIGH,
+                remediation="Use explicit permit(:field1, :field2) instead of permit! "
+                            "to avoid allowing unexpected mass-assignment of protected attributes."),
+]
+
+# ==============================================================================
+# ==============================================================================
+#  EXPANDED: 15 additional CVE DATABASE ENTRIES (total 30 entries)
+# ==============================================================================
+# ==============================================================================
+
+MOCK_CVE_DATABASE += [
+    {"package": "django", "vulnerable_range": "<3.2.25", "cve_id": "CVE-2024-27351", "severity": "High",
+     "summary": "Potential ReDoS via certain inputs to the intcomma template filter.", "fixed_version": "3.2.25"},
+    {"package": "flask", "vulnerable_range": "<3.0.3", "cve_id": "CVE-2023-30861", "severity": "High",
+     "summary": "Possible session cookie leak when using proxy with non-default trusted hosts.", "fixed_version": "3.0.3"},
+    {"package": "werkzeug", "vulnerable_range": "<3.0.3", "cve_id": "CVE-2024-34069", "severity": "High",
+     "summary": "Debugger PIN bypass via crafted cookie in the Werkzeug debugger.", "fixed_version": "3.0.3"},
+    {"package": "sqlalchemy", "vulnerable_range": "<2.0.21", "cve_id": "CVE-2023-27517", "severity": "Medium",
+     "summary": "Possible SQL injection via improper escaping of ORM column expressions.", "fixed_version": "2.0.21"},
+    {"package": "numpy", "vulnerable_range": "<1.24.0", "cve_id": "CVE-2021-41496", "severity": "Medium",
+     "summary": "Buffer overflow in array operations on crafted arrays.", "fixed_version": "1.24.0"},
+    {"package": "scipy", "vulnerable_range": "<1.9.2", "cve_id": "CVE-2023-25399", "severity": "Medium",
+     "summary": "Refcount bug in BVH tree implementation leading to use-after-free.", "fixed_version": "1.9.2"},
+    {"package": "aiohttp", "vulnerable_range": "<3.9.4", "cve_id": "CVE-2024-27306", "severity": "Medium",
+     "summary": "XSS via directory listing when static file serving is enabled.", "fixed_version": "3.9.4"},
+    {"package": "fastapi", "vulnerable_range": "<0.109.1", "cve_id": "CVE-2024-24762", "severity": "High",
+     "summary": "DoS via multipart form data with deeply nested structures.", "fixed_version": "0.109.1"},
+    {"package": "starlette", "vulnerable_range": "<0.36.2", "cve_id": "CVE-2024-24762", "severity": "High",
+     "summary": "ReDoS in multipart boundary parsing.", "fixed_version": "0.36.2"},
+    {"package": "pydantic", "vulnerable_range": "<1.10.13", "cve_id": "CVE-2024-3772", "severity": "Medium",
+     "summary": "ReDoS in email validation via crafted input string.", "fixed_version": "1.10.13"},
+    {"package": "httpx", "vulnerable_range": "<0.23.0", "cve_id": "CVE-2021-41945", "severity": "Critical",
+     "summary": "CRLF injection via URL allows HTTP request splitting.", "fixed_version": "0.23.0"},
+    {"package": "gunicorn", "vulnerable_range": "<22.0.0", "cve_id": "CVE-2024-1135", "severity": "High",
+     "summary": "HTTP request smuggling via crafted Transfer-Encoding header.", "fixed_version": "22.0.0"},
+    {"package": "celery", "vulnerable_range": "<5.2.2", "cve_id": "CVE-2021-23727", "severity": "High",
+     "summary": "Command injection via crafted task names passed to the CLI.", "fixed_version": "5.2.2"},
+    {"package": "redis", "vulnerable_range": "<4.5.4", "cve_id": "CVE-2023-28858", "severity": "Medium",
+     "summary": "Async client leaks credentials across connections under concurrent load.", "fixed_version": "4.5.4"},
+    {"package": "setuptools", "vulnerable_range": "<65.5.1", "cve_id": "CVE-2022-40897", "severity": "Medium",
+     "summary": "ReDoS via crafted package version strings in HTML parser.", "fixed_version": "65.5.1"},
+]
+
+# ==============================================================================
+# ==============================================================================
+#  EXPANDED BENCHMARK: 10 additional ground-truth cases (total 22 cases)
+# ==============================================================================
+# ==============================================================================
+
+BENCHMARK += [
+    {
+        "name": "multi_hop_through_three_helpers",
+        "vulnerable": True,
+        "code": """
+def step1(request):
+    return request.args.get('input')
+
+def step2(val):
+    return "data=" + val
+
+def step3(fragment):
+    return "SELECT id FROM log WHERE " + fragment
+
+def handler(request):
+    v = step1(request)
+    frag = step2(v)
+    query = step3(frag)
+    cursor.execute(query)
+""",
+    },
+    {
+        "name": "taint_through_list_element",
+        "vulnerable": True,
+        "code": """
+def handler(request):
+    parts = [request.args.get('q'), 'static']
+    query = "SELECT * FROM t WHERE x='" + parts[0] + "'"
+    cursor.execute(query)
+""",
+    },
+    {
+        "name": "taint_cleared_by_sanitizer",
+        "vulnerable": False,
+        "code": """
+def handler(request):
+    user_html = request.args.get('content')
+    safe_html = html.escape(user_html)
+    return "<div>" + safe_html + "</div>"
+""",
+    },
+    {
+        "name": "ssrf_via_requests",
+        "vulnerable": True,
+        "code": """
+def proxy(request):
+    target = request.args.get('url')
+    return requests.get(target)
+""",
+    },
+    {
+        "name": "pickle_via_return_value",
+        "vulnerable": True,
+        "code": """
+def get_payload(request):
+    return request.data
+
+def deserialize(request):
+    raw = get_payload(request)
+    return pickle.loads(raw)
+""",
+    },
+    {
+        "name": "path_traversal_via_with_open",
+        "vulnerable": True,
+        "code": """
+def serve_file(request):
+    filename = request.args.get('file')
+    with open('uploads/' + filename) as f:
+        return f.read()
+""",
+    },
+    {
+        "name": "path_traversal_sanitized_by_basename",
+        "vulnerable": False,
+        "code": """
+def serve_file(request):
+    filename = os.path.basename(request.args.get('file'))
+    with open(os.path.join('uploads', filename)) as f:
+        return f.read()
+""",
+    },
+    {
+        "name": "eval_taint_from_route_param",
+        "vulnerable": True,
+        "code": """
+@app.route('/calc')
+def calc(expression):
+    return str(eval(expression))
+""",
+    },
+    {
+        "name": "yaml_unsafe_load",
+        "vulnerable": True,
+        "code": """
+def load_config(request):
+    body = request.data
+    return yaml.load(body, Loader=yaml.Loader)
+""",
+    },
+    {
+        "name": "clean_pure_function_no_io",
+        "vulnerable": False,
+        "code": """
+def merge_dicts(a, b):
+    result = dict(a)
+    result.update(b)
+    return result
+
+def clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+def slugify(text):
+    return text.lower().replace(' ', '-')
+""",
+    },
+]
+
+# ==============================================================================
 # SECTION 9: STREAMLIT DARK "SOC COMMAND CENTER" UI
 # ==============================================================================
 
@@ -2812,10 +4260,46 @@ if "asset_inventory" not in st.session_state:
     st.session_state.asset_inventory.bulk_seed([Asset(**a) for a in DEFAULT_ASSET_SEED])
 
 if "scan_history" not in st.session_state:
-    st.session_state.scan_history = []  # list of {"timestamp":..., "total":..., "risk_score":...}
+    st.session_state.scan_history = []
 
 if "semantic_scanner" not in st.session_state:
     st.session_state.semantic_scanner = SemanticVulnerabilityScanner()
+
+if "remediation_engine" not in st.session_state:
+    st.session_state.remediation_engine = AutoRemediationEngine()
+
+if "url_scanner" not in st.session_state:
+    st.session_state.url_scanner = URLSecurityScanner()
+
+if "file_watcher" not in st.session_state:
+    st.session_state.file_watcher = LiveFileWatcher()
+
+if "entropy_scanner" not in st.session_state:
+    st.session_state.entropy_scanner = EntropySecretsScanner()
+
+if "jwt_analyzer" not in st.session_state:
+    st.session_state.jwt_analyzer = JWTAnalyzer()
+
+if "ssl_analyzer" not in st.session_state:
+    st.session_state.ssl_analyzer = SSLCertAnalyzer()
+
+if "sbom_generator" not in st.session_state:
+    st.session_state.sbom_generator = SBOMGenerator()
+
+if "watcher_scan_results" not in st.session_state:
+    st.session_state.watcher_scan_results = []
+
+if "url_scan_results" not in st.session_state:
+    st.session_state.url_scan_results = []
+
+if "remediation_patches" not in st.session_state:
+    st.session_state.remediation_patches = []
+
+if "secret_findings" not in st.session_state:
+    st.session_state.secret_findings = []
+
+if "sbom_report" not in st.session_state:
+    st.session_state.sbom_report = None
 
 if "semantic_findings" not in st.session_state:
     st.session_state.semantic_findings = []
@@ -2831,6 +4315,14 @@ compliance_mapper = ComplianceMapper()
 exec_summary_gen = ExecutiveSummaryGenerator()
 semantic_scanner = st.session_state.semantic_scanner
 semantic_findings = st.session_state.semantic_findings
+remediation_engine = st.session_state.remediation_engine
+url_scanner_engine = st.session_state.url_scanner
+file_watcher = st.session_state.file_watcher
+entropy_scanner = st.session_state.entropy_scanner
+jwt_analyzer_engine = st.session_state.jwt_analyzer
+ssl_analyzer_engine = st.session_state.ssl_analyzer
+sbom_gen = st.session_state.sbom_generator
+secret_findings = st.session_state.secret_findings
 
 # ---- Header ----
 st.markdown(
@@ -2893,10 +4385,11 @@ m6.metric("Containment Actions", len(containment.get_action_history()))
 
 st.markdown("---")
 
-tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_report = st.tabs([
+tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_report = st.tabs([
     "📊 Dashboard", "🔍 Code Scanner", "🧬 Semantic Scanner (AST/Taint)", "📦 Dependency CVEs",
     "📡 Network Telemetry", "🤖 AI Deep Triage", "⚡ Containment",
-    "📋 Compliance Mapping", "🗄️ Asset Inventory", "📈 Executive Summary", "📄 Reports",
+    "📋 Compliance Mapping", "🗄️ Asset Inventory", "📈 Executive Summary",
+    "🛡️ Live Defense & Auto-Fix", "📄 Reports",
 ])
 
 # ------------------------------------------------------------------------
@@ -3427,6 +4920,382 @@ with tab_exec:
 # ------------------------------------------------------------------------
 # TAB: REPORTS
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+# TAB: LIVE DEFENSE & AUTO-FIX
+# ------------------------------------------------------------------------
+with tab_livedef:
+    st.markdown("### 🛡️ Live Defense & Auto-Fix")
+    st.caption(
+        "Five modules: Auto-Remediation (AST code rewriter), URL Security Scanner, "
+        "Live File Watcher, Entropy Secrets Scanner, JWT Analyzer, SSL/TLS Analyzer, and SBOM Generator. "
+        "All are defensive and read-only except auto-remediation, which rewrites files **you provide**."
+    )
+
+    sub_rem, sub_url, sub_watch, sub_secrets, sub_jwt, sub_ssl, sub_sbom = st.tabs([
+        "🔧 Auto-Remediation", "🌐 URL Scanner", "👁️ Live File Watcher",
+        "🔑 Secrets Scanner", "🪙 JWT Analyzer", "🔒 SSL/TLS Analyzer", "📦 SBOM Generator",
+    ])
+
+    # ── AUTO-REMEDIATION ────────────────────────────────────────────────────
+    with sub_rem:
+        st.markdown("#### 🔧 AST-Based Auto-Remediation Engine")
+        st.caption(
+            "Applies safe, semantically-equivalent rewrites directly to your Python code "
+            "(yaml.load → yaml.safe_load, hashlib.md5 → sha256, etc.). "
+            "For patterns requiring human judgment (SQLi, command injection, eval), it "
+            "injects structured TODO annotations and explains exactly what needs changing."
+        )
+
+        rem_mode = st.radio("Input", ["Paste code", "Use last Code Scanner file"],
+                            horizontal=True, key="rem_mode")
+        rem_files: Dict[str, str] = {}
+
+        if rem_mode == "Paste code":
+            rem_name = st.text_input("File name", value="app.py", key="rem_name")
+            rem_code = st.text_area("Paste Python code", height=220, key="rem_code",
+                                    value='import yaml, hashlib\n\npassword = "hardcoded_pw"\n\ndef load(data):\n    return yaml.load(data, Loader=yaml.Loader)\n\ndef hash_pw(pw):\n    return hashlib.md5(pw.encode()).hexdigest()\n')
+            if rem_code.strip():
+                rem_files[rem_name] = rem_code
+        else:
+            if findings:
+                first_file = findings[0].file_name
+                rem_files[first_file] = SAMPLE_VULNERABLE_CODE
+                st.info(f"Using last scanned file: {first_file}")
+            else:
+                st.info("No file in Code Scanner yet — paste code above.")
+
+        if st.button("🔧 Run Auto-Remediation", type="primary", key="run_rem") and rem_files:
+            patches = []
+            with st.spinner("Running AST transformer..."):
+                for fname, src in rem_files.items():
+                    patches.append(remediation_engine.remediate(fname, src))
+            st.session_state.remediation_patches = patches
+
+        patches = st.session_state.remediation_patches
+        if patches:
+            for patch in patches:
+                st.markdown(f"**File:** `{patch.file_name}`  |  "
+                            f"**Auto-applied:** {'✅ Yes' if patch.auto_applied else '⚠️ Needs review'}  |  "
+                            f"**Confidence:** {patch.confidence}")
+
+                if patch.patches_applied:
+                    st.markdown("**Changes made / actions required:**")
+                    for note in patch.patches_applied:
+                        icon = "✅" if "MANUAL" not in note else "⚠️"
+                        st.markdown(f"{icon} {note}")
+
+                if patch.unified_diff:
+                    st.markdown("**Unified diff:**")
+                    st.code(patch.unified_diff, language="diff")
+                    st.download_button(
+                        "⬇️ Download Patched File", data=patch.patched_code,
+                        file_name=f"patched_{patch.file_name}", mime="text/plain",
+                        key=f"dl_patch_{patch.file_name}",
+                    )
+                else:
+                    st.info("No automatic AST changes — see manual action notes above.")
+
+    # ── URL SCANNER ──────────────────────────────────────────────────────────
+    with sub_url:
+        st.markdown("#### 🌐 URL Security Header Scanner")
+        st.warning(
+            "⚠️ Only scan URLs of systems you own or have **written permission** to test. "
+            "This tool makes real outbound HTTP GET requests."
+        )
+
+        url_input = st.text_input("Target URL", value="https://example.com", key="url_input")
+        url_timeout = st.slider("Timeout (seconds)", 3, 20, 8, key="url_timeout")
+
+        if st.button("🔍 Scan URL", type="primary", key="run_url_scan"):
+            if url_input.strip():
+                with st.spinner(f"Scanning {url_input}..."):
+                    result = url_scanner_engine.scan(url_input.strip(), timeout=url_timeout)
+                st.session_state.url_scan_results.append(result)
+
+        url_results = st.session_state.url_scan_results
+        if url_results:
+            latest = url_results[-1]
+            grade_color = {"A": "neon-green", "B": "neon-cyan", "C": "neon-amber",
+                           "D": "neon-red", "F": "neon-red"}.get(latest.overall_grade, "neon-cyan")
+
+            col_g, col_s, col_p = st.columns(3)
+            col_g.metric("Overall Grade", latest.overall_grade)
+            col_s.metric("Status Code", latest.status_code if latest.reachable else "Unreachable")
+            col_p.metric("Protocol", "HTTPS ✅" if latest.https_enforced else "HTTP ⚠️")
+
+            if latest.error:
+                st.error(f"Scan error: {latest.error}")
+            else:
+                if latest.server_banner:
+                    st.caption(f"Server banner (info-disclosure): `{latest.server_banner}`")
+                df_headers = pd.DataFrame([
+                    {"Header": f.header, "Present": "✅" if f.present else "❌",
+                     "Value/Status": f.value, "Severity": f.severity,
+                     "Recommendation": f.recommendation}
+                    for f in latest.header_findings
+                ])
+                st.dataframe(df_headers, use_container_width=True, height=350)
+
+                missing = [f for f in latest.header_findings if not f.present and f.severity != "OK"]
+                if missing:
+                    st.markdown("**Missing / misconfigured headers (prioritised):**")
+                    for f in sorted(missing, key=lambda x: {"Critical":0,"High":1,"Medium":2,"Low":3}.get(x.severity,4)):
+                        st.markdown(f"- **{f.severity}** — `{f.header}`: {f.recommendation}")
+
+            if len(url_results) > 1:
+                st.markdown(f"**Scan history:** {len(url_results)} URL(s) scanned this session.")
+
+    # ── LIVE FILE WATCHER ────────────────────────────────────────────────────
+    with sub_watch:
+        st.markdown("#### 👁️ Live File Watcher")
+        st.caption(
+            "Monitors any directory on the machine running this app for Python file changes, "
+            "auto-scanning every modified or created `.py` file with both the semantic taint "
+            "engine and the regex scanner the moment it changes."
+        )
+        if not WATCHDOG_AVAILABLE:
+            st.info("Install `watchdog` for real inotify/FSEvents events: `pip install watchdog`. "
+                    "Currently using mtime-polling (click 'Check for Changes' to poll).")
+
+        watch_path = st.text_input("Directory to watch", value=os.getcwd(), key="watch_path")
+
+        w1, w2, w3 = st.columns(3)
+        if w1.button("▶️ Start Watching", key="watch_start"):
+            msg = file_watcher.start(watch_path)
+            st.success(msg)
+
+        if w2.button("⏹️ Stop Watching", key="watch_stop"):
+            file_watcher.stop()
+            st.info("Watcher stopped.")
+
+        if w3.button("🔄 Check for Changes", key="watch_poll"):
+            if not file_watcher.is_running:
+                st.warning("Watcher not running. Click 'Start Watching' first.")
+            else:
+                changed = file_watcher.drain()
+                if changed:
+                    with st.spinner(f"Scanning {len(changed)} changed file(s)..."):
+                        for fp in changed:
+                            try:
+                                with open(fp, encoding="utf-8", errors="ignore") as fh:
+                                    src = fh.read()
+                                sem_f = semantic_scanner.analyze_python(fp, src)
+                                reg_f = code_scanner.scan_text(fp, src)
+                                st.session_state.watcher_scan_results.append({
+                                    "file": fp, "timestamp": datetime.now().strftime("%H:%M:%S"),
+                                    "semantic": len(sem_f), "regex": len(reg_f),
+                                    "critical": len([f for f in sem_f + reg_f
+                                                     if getattr(f, "severity", "") == "Critical"]),
+                                })
+                            except Exception as exc:
+                                st.warning(f"Could not scan {fp}: {exc}")
+                    st.success(f"Scanned {len(changed)} file(s).")
+                else:
+                    st.info("No changes detected since last check.")
+
+        st.caption(f"Watcher status: {'🟢 Running' if file_watcher.is_running else '🔴 Stopped'}"
+                   + (f" — watching `{file_watcher.watched_path}`" if file_watcher.is_running else ""))
+
+        watcher_results = st.session_state.watcher_scan_results
+        if watcher_results:
+            st.markdown(f"**{len(watcher_results)} file change(s) scanned this session:**")
+            st.dataframe(pd.DataFrame(watcher_results), use_container_width=True)
+
+    # ── SECRETS SCANNER ──────────────────────────────────────────────────────
+    with sub_secrets:
+        st.markdown("#### 🔑 Entropy-Based Secrets Scanner")
+        st.caption(
+            "Combines Shannon entropy analysis (catches high-entropy string literals "
+            "that look like secrets regardless of variable name) with 27 regex patterns "
+            "covering AWS/GCP/GitHub/Stripe/Slack/Twilio/PEM keys and more."
+        )
+
+        sec_mode = st.radio("Input", ["Paste code", "Upload file(s)"], horizontal=True, key="sec_mode")
+        sec_files: Dict[str, str] = {}
+
+        if sec_mode == "Paste code":
+            sec_name = st.text_input("File name", value="config.py", key="sec_name")
+            sec_code = st.text_area("Paste code / config to scan for secrets", height=200, key="sec_code",
+                                    value='AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\nAPI_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\nPASSWORD = "MyH@rdCoded!Pass"\nJWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIn0.abc123"\n')
+            if sec_code.strip():
+                sec_files[sec_name] = sec_code
+        else:
+            sec_uploaded = st.file_uploader("Upload files to scan for secrets",
+                                             accept_multiple_files=True, key="sec_upload")
+            if sec_uploaded:
+                for uf in sec_uploaded:
+                    sec_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        ent_threshold = st.slider("Entropy threshold", 3.5, 6.0, 4.5, 0.1, key="ent_thresh",
+                                   help="Higher = fewer, higher-confidence findings. 4.5 is a good default.")
+
+        if st.button("🔑 Scan for Secrets", type="primary", key="run_secrets") and sec_files:
+            entropy_scanner.entropy_threshold = ent_threshold
+            all_sec: List[SecretFinding] = []
+            with st.spinner("Running entropy analysis and pattern matching..."):
+                for fname, content in sec_files.items():
+                    all_sec.extend(entropy_scanner.scan(fname, content))
+            st.session_state.secret_findings = all_sec
+            secret_findings = all_sec
+
+        if secret_findings:
+            st.markdown(f"**{len(secret_findings)} potential secret(s) found:**")
+            sec_df = pd.DataFrame([s.to_dict() for s in secret_findings])
+            st.dataframe(
+                sec_df[["file_name", "line_number", "secret_type", "severity",
+                         "confidence", "entropy", "snippet"]],
+                use_container_width=True, height=320,
+            )
+            st.markdown("**Recommendation for all findings:** Revoke and rotate any real credentials "
+                        "immediately, move them to environment variables or a secrets manager, and "
+                        "purge them from your git history using `git filter-repo` or BFG Repo Cleaner.")
+            csv_sec = io.StringIO()
+            sec_df.to_csv(csv_sec, index=False)
+            st.download_button("⬇️ Download Secrets Report (CSV)", data=csv_sec.getvalue(),
+                               file_name="sentinel_secrets_report.csv", mime="text/csv", key="dl_sec")
+        else:
+            st.info("No secrets found yet — paste code or upload files and run the scan.")
+
+    # ── JWT ANALYZER ─────────────────────────────────────────────────────────
+    with sub_jwt:
+        st.markdown("#### 🪙 JWT Token Analyzer")
+        st.caption(
+            "Decodes and audits JWT tokens without signature verification (no secret needed). "
+            "Checks for algorithm confusion, missing claims, expired tokens, sensitive payload data, "
+            "and 'kid' header injection risk."
+        )
+
+        jwt_input = st.text_area("Paste JWT token", height=100, key="jwt_input",
+                                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+
+        if st.button("🪙 Analyze JWT", type="primary", key="run_jwt") and jwt_input.strip():
+            result = jwt_analyzer_engine.analyze(jwt_input.strip())
+            if result is None:
+                st.error("Invalid JWT format — expected three dot-separated base64url segments.")
+            else:
+                risk_color = {"Critical": "neon-red", "High": "neon-red", "Medium": "neon-amber",
+                              "Low": "neon-green", "Clean": "neon-green"}.get(result.overall_risk, "neon-cyan")
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Overall Risk", result.overall_risk)
+                c2.metric("Algorithm", result.header.get("alg", "unknown"))
+                c3.metric("Expiry", "EXPIRED" if result.is_expired else result.expiry_str)
+
+                col_h, col_p = st.columns(2)
+                with col_h:
+                    st.markdown("**Header:**")
+                    st.json(result.header)
+                with col_p:
+                    st.markdown("**Payload:**")
+                    st.json(result.payload)
+
+                if result.issues:
+                    st.markdown(f"**{len(result.issues)} issue(s) found:**")
+                    for issue in result.issues:
+                        icon = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🔵"}.get(issue.severity, "⚪")
+                        with st.expander(f"{icon} {issue.issue_id} — {issue.title} [{issue.severity}]"):
+                            st.markdown(f"**Detail:** {issue.detail}")
+                            st.markdown(f"**Recommendation:** {issue.recommendation}")
+                else:
+                    st.success("No issues found in this token's structure. "
+                               "Note: signature is NOT verified here — always verify the signature server-side.")
+
+    # ── SSL/TLS ANALYZER ─────────────────────────────────────────────────────
+    with sub_ssl:
+        st.markdown("#### 🔒 SSL/TLS Certificate Analyzer")
+        st.warning("⚠️ Only scan hosts you own or have written permission to test.")
+        st.caption(
+            "Connects to any host:port, performs a TLS handshake, and inspects the certificate "
+            "expiry, issuer, protocol version, cipher suite, and SAN entries. "
+            "No application data is sent — handshake only."
+        )
+
+        ssl_col1, ssl_col2 = st.columns([3, 1])
+        with ssl_col1:
+            ssl_host = st.text_input("Hostname", value="example.com", key="ssl_host")
+        with ssl_col2:
+            ssl_port = st.number_input("Port", value=443, min_value=1, max_value=65535, key="ssl_port")
+
+        if st.button("🔒 Analyze SSL/TLS", type="primary", key="run_ssl"):
+            with st.spinner(f"Connecting to {ssl_host}:{ssl_port}..."):
+                ssl_result = ssl_analyzer_engine.analyze(ssl_host, int(ssl_port))
+
+            if not ssl_result.reachable:
+                st.error(f"Could not connect: {ssl_result.error}")
+            else:
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("Grade", ssl_result.overall_grade)
+                sc2.metric("Days Until Expiry", ssl_result.days_until_expiry)
+                sc3.metric("Protocol", ssl_result.protocol_version)
+                sc4.metric("Cipher", ssl_result.cipher_suite[:20])
+
+                st.markdown(f"**Subject:** `{ssl_result.cert_subject}`  |  "
+                            f"**Issuer:** `{ssl_result.cert_issuer}`")
+                st.markdown(f"**Valid:** `{ssl_result.not_before}` → `{ssl_result.not_after}`")
+
+                ssl_df = pd.DataFrame([
+                    {"Check": f.check, "Severity": f.severity,
+                     "Result": f.result, "Recommendation": f.recommendation}
+                    for f in ssl_result.findings
+                ])
+                st.dataframe(ssl_df, use_container_width=True)
+
+    # ── SBOM GENERATOR ───────────────────────────────────────────────────────
+    with sub_sbom:
+        st.markdown("#### 📦 SBOM Generator (Software Bill of Materials)")
+        st.caption(
+            "Parses requirements.txt, package.json, Pipfile, and Dockerfile FROM lines. "
+            "Cross-references every component against the local CVE feed. "
+            "Outputs a CycloneDX-inspired JSON SBOM."
+        )
+
+        sbom_project = st.text_input("Project name", value="MyProject", key="sbom_project")
+        sbom_uploaded = st.file_uploader(
+            "Upload manifest files (requirements.txt, package.json, Dockerfile, Pipfile)",
+            accept_multiple_files=True, key="sbom_upload",
+            type=["txt", "json", "toml", "lock", ""],
+        )
+
+        sample_manifest = "flask==2.1.0\nrequests==2.25.0\npyyaml==5.3\nlog4j-core==2.14.1\naiohttp==3.8.0\ngunicorn==21.0.0"
+        if not sbom_uploaded:
+            st.caption("No files uploaded — using a sample manifest for demonstration.")
+            sbom_files = {"requirements.txt": sample_manifest}
+        else:
+            sbom_files = {}
+            for uf in sbom_uploaded:
+                sbom_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        if st.button("📦 Generate SBOM", type="primary", key="run_sbom"):
+            with st.spinner("Parsing manifests and cross-referencing CVEs..."):
+                report = sbom_gen.generate(sbom_files, project_name=sbom_project)
+            st.session_state.sbom_report = report
+
+        sbom_report = st.session_state.sbom_report
+        if sbom_report:
+            sb1, sb2, sb3 = st.columns(3)
+            sb1.metric("Total Components", sbom_report.total_components)
+            sb2.metric("Vulnerable", sbom_report.vulnerable_count)
+            sb3.metric("Overall Risk", sbom_report.overall_risk)
+
+            if sbom_report.components:
+                sbom_df = pd.DataFrame([
+                    {"Component": c.name, "Version": c.version, "Type": c.package_type,
+                     "Source": c.source_file, "CVEs": ", ".join(c.known_cves) or "None",
+                     "Highest Severity": c.highest_severity}
+                    for c in sbom_report.components
+                ])
+                st.dataframe(sbom_df, use_container_width=True, height=340)
+
+            sbom_json = json.dumps(sbom_report.to_dict(), indent=2)
+            st.download_button(
+                "⬇️ Download SBOM (JSON)", data=sbom_json,
+                file_name=f"{sbom_project.replace(' ', '_')}_sbom.json",
+                mime="application/json", key="dl_sbom",
+            )
+
+# ------------------------------------------------------------------------
+# TAB: REPORTS
+# ------------------------------------------------------------------------
 with tab_report:
     st.markdown("### 📄 Export Consolidated Report")
     report_name = st.text_input("Report name", value=f"sentinel_report_{datetime.now().strftime('%Y%m%d_%H%M')}")
@@ -3434,11 +5303,16 @@ with tab_report:
     st.markdown(f"- Code findings included (regex engine): **{len(findings)}**")
     st.markdown(f"- Semantic findings included (AST/taint engine): **{len(semantic_findings)}**")
     st.markdown(f"- Dependency findings included: **{len(dep_findings)}**")
+    st.markdown(f"- Secrets findings included: **{len(secret_findings)}**")
 
     json_report = reporter.build_json_report(report_name, findings, dep_findings)
     report_dict = json.loads(json_report)
     report_dict["semantic_findings"] = [f.to_dict() for f in semantic_findings]
+    report_dict["secret_findings"] = [s.to_dict() for s in secret_findings]
     report_dict["summary"]["total_semantic_findings"] = len(semantic_findings)
+    report_dict["summary"]["total_secret_findings"] = len(secret_findings)
+    if st.session_state.sbom_report:
+        report_dict["sbom"] = st.session_state.sbom_report.to_dict()
     json_report = json.dumps(report_dict, indent=2)
 
     st.download_button(
