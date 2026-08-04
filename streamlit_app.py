@@ -5686,6 +5686,1131 @@ class ThreatHunter:
 
 
 # ==============================================================================
+# ==============================================================================
+#  AGENT SWARM MODULE PACK — PDF Threat Analyzer, Authorization/Scope Manager,
+#  and the Swarm Orchestrator (bounded worker pool + input-scaled task queue,
+#  with authorization enforced in code, not just UI copy)
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+#  MODULE: PDF THREAT ANALYZER
+#  Byte-level structural analysis of PDF files for known malware indicators.
+#  No external PDF library required — pure byte-pattern scanning, which also
+#  means it never actually parses/renders/executes anything in the PDF.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class PDFIndicator:
+    indicator: str
+    severity: str
+    count: int
+    explanation: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"indicator": self.indicator, "severity": self.severity,
+                "count": self.count, "explanation": self.explanation}
+
+@dataclass
+class PDFAnalysisResult:
+    file_name: str
+    file_size: int
+    indicators: List[PDFIndicator]
+    risk_level: str
+    is_encrypted: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file_name": self.file_name, "file_size_bytes": self.file_size,
+            "risk_level": self.risk_level, "is_encrypted": self.is_encrypted,
+            "indicators": [i.to_dict() for i in self.indicators],
+        }
+
+
+PDF_SUSPICIOUS_KEYS: List[Dict[str, Any]] = [
+    {"key": b"/JavaScript", "name": "Embedded JavaScript", "severity": "High",
+     "explanation": "PDFs can execute JavaScript on open — a common exploit and phishing vector."},
+    {"key": b"/JS", "name": "JS action shorthand", "severity": "High",
+     "explanation": "Shorthand JavaScript action key — same risk class as /JavaScript."},
+    {"key": b"/OpenAction", "name": "Auto-execute action on open", "severity": "High",
+     "explanation": "Triggers an action automatically when the PDF is opened — commonly abused "
+                    "to launch JavaScript or external content without user interaction."},
+    {"key": b"/AA", "name": "Additional Actions (event-triggered)", "severity": "Medium",
+     "explanation": "Executes actions on events like page-open or form-field changes — can hide "
+                    "malicious triggers behind innocuous-looking form interactions."},
+    {"key": b"/Launch", "name": "Launch external application", "severity": "Critical",
+     "explanation": "Can launch an external program or command directly from the PDF — a severe "
+                    "code-execution-adjacent risk."},
+    {"key": b"/EmbeddedFile", "name": "Embedded file", "severity": "Medium",
+     "explanation": "PDFs can embed arbitrary files inside themselves, sometimes used to smuggle "
+                    "malware payloads past perimeter scanners."},
+    {"key": b"/RichMedia", "name": "Embedded rich media (Flash/3D)", "severity": "Medium",
+     "explanation": "Legacy rich-media content has a long history of exploited parser vulnerabilities."},
+    {"key": b"/XFA", "name": "XFA dynamic XML form", "severity": "Low",
+     "explanation": "Adobe XFA forms have had multiple parser-level CVEs over the years."},
+    {"key": b"/SubmitForm", "name": "Auto form submission action", "severity": "Medium",
+     "explanation": "Can silently submit form data to a remote URL — a data-exfiltration vector."},
+    {"key": b"/ObjStm", "name": "Compressed object streams", "severity": "Low",
+     "explanation": "Object streams can hide document structure from naive text-based scanners. "
+                    "Not inherently malicious, but worth noting for deeper manual review."},
+    {"key": b"/Encrypt", "name": "Encrypted PDF", "severity": "Medium",
+     "explanation": "Encrypted PDFs can evade some AV/content scanners. Verify the source is trusted."},
+]
+
+
+class PDFThreatAnalyzer:
+    """
+    Scans raw PDF bytes for known malware-indicative structural elements
+    (embedded JS, auto-launch actions, embedded files, etc.) without ever
+    parsing or rendering the PDF — pure byte-pattern counting. This makes it
+    safe to run on completely untrusted PDF files: nothing in the file is
+    ever executed or interpreted.
+    """
+
+    def analyze(self, file_name: str, raw_bytes: bytes) -> PDFAnalysisResult:
+        indicators: List[PDFIndicator] = []
+        for rule in PDF_SUSPICIOUS_KEYS:
+            count = raw_bytes.count(rule["key"])
+            if count > 0:
+                indicators.append(PDFIndicator(
+                    indicator=rule["name"], severity=rule["severity"],
+                    count=count, explanation=rule["explanation"],
+                ))
+
+        is_encrypted = b"/Encrypt" in raw_bytes
+        sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+        max_sev = max((sev_order.get(i.severity, 0) for i in indicators), default=0)
+        risk = {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Clean"}.get(max_sev, "Clean")
+
+        return PDFAnalysisResult(
+            file_name=file_name, file_size=len(raw_bytes),
+            indicators=indicators, risk_level=risk, is_encrypted=is_encrypted,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: AUTHORIZATION & SCOPE MANAGER
+#  Enforces an explicit, per-target consent ledger. This is not a UI warning —
+#  the Swarm Orchestrator itself refuses to execute any URL/host task unless
+#  the target matches an entry the user explicitly confirmed here first.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class ScopeEntry:
+    scope_id: str
+    target_type: str    # "domain" | "ip" | "directory"
+    value: str
+    authorized_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"scope_id": self.scope_id, "type": self.target_type,
+                "value": self.value, "authorized_at": self.authorized_at}
+
+
+class AuthorizationManager:
+    """
+    A simple, explicit scope ledger. Nothing is 'authorized' by default —
+    the user must actively add each domain, IP, or directory here (with an
+    explicit confirmation) before the Swarm Orchestrator will run any task
+    against it. This mirrors how real authorized penetration-testing
+    engagements define scope in writing before any testing begins.
+    """
+
+    def __init__(self) -> None:
+        self._scope: Dict[str, ScopeEntry] = {}
+
+    def add_scope(self, target_type: str, value: str, confirmed: bool) -> ScopeEntry:
+        if not confirmed:
+            raise PermissionError(
+                "Explicit authorization confirmation is required before adding a scan target."
+            )
+        value = value.strip().lower() if target_type != "directory" else value.strip()
+        scope_id = hashlib.sha256(f"{target_type}:{value}".encode()).hexdigest()[:10]
+        entry = ScopeEntry(
+            scope_id=scope_id, target_type=target_type, value=value,
+            authorized_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self._scope[scope_id] = entry
+        return entry
+
+    def is_authorized(self, target_type: str, value: str) -> bool:
+        value_norm = value.strip().lower() if target_type != "directory" else value.strip()
+        for entry in self._scope.values():
+            if entry.target_type != target_type:
+                continue
+            if target_type == "directory":
+                try:
+                    base = os.path.abspath(entry.value)
+                    target = os.path.abspath(value_norm)
+                    common = os.path.commonpath([base, target])
+                    if common == base:
+                        return True
+                except Exception:
+                    continue
+            elif target_type == "domain":
+                if value_norm == entry.value or value_norm.endswith("." + entry.value):
+                    return True
+            elif target_type == "ip":
+                if value_norm == entry.value:
+                    return True
+        return False
+
+    def list_scope(self) -> List[ScopeEntry]:
+        return list(self._scope.values())
+
+    def remove_scope(self, scope_id: str) -> None:
+        self._scope.pop(scope_id, None)
+
+    def clear(self) -> None:
+        self._scope.clear()
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: SWARM ORCHESTRATOR
+#  Fans a large task queue (one per file / URL / host) out across a
+#  worker pool with a hard-capped size — this is the technically honest
+#  version of "send many agents": task count scales with input size,
+#  worker concurrency is capped for machine safety, and every URL/host
+#  task is gated through AuthorizationManager before it can run.
+# ==============================================================================
+# ==============================================================================
+
+class AgentTaskStatus(str, Enum):
+    PENDING  = "Pending"
+    RUNNING  = "Running"
+    DONE     = "Done"
+    FAILED   = "Failed"
+    REJECTED = "Rejected (not in authorized scope)"
+
+
+@dataclass
+class AgentTask:
+    task_id: str
+    task_type: str     # "file_scan" | "file_scan_inmem" | "url_audit" | "host_audit" | "pdf_scan"
+    target: str
+    status: AgentTaskStatus = AgentTaskStatus.PENDING
+    result_summary: str = ""
+    findings_count: int = 0
+    critical_count: int = 0
+    error: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    raw_results: Any = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.task_id, "type": self.task_type, "target": self.target,
+            "status": self.status.value if isinstance(self.status, AgentTaskStatus) else self.status,
+            "summary": self.result_summary, "findings": self.findings_count,
+            "critical": self.critical_count, "error": self.error,
+            "started": self.started_at, "completed": self.completed_at,
+        }
+
+
+@dataclass
+class SwarmReport:
+    total_tasks: int
+    completed: int
+    failed: int
+    rejected: int
+    total_findings: int
+    total_critical: int
+    tasks: List[AgentTask]
+    generated_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_tasks": self.total_tasks, "completed": self.completed,
+            "failed": self.failed, "rejected": self.rejected,
+            "total_findings": self.total_findings, "total_critical": self.total_critical,
+            "generated_at": self.generated_at,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+
+class SwarmOrchestrator:
+    """
+    Builds a task queue (scales with input — one task per file/URL/host,
+    however many that is) and executes it across a bounded worker pool.
+
+    Safety properties, enforced in code (not just documented):
+      - max_workers is hard-clamped to a safe range (1-64). No amount of
+        input size increases concurrent execution beyond this; it only
+        increases queue depth, which is the correct way to scale this
+        kind of work on a single machine.
+      - Every url_audit / host_audit task is checked against
+        AuthorizationManager.is_authorized() BEFORE execution. Tasks
+        outside the authorized scope are marked REJECTED and never run —
+        this is enforced here, not just in the UI.
+      - file_scan / file_scan_inmem / pdf_scan tasks operate only on files
+        the user directly uploaded or explicitly authorized a local
+        directory for; there is no code path that fetches arbitrary
+        remote files.
+    """
+
+    HARD_MAX_WORKERS = 64
+
+    def __init__(self, auth_manager: AuthorizationManager, max_workers: int = 16):
+        self.auth = auth_manager
+        self.max_workers = max(1, min(int(max_workers), self.HARD_MAX_WORKERS))
+        self.tasks: List[AgentTask] = []
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        self.tasks = []
+
+    def _next_id(self) -> str:
+        return f"task_{len(self.tasks) + 1:06d}"
+
+    def build_directory_tasks(self, directory: str,
+                              extensions: Tuple[str, ...] = (".py",)) -> List[AgentTask]:
+        if not self.auth.is_authorized("directory", directory):
+            raise PermissionError(
+                f"Directory '{directory}' is not in the authorized scope. "
+                f"Add it in the Authorization panel first."
+            )
+        new_tasks: List[AgentTask] = []
+        for root, _, files in os.walk(directory):
+            for fn in files:
+                if fn.endswith(extensions):
+                    path = os.path.join(root, fn)
+                    new_tasks.append(AgentTask(task_id=self._next_id(), task_type="file_scan", target=path))
+                    self.tasks.append(new_tasks[-1])
+        return new_tasks
+
+    def build_file_tasks(self, file_names: List[str]) -> List[AgentTask]:
+        """For files the user directly uploaded — inherently in scope since
+        the user explicitly provided the bytes."""
+        new_tasks = []
+        for name in file_names:
+            t = AgentTask(task_id=self._next_id(), task_type="file_scan_inmem", target=name)
+            new_tasks.append(t)
+            self.tasks.append(t)
+        return new_tasks
+
+    def build_pdf_tasks(self, file_names: List[str]) -> List[AgentTask]:
+        new_tasks = []
+        for name in file_names:
+            t = AgentTask(task_id=self._next_id(), task_type="pdf_scan", target=name)
+            new_tasks.append(t)
+            self.tasks.append(t)
+        return new_tasks
+
+    def build_url_tasks(self, urls: List[str]) -> List[AgentTask]:
+        import urllib.parse
+        new_tasks = []
+        for u in urls:
+            host = urllib.parse.urlparse(u).hostname or u
+            authorized = self.auth.is_authorized("domain", host)
+            t = AgentTask(
+                task_id=self._next_id(), task_type="url_audit", target=u,
+                status=AgentTaskStatus.PENDING if authorized else AgentTaskStatus.REJECTED,
+                error="" if authorized else f"Host '{host}' not in authorized scope.",
+            )
+            new_tasks.append(t)
+            self.tasks.append(t)
+        return new_tasks
+
+    def build_host_tasks(self, hosts: List[str]) -> List[AgentTask]:
+        new_tasks = []
+        for h in hosts:
+            h_clean = h.strip()
+            authorized = self.auth.is_authorized("ip", h_clean) or self.auth.is_authorized("domain", h_clean)
+            t = AgentTask(
+                task_id=self._next_id(), task_type="host_audit", target=h_clean,
+                status=AgentTaskStatus.PENDING if authorized else AgentTaskStatus.REJECTED,
+                error="" if authorized else f"Host '{h_clean}' not in authorized scope.",
+            )
+            new_tasks.append(t)
+            self.tasks.append(t)
+        return new_tasks
+
+    def _execute_task(self, task: AgentTask, engines: Dict[str, Any],
+                      file_contents: Optional[Dict[str, Any]] = None,
+                      progress_cb: Optional[Any] = None) -> AgentTask:
+        if task.status == AgentTaskStatus.REJECTED:
+            if progress_cb:
+                progress_cb()
+            return task
+
+        task.status = AgentTaskStatus.RUNNING
+        task.started_at = datetime.now().strftime("%H:%M:%S")
+
+        try:
+            if task.task_type == "file_scan":
+                with open(task.target, encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+                findings: List[Any] = []
+                if task.target.endswith(".py"):
+                    findings += engines["semantic"].analyze_python(task.target, content)
+                findings += engines["code"].scan_text(task.target, content)
+                findings += engines["malware"].scan(task.target, content)
+                findings += engines["secrets"].scan(task.target, content)
+                task.raw_results = findings
+                task.findings_count = len(findings)
+                task.critical_count = len([f for f in findings if getattr(f, "severity", "") == "Critical"])
+                task.result_summary = f"{task.findings_count} finding(s), {task.critical_count} critical"
+
+            elif task.task_type == "file_scan_inmem":
+                content = (file_contents or {}).get(task.target, "")
+                findings = []
+                if task.target.endswith(".py"):
+                    findings += engines["semantic"].analyze_python(task.target, content)
+                findings += engines["code"].scan_text(task.target, content)
+                findings += engines["malware"].scan(task.target, content)
+                findings += engines["secrets"].scan(task.target, content)
+                task.raw_results = findings
+                task.findings_count = len(findings)
+                task.critical_count = len([f for f in findings if getattr(f, "severity", "") == "Critical"])
+                task.result_summary = f"{task.findings_count} finding(s), {task.critical_count} critical"
+
+            elif task.task_type == "pdf_scan":
+                raw_bytes = (file_contents or {}).get(task.target, b"")
+                result = engines["pdf"].analyze(task.target, raw_bytes)
+                task.raw_results = result
+                task.findings_count = len(result.indicators)
+                task.critical_count = len([i for i in result.indicators if i.severity == "Critical"])
+                task.result_summary = f"{task.findings_count} indicator(s), risk={result.risk_level}"
+
+            elif task.task_type == "url_audit":
+                result = engines["url"].scan(task.target)
+                task.raw_results = result
+                bad = [f for f in result.header_findings if f.severity not in ("OK",)]
+                task.findings_count = len(bad)
+                task.critical_count = len([f for f in bad if f.severity in ("Critical", "High")])
+                task.result_summary = f"Grade {result.overall_grade}"
+
+            elif task.task_type == "host_audit":
+                report = engines["network"].scan_host(task.target, timeout=1.5)
+                task.raw_results = report
+                task.findings_count = len(report.open_ports)
+                task.critical_count = report.critical_count
+                task.result_summary = f"{len(report.open_ports)} open port(s), risk={report.overall_risk}"
+
+            else:
+                raise ValueError(f"Unknown task type: {task.task_type}")
+
+            task.status = AgentTaskStatus.DONE
+
+        except Exception as exc:
+            task.status = AgentTaskStatus.FAILED
+            task.error = str(exc)
+
+        task.completed_at = datetime.now().strftime("%H:%M:%S")
+        if progress_cb:
+            progress_cb()
+        return task
+
+    def run_swarm(self, engines: Dict[str, Any], file_contents: Optional[Dict[str, Any]] = None,
+                  progress_cb: Optional[Any] = None) -> SwarmReport:
+        pending = [t for t in self.tasks if t.status in (AgentTaskStatus.PENDING, AgentTaskStatus.REJECTED)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = [pool.submit(self._execute_task, t, engines, file_contents, progress_cb) for t in pending]
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+        return self.build_report()
+
+    def build_report(self) -> SwarmReport:
+        total = len(self.tasks)
+        done = sum(1 for t in self.tasks if t.status == AgentTaskStatus.DONE)
+        failed = sum(1 for t in self.tasks if t.status == AgentTaskStatus.FAILED)
+        rejected = sum(1 for t in self.tasks if t.status == AgentTaskStatus.REJECTED)
+        total_findings = sum(t.findings_count for t in self.tasks)
+        total_critical = sum(t.critical_count for t in self.tasks)
+        return SwarmReport(
+            total_tasks=total, completed=done, failed=failed, rejected=rejected,
+            total_findings=total_findings, total_critical=total_critical,
+            tasks=list(self.tasks), generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  DEVELOPER TOOLKIT MODULE PACK — Diff Scanner (CI/CD-style new-findings-only
+#  comparison), Baseline/Suppression Manager, Custom Rule Builder, and the
+#  Vulnerability Knowledge Base (CWE encyclopedia tied to every finding above)
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+# ==============================================================================
+#  MODULE: DIFF SCANNER
+#  Compares two versions of the same file and reports only NEWLY introduced
+#  findings — the correct model for CI/CD gating (don't fail a build on
+#  pre-existing debt, only on what THIS change introduced).
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class DiffScanResult:
+    file_name: str
+    new_findings: List[Any]
+    resolved_findings: List[Any]
+    persisted_findings: List[Any]
+    old_count: int
+    new_count: int
+    verdict: str   # "PASS" | "FAIL"
+    generated_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        def _f(x: Any) -> Dict[str, Any]:
+            if hasattr(x, "to_dict"):
+                return x.to_dict()
+            return {"rule_id": getattr(x, "rule_id", ""), "title": getattr(x, "title", ""),
+                    "severity": getattr(x, "severity", "")}
+        return {
+            "file_name": self.file_name, "verdict": self.verdict,
+            "old_finding_count": self.old_count, "new_finding_count": self.new_count,
+            "newly_introduced": [_f(f) for f in self.new_findings],
+            "resolved": [_f(f) for f in self.resolved_findings],
+            "persisted": [_f(f) for f in self.persisted_findings],
+            "generated_at": self.generated_at,
+        }
+
+
+class DiffScanner:
+    """
+    Scans an 'old' and 'new' version of the same file with both the semantic
+    and regex engines, then fingerprints each finding by (rule_id + normalized
+    matched snippet) rather than by line number — because line numbers shift
+    on nearly every real edit, and a naive line-based diff would wrongly
+    report every pre-existing finding as 'new' just because the surrounding
+    code moved.
+
+    Verdict is FAIL only if a NEW Critical or High severity finding was
+    introduced by this change — pre-existing debt at those severities that
+    persists unchanged does not fail the check (though it's still reported).
+    """
+
+    def __init__(self, semantic_scanner: "SemanticVulnerabilityScanner",
+                code_scanner: "CodeVulnerabilityScanner"):
+        self.semantic = semantic_scanner
+        self.code = code_scanner
+
+    @staticmethod
+    def _fingerprint(finding: Any) -> str:
+        rule_id = getattr(finding, "rule_id", "")
+        snippet = getattr(finding, "matched_snippet", "") or getattr(finding, "evidence", "")
+        normalized = re.sub(r"\s+", " ", snippet).strip()
+        return f"{rule_id}::{normalized}"
+
+    def _scan_version(self, file_name: str, content: str) -> List[Any]:
+        results: List[Any] = list(self.code.scan_text(file_name, content))
+        if file_name.endswith(".py"):
+            results += self.semantic.analyze_python(file_name, content)
+        return results
+
+    def compare(self, file_name: str, old_code: str, new_code: str) -> DiffScanResult:
+        old_findings = self._scan_version(file_name, old_code)
+        new_findings_raw = self._scan_version(file_name, new_code)
+
+        old_fps = {self._fingerprint(f) for f in old_findings}
+        new_fps = {self._fingerprint(f) for f in new_findings_raw}
+
+        new_only = [f for f in new_findings_raw if self._fingerprint(f) not in old_fps]
+        resolved = [f for f in old_findings if self._fingerprint(f) not in new_fps]
+        persisted = [f for f in new_findings_raw if self._fingerprint(f) in old_fps]
+
+        new_critical_high = [f for f in new_only if getattr(f, "severity", "") in ("Critical", "High")]
+        verdict = "FAIL" if new_critical_high else "PASS"
+
+        return DiffScanResult(
+            file_name=file_name, new_findings=new_only, resolved_findings=resolved,
+            persisted_findings=persisted, old_count=len(old_findings),
+            new_count=len(new_findings_raw), verdict=verdict,
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: BASELINE / SUPPRESSION MANAGER
+#  Tracks accepted-risk findings with a documented reason and optional
+#  expiry — the standard pattern in enterprise SAST tools (Snyk, Semgrep,
+#  Checkmarx all have an equivalent). Suppressions never silently vanish;
+#  they always carry who/why/when.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class SuppressionEntry:
+    fingerprint: str
+    rule_id: str
+    reason: str
+    suppressed_by: str
+    suppressed_at: str
+    expires_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fingerprint": self.fingerprint[:60], "rule_id": self.rule_id,
+            "reason": self.reason, "suppressed_by": self.suppressed_by,
+            "suppressed_at": self.suppressed_at, "expires_at": self.expires_at or "Never",
+        }
+
+
+class BaselineManager:
+    """
+    A suppression ledger for accepted-risk findings. Every suppression
+    requires a written reason and is timestamped. Optional expiry means a
+    suppression can be forced to come back for re-review rather than being
+    forgotten forever (a common failure mode of ad-hoc # nosec comments).
+    """
+
+    def __init__(self) -> None:
+        self._suppressions: Dict[str, SuppressionEntry] = {}
+
+    @staticmethod
+    def _fingerprint(finding: Any) -> str:
+        rule_id = getattr(finding, "rule_id", "")
+        snippet = getattr(finding, "matched_snippet", "") or getattr(finding, "evidence", "")
+        normalized = re.sub(r"\s+", " ", snippet).strip()
+        return f"{rule_id}::{normalized}"
+
+    def suppress(self, finding: Any, reason: str, suppressed_by: str = "user",
+                expires_days: Optional[int] = None) -> SuppressionEntry:
+        if not reason.strip():
+            raise ValueError("A written reason is required to suppress a finding.")
+        fp = self._fingerprint(finding)
+        expires = None
+        if expires_days:
+            expires = (datetime.now() + timedelta(days=expires_days)).strftime("%Y-%m-%d")
+        entry = SuppressionEntry(
+            fingerprint=fp, rule_id=getattr(finding, "rule_id", ""), reason=reason.strip(),
+            suppressed_by=suppressed_by, suppressed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            expires_at=expires,
+        )
+        self._suppressions[fp] = entry
+        return entry
+
+    def is_suppressed(self, finding: Any) -> bool:
+        entry = self._suppressions.get(self._fingerprint(finding))
+        if not entry:
+            return False
+        if entry.expires_at:
+            try:
+                if datetime.strptime(entry.expires_at, "%Y-%m-%d") < datetime.now():
+                    return False  # expired — no longer suppressed, forces re-review
+            except ValueError:
+                pass
+        return True
+
+    def filter_active(self, findings: List[Any]) -> List[Any]:
+        """Returns only findings that are NOT currently suppressed."""
+        return [f for f in findings if not self.is_suppressed(f)]
+
+    def list_suppressions(self) -> List[SuppressionEntry]:
+        return list(self._suppressions.values())
+
+    def remove_suppression(self, fingerprint: str) -> None:
+        self._suppressions.pop(fingerprint, None)
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: CUSTOM RULE BUILDER
+#  Lets a user extend detection at runtime — new regex patterns for either
+#  the multi-language PatternScanner or the malware detector — without
+#  editing source code. Every rule is validated (regex must compile) before
+#  it can be added.
+# ==============================================================================
+# ==============================================================================
+
+class CustomRuleBuilder:
+    """Validates and constructs new detection rules from user-supplied fields."""
+
+    @staticmethod
+    def validate_regex(pattern: str) -> Tuple[bool, str]:
+        try:
+            re.compile(pattern)
+            return True, ""
+        except re.error as exc:
+            return False, str(exc)
+
+    @staticmethod
+    def build_pattern_rule(rule_id: str, title: str, pattern: str, language: str,
+                           severity_str: str, cwe: str, remediation: str) -> PatternRule:
+        valid, err = CustomRuleBuilder.validate_regex(pattern)
+        if not valid:
+            raise ValueError(f"Invalid regex pattern: {err}")
+        severity = Severity(severity_str)
+        standards = _std(cwe or "CWE-Other", "Custom Rule", "", "", "")
+        return PatternRule(
+            id=rule_id, title=title, pattern=pattern, language=language,
+            severity=severity, standards=standards, confidence=Confidence.MEDIUM,
+            remediation=remediation,
+        )
+
+    @staticmethod
+    def build_malware_pattern(rule_id: str, name: str, pattern: str, category: str,
+                              severity_str: str, explanation: str, recommendation: str) -> Dict[str, Any]:
+        valid, err = CustomRuleBuilder.validate_regex(pattern)
+        if not valid:
+            raise ValueError(f"Invalid regex pattern: {err}")
+        return {
+            "id": rule_id, "name": name, "category": category, "severity": severity_str,
+            "pattern": pattern, "explanation": explanation, "recommendation": recommendation,
+        }
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: VULNERABILITY KNOWLEDGE BASE
+#  A CWE encyclopedia tied directly to every finding surfaced elsewhere in
+#  this app — descriptions, real-world context, common causes, and a
+#  concrete prevention checklist for each vulnerability class in use.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class KnowledgeBaseEntry:
+    cwe: str
+    name: str
+    description: str
+    real_world_context: str
+    common_causes: List[str]
+    prevention_checklist: List[str]
+    further_reading: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cwe": self.cwe, "name": self.name, "description": self.description,
+            "real_world_context": self.real_world_context,
+            "common_causes": self.common_causes,
+            "prevention_checklist": self.prevention_checklist,
+            "further_reading": self.further_reading,
+        }
+
+
+CWE_KNOWLEDGE_BASE: Dict[str, KnowledgeBaseEntry] = {
+    "CWE-89": KnowledgeBaseEntry("CWE-89", "SQL Injection",
+        "Untrusted input is concatenated directly into a SQL query, letting an attacker alter the query's logic.",
+        "One of the most exploited classes in web history; countless breaches trace back to a single unparameterized query.",
+        ["String concatenation/formatting to build SQL", "Dynamic table/column names from user input", "ORM raw-query escape hatches used carelessly"],
+        ["Use parameterized queries / prepared statements exclusively", "Prefer an ORM's safe query builder over raw SQL", "Apply least-privilege database accounts", "A WAF is defense-in-depth, never the primary control"],
+        "https://owasp.org/www-community/attacks/SQL_Injection"),
+    "CWE-78": KnowledgeBaseEntry("CWE-78", "OS Command Injection",
+        "Untrusted input reaches a shell command, letting an attacker inject additional commands via shell metacharacters.",
+        "A frequent root cause in IoT and network-appliance compromises, where device web UIs shell out to system utilities.",
+        ["Building shell strings via concatenation", "subprocess with shell=True and untrusted input", "os.system()/os.popen() with dynamic input"],
+        ["Never use shell=True with untrusted input", "Pass command arguments as a list, not a string", "Validate/allowlist input against a strict pattern", "Run with the minimum OS privileges required"],
+        "https://owasp.org/www-community/attacks/Command_Injection"),
+    "CWE-95": KnowledgeBaseEntry("CWE-95", "Code Injection (eval/exec)",
+        "Untrusted input is passed to eval()/exec(), letting an attacker run arbitrary code in the application's context.",
+        "A classic vector in 'calculator' or template features that accept user expressions and evaluate them directly.",
+        ["eval()/exec() used to implement dynamic logic", "Deserializing into executable code paths"],
+        ["Use ast.literal_eval() for literal data only", "Replace dynamic dispatch with an explicit function map", "Sandbox any genuinely-needed dynamic execution"],
+        "https://owasp.org/www-community/attacks/Code_Injection"),
+    "CWE-502": KnowledgeBaseEntry("CWE-502", "Insecure Deserialization",
+        "Deserializing untrusted data (especially via pickle) can execute arbitrary code as a side effect of loading the object graph.",
+        "Pickle-based RCE is a recurring theme in ML model-loading pipelines and inter-service message queues.",
+        ["pickle.loads() on network/user-supplied data", "yaml.load() without a safe Loader", "Java native deserialization of untrusted streams"],
+        ["Use JSON for cross-trust-boundary data", "yaml.safe_load() instead of yaml.load()", "Sign/verify payloads with HMAC before deserializing if pickle is unavoidable"],
+        "https://owasp.org/www-community/vulnerabilities/Deserialization_of_untrusted_data"),
+    "CWE-79": KnowledgeBaseEntry("CWE-79", "Cross-Site Scripting (XSS)",
+        "Untrusted input is rendered into a page without encoding, letting an attacker run script in a victim's browser.",
+        "Still one of the OWASP Top 10's most reported categories two decades after it was first named.",
+        ["Direct string concatenation into HTML responses", "innerHTML assignment with dynamic content", "dangerouslySetInnerHTML without sanitization"],
+        ["Encode output by context (HTML, attribute, JS, URL)", "Use a template engine with auto-escaping enabled", "Set a strict Content-Security-Policy as defense-in-depth"],
+        "https://owasp.org/www-community/attacks/xss/"),
+    "CWE-22": KnowledgeBaseEntry("CWE-22", "Path Traversal",
+        "Untrusted input reaches a file path, letting an attacker use ../ sequences to escape the intended directory.",
+        "A frequent cause of arbitrary file read/write in file-upload and static-file-serving features.",
+        ["String concatenation to build file paths", "Trusting a client-supplied filename directly"],
+        ["Resolve the path and verify it's under an allowlisted base directory", "Sanitize filenames with a function like secure_filename()", "Never trust client-supplied paths for file operations"],
+        "https://owasp.org/www-community/attacks/Path_Traversal"),
+    "CWE-918": KnowledgeBaseEntry("CWE-918", "Server-Side Request Forgery (SSRF)",
+        "The server is tricked into making a request to an attacker-chosen destination, often reaching internal-only services.",
+        "Repeatedly used to reach cloud metadata endpoints (e.g. 169.254.169.254) and steal instance credentials.",
+        ["Fetching a URL directly from user input", "Webhook/callback features without destination validation"],
+        ["Allowlist destination hosts explicitly", "Block requests to private/link-local IP ranges", "Disable HTTP redirects when fetching user-supplied URLs"],
+        "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery"),
+    "CWE-611": KnowledgeBaseEntry("CWE-611", "XML External Entity (XXE) Injection",
+        "An XML parser resolves external entities, letting an attacker read local files or trigger SSRF via crafted XML.",
+        "Notably used against several document-processing services that accepted user-uploaded XML/SOAP/Office files.",
+        ["Default XML parser settings with DTD processing enabled", "Accepting XML uploads without hardening the parser"],
+        ["Disable DTD and external entity processing explicitly", "Use a safe wrapper like defusedxml", "Prefer JSON over XML where the format choice is yours"],
+        "https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing"),
+    "CWE-1336": KnowledgeBaseEntry("CWE-1336", "Server-Side Template Injection (SSTI)",
+        "User input is rendered as a template string rather than as data, letting an attacker execute template-language code.",
+        "Has led to full RCE in multiple Flask/Jinja2 applications that used render_template_string on user content.",
+        ["render_template_string() with user-controlled input", "Building templates dynamically from request data"],
+        ["Never render user-supplied strings as templates", "Render a fixed template file, pass user data only as context variables"],
+        "https://owasp.org/www-community/vulnerabilities/Server_Side_Template_Injection"),
+    "CWE-798": KnowledgeBaseEntry("CWE-798", "Use of Hardcoded Credentials",
+        "A password, API key, or other secret is embedded directly in source code, exposing it to anyone with repository access.",
+        "Public GitHub repository scanning by attackers for leaked keys is now fully automated and near-instantaneous.",
+        ["Copy-pasted example code with a real key left in", "Convenience during local development that never gets removed"],
+        ["Load all secrets from environment variables or a secrets manager", "Add secret-scanning as a pre-commit hook", "Rotate immediately if a real secret was ever committed"],
+        "https://owasp.org/www-community/vulnerabilities/Use_of_hard-coded_password"),
+    "CWE-327": KnowledgeBaseEntry("CWE-327", "Use of a Broken or Risky Cryptographic Algorithm",
+        "A cryptographically weak algorithm (MD5, SHA1, DES, RC4) is used where security depends on its strength.",
+        "MD5 and SHA1 collision attacks are now practical and have been demonstrated publicly (e.g. the SHAttered attack).",
+        ["Legacy code never updated after the algorithm was deprecated", "Copy-pasted examples from outdated tutorials"],
+        ["Use SHA-256 or SHA-3 for integrity hashing", "Use bcrypt/scrypt/argon2 specifically for password hashing", "Use AES-256-GCM or ChaCha20-Poly1305 for encryption"],
+        "https://owasp.org/www-community/vulnerabilities/Use_of_a_Broken_or_Risky_Cryptographic_Algorithm"),
+    "CWE-330": KnowledgeBaseEntry("CWE-330", "Use of Insufficiently Random Values",
+        "A non-cryptographic random number generator is used to produce a security-sensitive value like a token or session ID.",
+        "Predictable session tokens generated with standard PRNGs have enabled session-hijacking in several disclosed incidents.",
+        ["random.random()/randint() used for tokens or secrets", "java.util.Random for session identifiers"],
+        ["Use the secrets module (Python) or SecureRandom (Java) for anything security-sensitive", "Ensure sufficient entropy/length for the value's purpose"],
+        "https://owasp.org/www-community/vulnerabilities/Insecure_Randomness"),
+    "CWE-522": KnowledgeBaseEntry("CWE-522", "Insufficiently Protected Credentials",
+        "Credentials are transmitted or stored in a way that exposes them to interception, such as Basic Auth over plain HTTP.",
+        "A common finding in legacy internal tools that were never migrated to HTTPS-only.",
+        ["HTTP Basic Authentication over an unencrypted connection", "Credentials logged in plaintext"],
+        ["Enforce HTTPS for any endpoint handling credentials", "Prefer token-based auth over Basic Auth where possible", "Never log credential values, even at debug level"],
+        "https://owasp.org/www-community/vulnerabilities/Insufficiently_Protected_Credentials"),
+    "CWE-613": KnowledgeBaseEntry("CWE-613", "Insufficient Session Expiration",
+        "Sessions remain valid indefinitely or for an excessively long period, extending the window for token theft to matter.",
+        "A frequent finding in penetration test reports for internal admin tools that were never hardened.",
+        ["No 'exp' claim on JWTs", "Session timeout disabled or set to an effectively infinite value"],
+        ["Set short-lived access tokens with mandatory refresh", "Enforce both idle and absolute session timeouts", "Invalidate sessions server-side on logout, not just client-side"],
+        "https://owasp.org/www-community/vulnerabilities/Insufficient_Session_Expiration"),
+    "CWE-307": KnowledgeBaseEntry("CWE-307", "Improper Restriction of Excessive Authentication Attempts",
+        "A login endpoint has no rate limiting or lockout, allowing unlimited automated password-guessing attempts.",
+        "Credential-stuffing attacks specifically target endpoints with this weakness because they can be automated at scale.",
+        ["Login handlers with no rate-limiting decorator/middleware", "No account lockout after repeated failures"],
+        ["Add rate limiting keyed on both IP and account", "Implement progressive delays or CAPTCHA after failed attempts", "Alert on anomalous authentication patterns"],
+        "https://owasp.org/www-community/controls/Blocking_Brute_Force_Attacks"),
+    "CWE-347": KnowledgeBaseEntry("CWE-347", "Improper Verification of Cryptographic Signature",
+        "A signature (e.g. on a JWT) is not properly verified, or a weak/absent algorithm like 'none' is accepted.",
+        "The JWT 'alg=none' bypass has been found in real-world APIs that trusted the client-supplied algorithm header.",
+        ["JWT libraries configured to accept multiple algorithms including 'none'", "Signature verification skipped in a debug/testing code path that reached production"],
+        ["Explicitly whitelist exactly one signing algorithm server-side", "Never accept 'none' as a valid algorithm", "Use asymmetric signing (RS256/ES256) where the verifier shouldn't hold the signing key"],
+        "https://owasp.org/www-community/vulnerabilities/"),
+    "CWE-120": KnowledgeBaseEntry("CWE-120", "Buffer Copy without Checking Size of Input",
+        "A fixed-size buffer is written to without bounds checking (e.g. strcpy/sprintf), risking memory corruption.",
+        "The root cause category behind decades of C/C++ remote code execution vulnerabilities, including many worms.",
+        ["strcpy()/sprintf()/gets() used with untrusted or unbounded input"],
+        ["Use bounded variants: strncpy, snprintf, fgets", "Prefer memory-safe languages/data types where feasible", "Enable stack canaries and ASLR as defense-in-depth"],
+        "https://cwe.mitre.org/data/definitions/120.html"),
+    "CWE-352": KnowledgeBaseEntry("CWE-352", "Cross-Site Request Forgery (CSRF)",
+        "A state-changing request can be triggered by a third-party site because the server doesn't verify request origin.",
+        "Has been used to silently change victim account settings, transfer funds, or delete data via a crafted link/page.",
+        ["POST forms with no CSRF token", "State-changing GET requests (which are trivially forgeable via an <img> tag)"],
+        ["Add a per-session CSRF token to all state-changing forms", "Use SameSite=Strict/Lax cookies", "Never perform state changes on GET requests"],
+        "https://owasp.org/www-community/attacks/csrf"),
+    "CWE-434": KnowledgeBaseEntry("CWE-434", "Unrestricted Upload of File with Dangerous Type",
+        "A file upload feature accepts any file type/name, allowing an attacker to upload executable content.",
+        "A classic path to full server compromise when an uploaded .php/.jsp file lands in a web-servable directory.",
+        ["No file extension/MIME-type validation on upload", "Uploaded files saved with their original name into a web-accessible directory"],
+        ["Validate both extension and actual content-type (not just the client-supplied MIME type)", "Store uploads outside the webroot with randomized filenames", "Scan uploads with an antivirus/content-inspection service"],
+        "https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload"),
+}
+
+
+class VulnerabilityKnowledgeBase:
+    """Educational reference tied to every CWE surfaced by the scanners in this app."""
+
+    def __init__(self, kb: Optional[Dict[str, KnowledgeBaseEntry]] = None):
+        self.kb = kb or CWE_KNOWLEDGE_BASE
+
+    def lookup(self, cwe: str) -> Optional[KnowledgeBaseEntry]:
+        return self.kb.get(cwe)
+
+    def search(self, query: str) -> List[KnowledgeBaseEntry]:
+        q = query.lower().strip()
+        if not q:
+            return list(self.kb.values())
+        return [e for e in self.kb.values()
+                if q in e.name.lower() or q in e.cwe.lower() or q in e.description.lower()]
+
+    def all_entries(self) -> List[KnowledgeBaseEntry]:
+        return sorted(self.kb.values(), key=lambda e: e.cwe)
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: EXPLOIT CHAIN CORRELATOR
+#  Cross-references findings from EVERY engine in this app to surface attack
+#  paths that only exist when multiple individually-moderate findings combine.
+#  This is the actual "sees the whole board" capability — not aggression,
+#  correlation. An attacker's real advantage is connecting weaknesses across
+#  systems; this module gives the defender that same view first.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class ChainStep:
+    order: int
+    source_engine: str
+    finding_ref: str
+    description: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"order": self.order, "engine": self.source_engine,
+                "finding_ref": self.finding_ref, "description": self.description}
+
+
+@dataclass
+class ExploitChain:
+    chain_id: str
+    title: str
+    severity: str        # often escalated ABOVE any individual step's severity
+    confidence: str
+    steps: List[ChainStep]
+    narrative: str
+    combined_impact: str
+    remediation_priority: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chain_id": self.chain_id, "title": self.title,
+            "severity": self.severity, "confidence": self.confidence,
+            "steps": [s.to_dict() for s in self.steps],
+            "narrative": self.narrative,
+            "combined_impact": self.combined_impact,
+            "remediation_priority": self.remediation_priority,
+        }
+
+
+# Ports whose default configuration has no authentication — the classic
+# SSRF pivot targets (cloud metadata endpoints, unauthenticated data stores).
+UNAUTHENTICATED_INTERNAL_SERVICES: Dict[int, str] = {
+    6379: "Redis", 9200: "Elasticsearch", 9300: "Elasticsearch Cluster Transport",
+    27017: "MongoDB", 27018: "MongoDB Shard", 2379: "etcd", 6443: "Kubernetes API",
+    8888: "Jupyter Notebook", 2375: "Docker API (no TLS)", 5984: "CouchDB",
+    11211: "Memcached", 5601: "Kibana",
+}
+
+
+class ExploitChainCorrelator:
+    """
+    Each _correlate_* method encodes one real, well-known attack pattern —
+    the same patterns a human pentester looks for when chaining findings
+    together, not a novel offensive technique. The output is prioritized
+    remediation guidance: "fix these two things together, because either
+    alone still leaves the path open."
+    """
+
+    def correlate(self, semantic_findings: List[Any], code_findings: List[Any],
+                  malware_findings: List["MalwareFinding"], container_findings: List["ContainerFinding"],
+                  entry_points: List["EntryPoint"], network_report: Optional["NetworkScanReport"],
+                  secret_findings: List["SecretFinding"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        chains += self._ssrf_to_internal_service(semantic_findings, network_report)
+        chains += self._internet_route_to_injection(entry_points, semantic_findings)
+        chains += self._backdoor_reachable_from_network(malware_findings, entry_points)
+        chains += self._privileged_container_with_entry_point(container_findings, entry_points)
+        chains += self._leaked_secret_with_open_service(secret_findings, network_report)
+        chains += self._path_traversal_to_secret_file(semantic_findings, secret_findings)
+        return sorted(chains, key=lambda c: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}.get(c.severity, 4))
+
+    # ── Chain 1: SSRF -> unauthenticated internal service ────────────────────
+    def _ssrf_to_internal_service(self, semantic_findings: List[Any],
+                                  network_report: Optional["NetworkScanReport"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        if not network_report:
+            return chains
+        ssrf_findings = [f for f in semantic_findings if getattr(f, "vuln_class", "") == "ssrf"]
+        if not ssrf_findings:
+            return chains
+
+        for port_result in getattr(network_report, "open_ports", []):
+            service = UNAUTHENTICATED_INTERNAL_SERVICES.get(port_result.port)
+            if not service:
+                continue
+            for ssrf in ssrf_findings:
+                chains.append(ExploitChain(
+                    chain_id=f"CHAIN-SSRF-{port_result.port}-{getattr(ssrf,'sink_line',0)}",
+                    title=f"SSRF in {getattr(ssrf,'file_name','?')} can reach exposed {service}",
+                    severity="Critical", confidence="Medium",
+                    steps=[
+                        ChainStep(1, "Semantic Scanner", getattr(ssrf, "finding_id", "?"),
+                                  f"Attacker-controlled URL reaches an outbound request in "
+                                  f"{getattr(ssrf,'function_name','?')}() at {getattr(ssrf,'file_name','?')}:{getattr(ssrf,'sink_line','?')}"),
+                        ChainStep(2, "Network Scanner", f"port:{port_result.port}",
+                                  f"{service} is reachable on port {port_result.port} with no authentication by default"),
+                    ],
+                    narrative=(f"An attacker who controls the URL parameter reaching this SSRF sink can direct "
+                              f"the server to fetch data from {service} on the internal network — potentially "
+                              f"exfiltrating its entire contents without ever needing valid credentials."),
+                    combined_impact=f"Full data exposure of {service} via an internet-facing SSRF pivot, "
+                                    f"bypassing network segmentation entirely.",
+                    remediation_priority="Fix BOTH: allowlist SSRF destination hosts AND require authentication "
+                                         f"on {service}. Either alone still leaves the path exploitable.",
+                ))
+        return chains
+
+    # ── Chain 2: Internet-facing route -> injection reachable from it ────────
+    def _internet_route_to_injection(self, entry_points: List["EntryPoint"],
+                                     semantic_findings: List[Any]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        internet_routes = [e for e in entry_points if e.exposed_to == "internet"]
+        if not internet_routes:
+            return chains
+
+        dangerous_classes = {"sql_injection", "command_injection", "code_execution", "template_injection"}
+        for finding in semantic_findings:
+            vuln_class = getattr(finding, "vuln_class", "")
+            if vuln_class not in dangerous_classes:
+                continue
+            finding_file = getattr(finding, "file_name", "")
+            finding_func = getattr(finding, "function_name", "")
+            for route in internet_routes:
+                if route.file_name == finding_file and (route.handler == finding_func or not finding_func):
+                    chains.append(ExploitChain(
+                        chain_id=f"CHAIN-ROUTE-{route.name}-{getattr(finding,'sink_line',0)}",
+                        title=f"Route {route.name} is directly and remotely exploitable via {vuln_class.replace('_',' ')}",
+                        severity="Critical", confidence="High",
+                        steps=[
+                            ChainStep(1, "Attack Surface Mapper", route.name,
+                                      f"{route.name} is an internet-facing HTTP route (handler: {route.handler})"),
+                            ChainStep(2, "Semantic Scanner", getattr(finding, "finding_id", "?"),
+                                      f"That same handler contains an unmitigated {vuln_class.replace('_',' ')} "
+                                      f"vulnerability at line {getattr(finding,'sink_line','?')}"),
+                        ],
+                        narrative=(f"This is not a theoretical finding — the vulnerable code path is DIRECTLY "
+                                  f"reachable by any unauthenticated internet request to {route.name}. No "
+                                  f"additional pivot or prerequisite is needed."),
+                        combined_impact="Immediately exploitable by any internet-based attacker with no prior access.",
+                        remediation_priority="TOP PRIORITY — this combination should be fixed before any other "
+                                             "finding in this report, since it requires no chaining to exploit.",
+                    ))
+        return chains
+
+    # ── Chain 3: Backdoor pattern reachable from a network entry point ───────
+    def _backdoor_reachable_from_network(self, malware_findings: List["MalwareFinding"],
+                                         entry_points: List["EntryPoint"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        backdoors = [m for m in malware_findings if m.category in ("Backdoor", "Reverse Shell", "Command and Control")]
+        network_entries = [e for e in entry_points if e.kind == "network_socket" or e.exposed_to == "internet"]
+        if not backdoors:
+            return chains
+
+        for bd in backdoors:
+            same_file_entries = [e for e in network_entries if e.file_name == bd.file_name]
+            if same_file_entries or not entry_points:
+                chains.append(ExploitChain(
+                    chain_id=f"CHAIN-BACKDOOR-{bd.finding_id}",
+                    title=f"Active {bd.category} pattern in a network-reachable file",
+                    severity="Critical", confidence="High" if same_file_entries else "Medium",
+                    steps=[
+                        ChainStep(1, "Malware Detector", bd.finding_id,
+                                  f"{bd.pattern_name} detected at {bd.file_name}:{bd.line_number}"),
+                        ChainStep(2, "Attack Surface Mapper",
+                                  same_file_entries[0].name if same_file_entries else "inferred",
+                                  "This file is part of a network-exposed code path" if same_file_entries
+                                  else "No confirmed entry point mapped yet — treat as high priority pending verification"),
+                    ],
+                    narrative=(f"A {bd.category.lower()} pattern was found in code that appears reachable over "
+                              f"the network. This is not a theoretical weakness — if this pattern is live, "
+                              f"an attacker may already have access."),
+                    combined_impact="Potential active compromise, not just a vulnerability.",
+                    remediation_priority="IMMEDIATE — treat as a potential active incident, not a routine finding. "
+                                         "Isolate the system and begin incident response before remediating in place.",
+                ))
+        return chains
+
+    # ── Chain 4: Privileged container + reachable app code in same context ───
+    def _privileged_container_with_entry_point(self, container_findings: List["ContainerFinding"],
+                                               entry_points: List["EntryPoint"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        privileged = [c for c in container_findings if c.check_id in ("DCK-001", "CMP-001", "K8S-002")]
+        internet_routes = [e for e in entry_points if e.exposed_to == "internet"]
+        if not privileged or not internet_routes:
+            return chains
+
+        for priv in privileged:
+            chains.append(ExploitChain(
+                chain_id=f"CHAIN-CONTAINER-{priv.finding_id}",
+                title="Privileged/root container running internet-facing application code",
+                severity="Critical", confidence="Medium",
+                steps=[
+                    ChainStep(1, "Attack Surface Mapper", internet_routes[0].name,
+                              f"{len(internet_routes)} internet-facing route(s) detected in this codebase"),
+                    ChainStep(2, "Container Security Analyzer", priv.finding_id,
+                              f"{priv.title} in {priv.file_name}"),
+                ],
+                narrative=("If any of the internet-facing routes has a remote-code-execution-class "
+                          "vulnerability, the privileged/root container configuration means a successful "
+                          "exploit escalates directly to full host compromise, not just container compromise."),
+                combined_impact="A single RCE anywhere in this app becomes a full host takeover, not "
+                                "just a contained incident.",
+                remediation_priority="Remove privileged/root container configuration BEFORE this app is "
+                                     "internet-facing, regardless of whether a specific RCE is found today.",
+            ))
+        return chains
+
+    # ── Chain 5: Leaked secret + the service that secret would unlock ────────
+    def _leaked_secret_with_open_service(self, secret_findings: List["SecretFinding"],
+                                         network_report: Optional["NetworkScanReport"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        if not network_report or not secret_findings:
+            return chains
+
+        secret_service_hints: Dict[str, Set[int]] = {
+            "aws": {443}, "database url with creds": {3306, 5432, 27017, 6379},
+            "private key pem block": {22}, "ssh private key": {22},
+        }
+        open_ports = {p.port for p in getattr(network_report, "open_ports", [])}
+
+        for secret in secret_findings:
+            secret_type_lower = secret.secret_type.lower()
+            for hint_key, relevant_ports in secret_service_hints.items():
+                if hint_key in secret_type_lower:
+                    matching = relevant_ports & open_ports
+                    if matching:
+                        chains.append(ExploitChain(
+                            chain_id=f"CHAIN-SECRET-{secret.file_name}-{secret.line_number}",
+                            title=f"Leaked {secret.secret_type} combined with a reachable matching service",
+                            severity="Critical", confidence="Low",
+                            steps=[
+                                ChainStep(1, "Secrets Scanner", f"{secret.file_name}:{secret.line_number}",
+                                          f"{secret.secret_type} found in source"),
+                                ChainStep(2, "Network Scanner", f"ports:{sorted(matching)}",
+                                          f"A service on port(s) {sorted(matching)} that this credential type "
+                                          f"commonly authenticates to is reachable"),
+                            ],
+                            narrative=("This is a LOW-confidence inference — it flags that a leaked credential "
+                                      "and a plausibly-related open service both exist, not that they are "
+                                      "confirmed to be connected. Verify manually before treating as confirmed."),
+                            combined_impact="If connected, direct unauthorized access using the leaked credential.",
+                            remediation_priority="Rotate the credential regardless of whether the connection is "
+                                                 "confirmed — leaked credentials should always be rotated.",
+                        ))
+        return chains
+
+    # ── Chain 6: Path traversal reachable + likely-sensitive file targets ────
+    def _path_traversal_to_secret_file(self, semantic_findings: List[Any],
+                                       secret_findings: List["SecretFinding"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        traversal_findings = [f for f in semantic_findings if getattr(f, "vuln_class", "") == "path_traversal"]
+        if not traversal_findings or not secret_findings:
+            return chains
+
+        secret_files = {s.file_name for s in secret_findings}
+        for trav in traversal_findings:
+            trav_dir_hint = getattr(trav, "file_name", "").rsplit("/", 1)[0] if "/" in getattr(trav, "file_name", "") else ""
+            related_secrets = [s for s in secret_findings
+                              if trav_dir_hint and trav_dir_hint in s.file_name]
+            if related_secrets:
+                chains.append(ExploitChain(
+                    chain_id=f"CHAIN-TRAVERSAL-{getattr(trav,'sink_line',0)}",
+                    title="Path traversal in a directory containing files with detected secrets",
+                    severity="High", confidence="Low",
+                    steps=[
+                        ChainStep(1, "Semantic Scanner", getattr(trav, "finding_id", "?"),
+                                  f"Unsanitized path traversal at {getattr(trav,'file_name','?')}:{getattr(trav,'sink_line','?')}"),
+                        ChainStep(2, "Secrets Scanner", related_secrets[0].file_name,
+                                  f"Secret material detected in a file in the same directory tree"),
+                    ],
+                    narrative=("An attacker exploiting this path traversal may be able to read the file(s) "
+                              "containing detected secrets, not just arbitrary application files."),
+                    combined_impact="Path traversal severity effectively escalates given known-sensitive "
+                                    "files are within reach.",
+                    remediation_priority="Fix the path traversal AND move secrets out of the web-accessible "
+                                         "directory tree entirely — never rely on path validation alone to "
+                                         "protect secrets colocated with application code.",
+                ))
+        return chains
+
+
+# ==============================================================================
 # SECTION 9: STREAMLIT DARK "SOC COMMAND CENTER" UI
 # ==============================================================================
 
@@ -5742,6 +6867,84 @@ DARK_CSS = """
     .severity-Medium { color: #fbbf24; font-weight: 600; }
     .severity-Low { color: #34d399; font-weight: 600; }
     .severity-Info { color: #94a3b8; font-weight: 500; }
+
+    .bb-hero {
+        position: relative;
+        background: linear-gradient(135deg, #0d1420 0%, #111a2e 55%, #0d1420 100%);
+        border: 1px solid #1e293b;
+        border-radius: 14px;
+        padding: 28px 32px;
+        margin-bottom: 18px;
+        overflow: hidden;
+    }
+    .bb-hero::before {
+        content: "";
+        position: absolute;
+        top: -40%; left: -10%;
+        width: 55%; height: 220%;
+        background: radial-gradient(circle, rgba(34,211,238,0.10) 0%, rgba(34,211,238,0) 70%);
+        pointer-events: none;
+    }
+    .bb-hero::after {
+        content: "";
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #22d3ee 0%, #3b82f6 35%, #a78bfa 65%, #22d3ee 100%);
+        background-size: 200% 100%;
+    }
+    .bb-title-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        position: relative;
+        z-index: 1;
+    }
+    .bb-cube {
+        font-size: 2.1rem;
+        filter: drop-shadow(0 0 10px rgba(34,211,238,0.55));
+        line-height: 1;
+    }
+    .bb-title {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 2.0rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        margin: 0;
+        color: #e5edf7;
+        text-shadow: 0 0 18px rgba(34,211,238,0.35);
+    }
+    .bb-title .bb-accent {
+        color: #22d3ee;
+        text-shadow: 0 0 14px rgba(34,211,238,0.75);
+    }
+    .bb-tagline {
+        margin: 6px 0 0 0;
+        color: #8b98ab;
+        font-size: 0.95rem;
+        letter-spacing: 0.02em;
+        position: relative;
+        z-index: 1;
+    }
+    .bb-stat-row {
+        display: flex;
+        gap: 22px;
+        margin-top: 16px;
+        flex-wrap: wrap;
+        position: relative;
+        z-index: 1;
+    }
+    .bb-stat {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.82rem;
+        color: #64748b;
+        border-left: 2px solid #22d3ee44;
+        padding-left: 10px;
+    }
+    .bb-stat b {
+        color: #22d3ee;
+        font-weight: 700;
+    }
 </style>
 """
 st.markdown(DARK_CSS, unsafe_allow_html=True)
@@ -5886,6 +7089,42 @@ if "entry_points" not in st.session_state:
 if "posture_history_scores" not in st.session_state:
     st.session_state.posture_history_scores = []
 
+if "exploit_correlator" not in st.session_state:
+    st.session_state.exploit_correlator = ExploitChainCorrelator()
+
+if "exploit_chains" not in st.session_state:
+    st.session_state.exploit_chains = []
+
+if "auth_manager" not in st.session_state:
+    st.session_state.auth_manager = AuthorizationManager()
+
+if "swarm_orchestrator" not in st.session_state:
+    st.session_state.swarm_orchestrator = SwarmOrchestrator(st.session_state.auth_manager, max_workers=8)
+
+if "pdf_analyzer" not in st.session_state:
+    st.session_state.pdf_analyzer = PDFThreatAnalyzer()
+
+if "swarm_reports" not in st.session_state:
+    st.session_state.swarm_reports = []
+
+if "diff_scanner" not in st.session_state:
+    st.session_state.diff_scanner = None  # built after semantic_scanner/code_scanner exist below
+
+if "baseline_manager" not in st.session_state:
+    st.session_state.baseline_manager = BaselineManager()
+
+if "knowledge_base" not in st.session_state:
+    st.session_state.knowledge_base = VulnerabilityKnowledgeBase()
+
+if "diff_results" not in st.session_state:
+    st.session_state.diff_results = []
+
+if "custom_pattern_rules" not in st.session_state:
+    st.session_state.custom_pattern_rules = []
+
+if "custom_malware_rules" not in st.session_state:
+    st.session_state.custom_malware_rules = []
+
 if "semantic_findings" not in st.session_state:
     st.session_state.semantic_findings = []
 
@@ -5919,6 +7158,15 @@ threat_hunter = st.session_state.threat_hunter
 malware_findings = st.session_state.malware_findings
 container_findings = st.session_state.container_findings
 entry_points = st.session_state.entry_points
+exploit_correlator = st.session_state.exploit_correlator
+auth_manager = st.session_state.auth_manager
+swarm_orchestrator = st.session_state.swarm_orchestrator
+pdf_analyzer_engine = st.session_state.pdf_analyzer
+baseline_manager = st.session_state.baseline_manager
+knowledge_base = st.session_state.knowledge_base
+if st.session_state.diff_scanner is None:
+    st.session_state.diff_scanner = DiffScanner(semantic_scanner, code_scanner)
+diff_scanner = st.session_state.diff_scanner
 
 # ---- Header ----
 st.markdown(
@@ -5990,11 +7238,12 @@ m12.metric("Posture Score", st.session_state.posture_history_scores[-1].overall
 
 st.markdown("---")
 
-tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_advanced, tab_report = st.tabs([
+tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_advanced, tab_swarm, tab_toolkit, tab_report = st.tabs([
     "📊 Dashboard", "🔍 Code Scanner", "🧬 Semantic Scanner (AST/Taint)", "📦 Dependency CVEs",
     "📡 Network Telemetry", "🤖 AI Deep Triage", "⚡ Containment",
     "📋 Compliance Mapping", "🗄️ Asset Inventory", "📈 Executive Summary",
-    "🛡️ Live Defense & Auto-Fix", "🎯 Advanced Threat Ops", "📄 Reports",
+    "🛡️ Live Defense & Auto-Fix", "🎯 Advanced Threat Ops", "🐝 Agent Swarm",
+    "🧰 Developer Toolkit", "📄 Reports",
 ])
 
 # ------------------------------------------------------------------------
@@ -6912,10 +8161,10 @@ with tab_advanced:
         "Security Posture Scorer, and Threat Hunter."
     )
 
-    adv_net, adv_mal, adv_cont, adv_comp, adv_qual, adv_surf, adv_posture, adv_hunt = st.tabs([
+    adv_net, adv_mal, adv_cont, adv_comp, adv_qual, adv_surf, adv_posture, adv_hunt, adv_chains = st.tabs([
         "🔌 Port Scanner", "🦠 Malware Detector", "🐳 Container Security",
         "📜 Compliance Auditor", "📐 Code Quality", "🗺️ Attack Surface",
-        "🎯 Posture Score", "🕵️ Threat Hunter",
+        "🎯 Posture Score", "🕵️ Threat Hunter", "🔗 Exploit Chains",
     ])
 
     # ── PORT SCANNER ──────────────────────────────────────────────────────────
@@ -7292,6 +8541,470 @@ with tab_advanced:
             if not (hunt_result.ioc_matches or hunt_result.persistence_indicators
                    or hunt_result.lateral_movement_indicators or hunt_result.beaconing_candidates):
                 st.success("No indicators of compromise found in current telemetry.")
+
+    # ── EXPLOIT CHAINS ────────────────────────────────────────────────────────
+    with adv_chains:
+        st.markdown("#### 🔗 Exploit Chain Correlator")
+        st.caption(
+            "Individual findings are scored alone elsewhere in this app. This tab cross-references "
+            "them: an SSRF that reaches an unauthenticated internal database, an internet-facing "
+            "route with an unmitigated injection flaw in the same handler, a backdoor pattern in "
+            "network-reachable code. These combinations are often more urgent than any single "
+            "finding's severity suggests — this is where they get surfaced."
+        )
+
+        if st.button("🔗 Correlate Findings Into Exploit Chains", type="primary", key="run_correlate"):
+            with st.spinner("Cross-referencing findings across all engines..."):
+                chains = exploit_correlator.correlate(
+                    semantic_findings, findings, malware_findings, container_findings,
+                    entry_points, st.session_state.network_scan_results, secret_findings,
+                )
+            st.session_state.exploit_chains = chains
+
+        chains = st.session_state.exploit_chains
+        if chains:
+            crit_count = sum(1 for c in chains if c.severity == "Critical")
+            ch1, ch2 = st.columns(2)
+            ch1.metric("Exploit Chains Found", len(chains))
+            ch2.metric("Critical Chains", crit_count)
+
+            for chain in chains:
+                sev_class = {"Critical": "neon-red", "High": "neon-amber", "Medium": "neon-cyan"}.get(chain.severity, "neon-cyan")
+                with st.expander(f"[{chain.severity}] {chain.title}"):
+                    st.markdown(f"**Confidence:** {chain.confidence}")
+                    st.markdown("**Attack path:**")
+                    for step in chain.steps:
+                        st.markdown(f"{step.order}. **[{step.source_engine}]** {step.description}")
+                    st.markdown(f"**Why this matters:** {chain.narrative}")
+                    st.markdown(f"**Combined impact:** {chain.combined_impact}")
+                    st.markdown(f"**⚡ Remediation priority:** {chain.remediation_priority}")
+
+            chains_json = json.dumps([c.to_dict() for c in chains], indent=2)
+            st.download_button("⬇️ Download Exploit Chain Report (JSON)", data=chains_json,
+                               file_name="exploit_chains_report.json", mime="application/json",
+                               key="dl_chains")
+        else:
+            st.info("Click above to correlate findings already gathered from other tabs in this app. "
+                    "Run the Semantic Scanner, Network Port Scanner, Malware Detector, Attack Surface "
+                    "Mapper, and Secrets Scanner tabs first for the richest correlation — this tool "
+                    "only connects dots that already exist, it doesn't generate new findings itself.")
+
+
+# ------------------------------------------------------------------------
+# TAB: AGENT SWARM
+# ------------------------------------------------------------------------
+with tab_swarm:
+    st.markdown("### 🐝 Agent Swarm — Authorized Deep-Audit Orchestrator")
+    st.caption(
+        "Fans a task queue out across a bounded worker pool: every file, URL, or host you "
+        "provide becomes one task, processed in parallel. Worker concurrency is capped at "
+        f"{SwarmOrchestrator.HARD_MAX_WORKERS} for machine safety — task *count* scales with "
+        "however much you feed it (10,000 files = 10,000 tasks worked through the same pool), "
+        "which is the real, honest version of 'scales with input size.'"
+    )
+    st.warning(
+        "⚠️ **Authorization is enforced in code, not just here.** The orchestrator itself "
+        "rejects any URL or host task that isn't in the scope list below — add targets first."
+    )
+
+    swarm_scope, swarm_launch, swarm_results = st.tabs(["🔐 Authorization Scope", "🚀 Launch Swarm", "📊 Results"])
+
+    # ── AUTHORIZATION SCOPE ──────────────────────────────────────────────────
+    with swarm_scope:
+        st.markdown("#### 🔐 Authorized Scope")
+        st.caption("Nothing is authorized by default. Add each domain, IP, or local directory "
+                   "you own or have written permission to test before it can be scanned.")
+
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            scope_type = st.selectbox("Target type", ["domain", "ip", "directory"], key="scope_type")
+        with sc2:
+            scope_value = st.text_input(
+                "Value",
+                placeholder="example.com" if scope_type == "domain"
+                            else ("127.0.0.1" if scope_type == "ip" else "/path/to/my/project"),
+                key="scope_value",
+            )
+
+        confirm = st.checkbox(
+            "I confirm I own this target or have explicit written permission to test it.",
+            key="scope_confirm",
+        )
+
+        if st.button("➕ Add to Authorized Scope", key="add_scope") :
+            if not scope_value.strip():
+                st.error("Enter a value first.")
+            elif not confirm:
+                st.error("You must check the confirmation box — this is enforced by the orchestrator, not optional.")
+            else:
+                try:
+                    entry = auth_manager.add_scope(scope_type, scope_value.strip(), confirmed=confirm)
+                    st.success(f"Added to scope: {entry.target_type} = {entry.value}")
+                except PermissionError as e:
+                    st.error(str(e))
+
+        scope_list = auth_manager.list_scope()
+        if scope_list:
+            st.markdown(f"**{len(scope_list)} authorized target(s):**")
+            scope_df = pd.DataFrame([e.to_dict() for e in scope_list])
+            st.dataframe(scope_df, use_container_width=True)
+
+            remove_id = st.selectbox("Remove a scope entry", ["-"] + [e.scope_id for e in scope_list], key="remove_scope_id")
+            if remove_id != "-" and st.button("🗑️ Remove Selected", key="remove_scope_btn"):
+                auth_manager.remove_scope(remove_id)
+                st.success("Removed.")
+                st.rerun()
+        else:
+            st.info("No authorized targets yet.")
+
+    # ── LAUNCH SWARM ──────────────────────────────────────────────────────────
+    with swarm_launch:
+        st.markdown("#### 🚀 Launch a Swarm")
+
+        target_kind = st.radio(
+            "Target type",
+            ["Uploaded Python files", "Uploaded PDFs", "Authorized local directory",
+             "Authorized URLs", "Authorized hosts"],
+            key="swarm_target_kind",
+        )
+
+        worker_count = st.slider(
+            "Worker pool size", 1, SwarmOrchestrator.HARD_MAX_WORKERS, 8, key="worker_count",
+            help=f"Hard-capped at {SwarmOrchestrator.HARD_MAX_WORKERS} regardless of input — "
+                 "this bounds concurrent execution, not how many tasks get queued.",
+        )
+
+        launch_disabled = False
+        swarm_file_contents: Dict[str, Any] = {}
+
+        if target_kind == "Uploaded Python files":
+            up = st.file_uploader("Upload .py files", accept_multiple_files=True, type=["py"], key="swarm_py_upload")
+            if up:
+                for uf in up:
+                    swarm_file_contents[uf.name] = uf.read().decode("utf-8", errors="ignore")
+                st.caption(f"{len(swarm_file_contents)} file(s) ready — will become {len(swarm_file_contents)} task(s).")
+
+        elif target_kind == "Uploaded PDFs":
+            up = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"], key="swarm_pdf_upload")
+            if up:
+                for uf in up:
+                    swarm_file_contents[uf.name] = uf.read()
+                st.caption(f"{len(swarm_file_contents)} PDF(s) ready — analyzed via byte-pattern scan only, never rendered/executed.")
+
+        elif target_kind == "Authorized local directory":
+            dir_scopes = [e for e in auth_manager.list_scope() if e.target_type == "directory"]
+            if not dir_scopes:
+                st.warning("No authorized directories yet — add one in the Authorization Scope tab first.")
+                launch_disabled = True
+            else:
+                chosen_dir = st.selectbox("Authorized directory", [e.value for e in dir_scopes], key="swarm_dir_choice")
+
+        elif target_kind == "Authorized URLs":
+            dom_scopes = [e for e in auth_manager.list_scope() if e.target_type == "domain"]
+            if not dom_scopes:
+                st.warning("No authorized domains yet — add one in the Authorization Scope tab first.")
+                launch_disabled = True
+            else:
+                st.caption(f"Authorized domains: {', '.join(e.value for e in dom_scopes)}")
+                url_list_str = st.text_area("URLs to audit (one per line)", key="swarm_url_list",
+                    value="\n".join(f"https://{e.value}" for e in dom_scopes[:1]))
+
+        else:  # Authorized hosts
+            ip_scopes = [e for e in auth_manager.list_scope() if e.target_type == "ip"]
+            if not ip_scopes:
+                st.warning("No authorized IPs yet — add one in the Authorization Scope tab first.")
+                launch_disabled = True
+            else:
+                st.caption(f"Authorized IPs: {', '.join(e.value for e in ip_scopes)}")
+                host_list_str = st.text_area("Hosts to scan (one per line)", key="swarm_host_list",
+                    value="\n".join(e.value for e in ip_scopes))
+
+        if st.button("🐝 Launch Swarm", type="primary", key="launch_swarm", disabled=launch_disabled):
+            swarm_orchestrator.reset()
+
+            try:
+                if target_kind == "Uploaded Python files" and swarm_file_contents:
+                    swarm_orchestrator.build_file_tasks(list(swarm_file_contents.keys()))
+                elif target_kind == "Uploaded PDFs" and swarm_file_contents:
+                    swarm_orchestrator.build_pdf_tasks(list(swarm_file_contents.keys()))
+                elif target_kind == "Authorized local directory":
+                    swarm_orchestrator.build_directory_tasks(chosen_dir, extensions=(".py",))
+                elif target_kind == "Authorized URLs":
+                    urls = [u.strip() for u in url_list_str.splitlines() if u.strip()]
+                    swarm_orchestrator.build_url_tasks(urls)
+                elif target_kind == "Authorized hosts":
+                    hosts = [h.strip() for h in host_list_str.splitlines() if h.strip()]
+                    swarm_orchestrator.build_host_tasks(hosts)
+
+                swarm_orchestrator.max_workers = worker_count
+
+                task_count = len(swarm_orchestrator.tasks)
+                if task_count == 0:
+                    st.warning("No tasks were built — check your input above.")
+                else:
+                    engines = {
+                        "semantic": semantic_scanner, "code": code_scanner,
+                        "malware": malware_scanner, "secrets": entropy_scanner,
+                        "url": url_scanner_engine, "network": network_scanner,
+                        "pdf": pdf_analyzer_engine,
+                    }
+                    with st.spinner(f"Running {task_count} task(s) across {swarm_orchestrator.max_workers} worker(s)..."):
+                        report = swarm_orchestrator.run_swarm(engines, file_contents=swarm_file_contents)
+                    st.session_state.swarm_reports.append(report)
+                    st.success(f"Swarm complete: {report.completed}/{report.total_tasks} tasks done, "
+                              f"{report.rejected} rejected (out of scope), {report.total_findings} total findings. "
+                              f"See the Results tab.")
+            except PermissionError as e:
+                st.error(f"Authorization error: {e}")
+
+    # ── RESULTS ───────────────────────────────────────────────────────────────
+    with swarm_results:
+        st.markdown("#### 📊 Swarm Run Results")
+        swarm_reports = st.session_state.swarm_reports
+
+        if not swarm_reports:
+            st.info("No swarm runs yet — launch one in the 'Launch Swarm' tab.")
+        else:
+            report_options = [f"Run {i+1} — {r.generated_at} ({r.total_tasks} tasks)"
+                              for i, r in enumerate(swarm_reports)]
+            picked_idx = st.selectbox("Select run", range(len(report_options)),
+                                      format_func=lambda i: report_options[i], key="swarm_report_pick")
+            report = swarm_reports[picked_idx]
+
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("Total Tasks", report.total_tasks)
+            r2.metric("Completed", report.completed)
+            r3.metric("Rejected (Scope)", report.rejected)
+            r4.metric("Failed", report.failed)
+            r5.metric("Total Findings", report.total_findings, delta=f"{report.total_critical} critical" if report.total_critical else None)
+
+            task_df = pd.DataFrame([t.to_dict() for t in report.tasks])
+            st.dataframe(task_df, use_container_width=True, height=350)
+
+            worst_tasks = sorted([t for t in report.tasks if t.critical_count > 0],
+                                 key=lambda t: t.critical_count, reverse=True)
+            if worst_tasks:
+                st.markdown("**Highest-risk tasks:**")
+                for t in worst_tasks[:10]:
+                    st.markdown(f"- 🔴 `{t.target}` — {t.result_summary}")
+
+            rejected_tasks = [t for t in report.tasks if t.status == AgentTaskStatus.REJECTED]
+            if rejected_tasks:
+                with st.expander(f"⛔ {len(rejected_tasks)} task(s) rejected — out of authorized scope"):
+                    for t in rejected_tasks:
+                        st.markdown(f"- `{t.target}`: {t.error}")
+
+            swarm_json = json.dumps(report.to_dict(), indent=2, default=str)
+            st.download_button("⬇️ Download Swarm Report (JSON)", data=swarm_json,
+                               file_name=f"swarm_report_{report.generated_at.replace(':','').replace(' ','_').replace('-','')}.json",
+                               mime="application/json", key="dl_swarm_report")
+
+
+# ------------------------------------------------------------------------
+# TAB: DEVELOPER TOOLKIT
+# ------------------------------------------------------------------------
+with tab_toolkit:
+    st.markdown("### 🧰 Developer Toolkit")
+    st.caption(
+        "Diff Scanner (CI/CD-style — flags only NEW vulnerabilities between two versions), "
+        "Baseline/Suppression Manager (accepted-risk tracking with mandatory justification), "
+        "Custom Rule Builder (extend detection without editing source), "
+        "and the Vulnerability Knowledge Base."
+    )
+
+    tk_diff, tk_baseline, tk_rules, tk_kb = st.tabs([
+        "🔀 Diff Scanner", "✅ Baseline Manager", "🛠️ Custom Rule Builder", "📚 Knowledge Base",
+    ])
+
+    # ── DIFF SCANNER ──────────────────────────────────────────────────────────
+    with tk_diff:
+        st.markdown("#### 🔀 Diff Scanner")
+        st.caption("Compares an old and new version of the same file. Fingerprints findings by "
+                   "rule + normalized snippet (not line number, since lines shift on every edit) "
+                   "so pre-existing debt doesn't get misreported as new. FAILs only if a new "
+                   "Critical/High finding was introduced by this specific change.")
+
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            diff_old = st.text_area("Old version", height=220, key="diff_old",
+                value='def handler(request):\n    return "safe"\n')
+        with dc2:
+            diff_new = st.text_area("New version", height=220, key="diff_new",
+                value='def handler(request):\n    q = request.args.get("id")\n    cursor.execute("SELECT * FROM t WHERE id=" + q)\n    return q\n')
+
+        diff_filename = st.text_input("File name", value="app.py", key="diff_filename")
+
+        if st.button("🔀 Run Diff Scan", type="primary", key="run_diff"):
+            with st.spinner("Scanning both versions..."):
+                result = diff_scanner.compare(diff_filename, diff_old, diff_new)
+            st.session_state.diff_results.append(result)
+
+        if st.session_state.diff_results:
+            result = st.session_state.diff_results[-1]
+            verdict_color = "neon-red" if result.verdict == "FAIL" else "neon-green"
+            st.markdown(f"#### Verdict: <span class='{verdict_color}'>{result.verdict}</span>", unsafe_allow_html=True)
+
+            d1, d2, d3 = st.columns(3)
+            d1.metric("New Findings", len(result.new_findings))
+            d2.metric("Resolved", len(result.resolved_findings))
+            d3.metric("Persisted (pre-existing)", len(result.persisted_findings))
+
+            if result.new_findings:
+                st.markdown("**🔴 Newly introduced by this change:**")
+                for f in result.new_findings:
+                    title = getattr(f, "title", "?")
+                    sev = getattr(f, "severity", "?")
+                    st.markdown(f"- **{sev}** — {title}")
+
+            if result.resolved_findings:
+                st.markdown("**✅ Resolved by this change:**")
+                for f in result.resolved_findings:
+                    st.markdown(f"- {getattr(f, 'title', '?')}")
+
+            diff_json = json.dumps(result.to_dict(), indent=2, default=str)
+            st.download_button("⬇️ Download Diff Report (JSON)", data=diff_json,
+                               file_name="diff_scan_report.json", mime="application/json", key="dl_diff")
+
+    # ── BASELINE MANAGER ──────────────────────────────────────────────────────
+    with tk_baseline:
+        st.markdown("#### ✅ Baseline / Suppression Manager")
+        st.caption("Mark a finding as accepted risk with a mandatory written reason. "
+                   "Suppressions can optionally expire, forcing periodic re-review instead of "
+                   "being forgotten forever.")
+
+        all_findings_pool = list(findings) + list(semantic_findings)
+        if all_findings_pool:
+            options = [f"{getattr(f,'rule_id','?')} — {getattr(f,'title','?')} ({getattr(f,'file_name','')}:{getattr(f,'line_number', getattr(f,'sink_line',''))})"
+                      for f in all_findings_pool]
+            picked_idx = st.selectbox("Finding to suppress", range(len(options)),
+                                      format_func=lambda i: options[i], key="baseline_pick")
+            picked_finding = all_findings_pool[picked_idx]
+
+            reason = st.text_area("Reason (required)", key="baseline_reason",
+                                  placeholder="e.g. False positive — this uses a parameterized query the scanner didn't recognize.")
+            suppressed_by = st.text_input("Your name/handle", value="reviewer", key="baseline_by")
+            expiry_days = st.number_input("Expires in (days, 0 = never)", min_value=0, value=90, key="baseline_expiry")
+
+            if st.button("✅ Suppress This Finding", type="primary", key="run_suppress"):
+                try:
+                    entry = baseline_manager.suppress(
+                        picked_finding, reason=reason, suppressed_by=suppressed_by,
+                        expires_days=expiry_days if expiry_days > 0 else None,
+                    )
+                    st.success(f"Suppressed. Expires: {entry.expires_at or 'Never'}")
+                except ValueError as e:
+                    st.error(str(e))
+        else:
+            st.info("No findings available yet to suppress — run a scan in another tab first.")
+
+        st.markdown("---")
+        suppressions = baseline_manager.list_suppressions()
+        if suppressions:
+            st.markdown(f"**{len(suppressions)} active suppression(s):**")
+            supp_df = pd.DataFrame([s.to_dict() for s in suppressions])
+            st.dataframe(supp_df, use_container_width=True)
+
+            remove_fp = st.selectbox("Remove a suppression",
+                                     ["-"] + [s.fingerprint for s in suppressions], key="remove_supp")
+            if remove_fp != "-" and st.button("🗑️ Remove Suppression", key="remove_supp_btn"):
+                baseline_manager.remove_suppression(remove_fp)
+                st.success("Removed.")
+                st.rerun()
+        else:
+            st.info("No suppressions yet.")
+
+    # ── CUSTOM RULE BUILDER ───────────────────────────────────────────────────
+    with tk_rules:
+        st.markdown("#### 🛠️ Custom Rule Builder")
+        st.caption("Extend the multi-language pattern scanner or malware detector at runtime — "
+                   "no source code editing required. Every regex is validated before it can be added.")
+
+        rule_kind = st.radio("Rule type", ["Code pattern rule", "Malware pattern rule"],
+                             horizontal=True, key="rule_kind")
+
+        with st.form("custom_rule_form"):
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                cr_id = st.text_input("Rule ID", value="CUSTOM-001")
+                cr_title = st.text_input("Title", value="")
+                cr_pattern = st.text_input("Regex pattern", value="")
+            with rc2:
+                cr_severity = st.selectbox("Severity", ["Critical", "High", "Medium", "Low", "Info"])
+                if rule_kind == "Code pattern rule":
+                    cr_language = st.selectbox("Language", ["python", "javascript", "java", "php", "go", "c", "csharp", "ruby", "rust"])
+                    cr_cwe = st.text_input("CWE ID (optional)", value="CWE-Other")
+                else:
+                    cr_category = st.selectbox("Category", ["Reverse Shell", "Obfuscation", "Cryptominer",
+                                                             "Backdoor", "Data Exfiltration", "Process Injection",
+                                                             "Privilege Escalation", "Network Reconnaissance", "Command and Control"])
+            cr_remediation = st.text_area("Remediation / explanation", value="")
+            submitted = st.form_submit_button("🛠️ Validate & Build Rule")
+
+        if submitted:
+            try:
+                if rule_kind == "Code pattern rule":
+                    rule = CustomRuleBuilder.build_pattern_rule(
+                        cr_id, cr_title, cr_pattern, cr_language, cr_severity, cr_cwe, cr_remediation,
+                    )
+                    st.session_state.custom_pattern_rules.append(rule)
+                    st.success(f"Rule '{rule.id}' built and validated successfully.")
+                else:
+                    rule_dict = CustomRuleBuilder.build_malware_pattern(
+                        cr_id, cr_title, cr_pattern, cr_category, cr_severity, cr_remediation, cr_remediation,
+                    )
+                    st.session_state.custom_malware_rules.append(rule_dict)
+                    st.success(f"Malware rule '{rule_dict['id']}' built and validated successfully.")
+            except ValueError as e:
+                st.error(f"Rule rejected: {e}")
+
+        if st.session_state.custom_pattern_rules:
+            st.markdown(f"**{len(st.session_state.custom_pattern_rules)} custom code pattern rule(s):**")
+            for r in st.session_state.custom_pattern_rules:
+                st.markdown(f"- `{r.id}` [{r.severity.value}] {r.title} — pattern: `{r.pattern}`")
+
+        if st.session_state.custom_malware_rules:
+            st.markdown(f"**{len(st.session_state.custom_malware_rules)} custom malware rule(s):**")
+            for r in st.session_state.custom_malware_rules:
+                st.markdown(f"- `{r['id']}` [{r['severity']}] {r['name']} — pattern: `{r['pattern']}`")
+
+        if st.session_state.custom_pattern_rules or st.session_state.custom_malware_rules:
+            if st.button("🔌 Activate Custom Rules Into Live Scanners", key="activate_custom_rules"):
+                pattern_scanner_instance = semantic_scanner.pattern_scanner
+                for r in st.session_state.custom_pattern_rules:
+                    if r not in pattern_scanner_instance.rules:
+                        pattern_scanner_instance.rules.append(r)
+                        pattern_scanner_instance._compiled.append((r, re.compile(r.pattern, re.MULTILINE)))
+                for rd in st.session_state.custom_malware_rules:
+                    if rd not in malware_scanner.rules:
+                        malware_scanner.rules.append(rd)
+                        try:
+                            malware_scanner._compiled.append((rd, re.compile(rd["pattern"], re.MULTILINE | re.DOTALL)))
+                        except re.error:
+                            pass
+                st.success("Custom rules activated — they'll now fire in the Code Scanner and Malware Detector tabs.")
+
+    # ── KNOWLEDGE BASE ────────────────────────────────────────────────────────
+    with tk_kb:
+        st.markdown("#### 📚 Vulnerability Knowledge Base")
+        st.caption(f"{len(knowledge_base.kb)} CWE entries — descriptions, real-world context, "
+                   "common causes, and prevention checklists, tied to every finding across this app.")
+
+        kb_search = st.text_input("Search by name, CWE ID, or keyword", key="kb_search", placeholder="e.g. injection, CWE-89, XSS")
+
+        results = knowledge_base.search(kb_search) if kb_search.strip() else knowledge_base.all_entries()
+        st.caption(f"{len(results)} result(s)")
+
+        for entry in results:
+            with st.expander(f"{entry.cwe} — {entry.name}"):
+                st.markdown(f"**Description:** {entry.description}")
+                st.markdown(f"**Real-world context:** {entry.real_world_context}")
+                st.markdown("**Common causes:**")
+                for c in entry.common_causes:
+                    st.markdown(f"- {c}")
+                st.markdown("**Prevention checklist:**")
+                for p in entry.prevention_checklist:
+                    st.markdown(f"- ☐ {p}")
+                st.caption(f"Further reading: {entry.further_reading}")
 
 
 with tab_report:
