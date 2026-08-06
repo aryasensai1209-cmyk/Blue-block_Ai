@@ -5885,12 +5885,14 @@ class AgentTaskStatus(str, Enum):
     DONE     = "Done"
     FAILED   = "Failed"
     REJECTED = "Rejected (not in authorized scope)"
+    SKIPPED  = "Skipped (unchanged since last scan)"
 
 
 @dataclass
 class AgentTask:
     task_id: str
     task_type: str     # "file_scan" | "file_scan_inmem" | "url_audit" | "host_audit" | "pdf_scan"
+                       # | "container_scan" | "dependency_scan" | "pattern_scan"
     target: str
     status: AgentTaskStatus = AgentTaskStatus.PENDING
     result_summary: str = ""
@@ -5900,6 +5902,7 @@ class AgentTask:
     started_at: str = ""
     completed_at: str = ""
     raw_results: Any = None
+    retry_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -5908,6 +5911,27 @@ class AgentTask:
             "summary": self.result_summary, "findings": self.findings_count,
             "critical": self.critical_count, "error": self.error,
             "started": self.started_at, "completed": self.completed_at,
+            "retries": self.retry_count,
+        }
+
+
+@dataclass
+class SwarmIntelligenceBriefing:
+    """The automatic post-run synthesis: every swarm run now feeds its own
+    results into the Exploit Chain Correlator, Posture Scorer, and Executive
+    Summary generator, so the result of a swarm run is one consolidated
+    picture rather than a pile of unconnected task results."""
+    exploit_chains: List["ExploitChain"]
+    posture_score: "PostureScore"
+    executive_summary: str
+    generated_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "exploit_chains": [c.to_dict() for c in self.exploit_chains],
+            "posture_score": self.posture_score.to_dict(),
+            "executive_summary": self.executive_summary,
+            "generated_at": self.generated_at,
         }
 
 
@@ -5917,19 +5941,25 @@ class SwarmReport:
     completed: int
     failed: int
     rejected: int
+    skipped: int
     total_findings: int
     total_critical: int
     tasks: List[AgentTask]
     generated_at: str
+    duration_seconds: float = 0.0
+    briefing: Optional[SwarmIntelligenceBriefing] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "total_tasks": self.total_tasks, "completed": self.completed,
-            "failed": self.failed, "rejected": self.rejected,
+            "failed": self.failed, "rejected": self.rejected, "skipped": self.skipped,
             "total_findings": self.total_findings, "total_critical": self.total_critical,
-            "generated_at": self.generated_at,
+            "generated_at": self.generated_at, "duration_seconds": round(self.duration_seconds, 2),
             "tasks": [t.to_dict() for t in self.tasks],
         }
+        if self.briefing:
+            d["intelligence_briefing"] = self.briefing.to_dict()
+        return d
 
 
 class SwarmOrchestrator:
@@ -5953,41 +5983,87 @@ class SwarmOrchestrator:
     """
 
     HARD_MAX_WORKERS = 64
+    MAX_RETRIES = 2
+    FAILURE_RATE_BACKOFF_THRESHOLD = 0.3
+    CLEAN_BATCHES_BEFORE_RAMP_UP = 2
+
+    _CONTAINER_FILENAMES: Set[str] = {"dockerfile", "docker-compose.yml", "docker-compose.yaml",
+                                       "compose.yml", "compose.yaml"}
+    _DEPENDENCY_FILENAMES: Set[str] = {"requirements.txt", "requirements-dev.txt", "requirements-prod.txt",
+                                        "package.json", "pipfile"}
+    _PATTERN_LANG_EXTENSIONS: Dict[str, str] = {
+        ".js": "javascript", ".ts": "javascript", ".jsx": "javascript", ".tsx": "javascript",
+        ".php": "php", ".java": "java", ".go": "go", ".c": "c", ".h": "c", ".cpp": "c",
+        ".cs": "csharp", ".rb": "ruby", ".rs": "rust",
+    }
 
     def __init__(self, auth_manager: AuthorizationManager, max_workers: int = 16):
         self.auth = auth_manager
         self.max_workers = max(1, min(int(max_workers), self.HARD_MAX_WORKERS))
         self.tasks: List[AgentTask] = []
         self._lock = threading.Lock()
+        self._file_hash_cache: Dict[str, str] = {}
+        self.effective_worker_history: List[int] = []  # telemetry: concurrency over the run, for introspection/testing
 
     def reset(self) -> None:
         self.tasks = []
 
+    def clear_incremental_cache(self) -> None:
+        self._file_hash_cache = {}
+
     def _next_id(self) -> str:
         return f"task_{len(self.tasks) + 1:06d}"
 
+    @classmethod
+    def detect_task_type(cls, filename: str) -> str:
+        """Routes a file to the RIGHT engine based on its name/extension —
+        this is what makes the swarm multi-engine rather than Python-only."""
+        base = filename.replace("\\", "/").split("/")[-1].lower()
+        if base in cls._CONTAINER_FILENAMES or base.startswith("dockerfile"):
+            return "container_scan"
+        if base in cls._DEPENDENCY_FILENAMES:
+            return "dependency_scan"
+        if base.endswith((".yml", ".yaml")):
+            return "container_scan"  # ContainerSecurityAnalyzer itself no-ops if it's not a K8s manifest
+        if base.endswith(".pdf"):
+            return "pdf_scan"
+        if base.endswith(".py"):
+            return "file_scan_inmem"
+        ext = "." + base.rsplit(".", 1)[-1] if "." in base else ""
+        if ext in cls._PATTERN_LANG_EXTENSIONS:
+            return "pattern_scan"
+        return "file_scan_inmem"  # fallback: still gets code/malware/secrets scanning
+
     def build_directory_tasks(self, directory: str,
-                              extensions: Tuple[str, ...] = (".py",)) -> List[AgentTask]:
+                              extensions: Optional[Tuple[str, ...]] = None) -> List[AgentTask]:
         if not self.auth.is_authorized("directory", directory):
             raise PermissionError(
                 f"Directory '{directory}' is not in the authorized scope. "
                 f"Add it in the Authorization panel first."
             )
+        default_exts = (".py", ".js", ".ts", ".php", ".java", ".go", ".c", ".cs", ".rb", ".rs",
+                        ".yml", ".yaml", ".pdf") + tuple(self._DEPENDENCY_FILENAMES)
+        allowed = extensions or default_exts
         new_tasks: List[AgentTask] = []
         for root, _, files in os.walk(directory):
             for fn in files:
-                if fn.endswith(extensions):
+                fn_lower = fn.lower()
+                if fn_lower.endswith(tuple(e for e in allowed if e.startswith("."))) or fn_lower in allowed \
+                   or fn_lower in self._CONTAINER_FILENAMES or fn_lower in self._DEPENDENCY_FILENAMES:
                     path = os.path.join(root, fn)
-                    new_tasks.append(AgentTask(task_id=self._next_id(), task_type="file_scan", target=path))
-                    self.tasks.append(new_tasks[-1])
+                    task_type = self.detect_task_type(fn)
+                    t = AgentTask(task_id=self._next_id(), task_type=task_type, target=path)
+                    new_tasks.append(t)
+                    self.tasks.append(t)
         return new_tasks
 
     def build_file_tasks(self, file_names: List[str]) -> List[AgentTask]:
         """For files the user directly uploaded — inherently in scope since
-        the user explicitly provided the bytes."""
+        the user explicitly provided the bytes. Auto-routes by file type."""
         new_tasks = []
         for name in file_names:
-            t = AgentTask(task_id=self._next_id(), task_type="file_scan_inmem", target=name)
+            task_type = self.detect_task_type(name)
+            t = AgentTask(task_id=self._next_id(), task_type=task_type, target=name)
             new_tasks.append(t)
             self.tasks.append(t)
         return new_tasks
@@ -6029,16 +6105,48 @@ class SwarmOrchestrator:
             self.tasks.append(t)
         return new_tasks
 
+    @staticmethod
+    def _content_hash(content: Any) -> str:
+        if isinstance(content, bytes):
+            return hashlib.sha256(content).hexdigest()
+        return hashlib.sha256(str(content).encode("utf-8", errors="ignore")).hexdigest()
+
+    def _maybe_skip_unchanged(self, task: AgentTask, file_contents: Optional[Dict[str, Any]]) -> bool:
+        """Incremental scanning: if this exact target's content hash matches
+        the last time this orchestrator instance scanned it, skip re-running
+        every engine on it. Returns True (and mutates task in place) if skipped."""
+        content: Any = None
+        if task.task_type == "file_scan":
+            try:
+                with open(task.target, "rb") as fh:
+                    content = fh.read()
+            except Exception:
+                return False
+        elif task.task_type in ("file_scan_inmem", "pdf_scan", "container_scan",
+                                "dependency_scan", "pattern_scan"):
+            content = (file_contents or {}).get(task.target)
+        if content is None:
+            return False
+
+        digest = self._content_hash(content)
+        if self._file_hash_cache.get(task.target) == digest:
+            task.status = AgentTaskStatus.SKIPPED
+            task.result_summary = "Unchanged since last scan — skipped"
+            task.completed_at = datetime.now().strftime("%H:%M:%S")
+            return True
+        self._file_hash_cache[task.target] = digest
+        return False
+
     def _execute_task(self, task: AgentTask, engines: Dict[str, Any],
                       file_contents: Optional[Dict[str, Any]] = None,
                       progress_cb: Optional[Any] = None) -> AgentTask:
-        if task.status == AgentTaskStatus.REJECTED:
+        if task.status in (AgentTaskStatus.REJECTED, AgentTaskStatus.SKIPPED):
             if progress_cb:
                 progress_cb()
             return task
 
         task.status = AgentTaskStatus.RUNNING
-        task.started_at = datetime.now().strftime("%H:%M:%S")
+        task.started_at = task.started_at or datetime.now().strftime("%H:%M:%S")
 
         try:
             if task.task_type == "file_scan":
@@ -6067,6 +6175,36 @@ class SwarmOrchestrator:
                 task.findings_count = len(findings)
                 task.critical_count = len([f for f in findings if getattr(f, "severity", "") == "Critical"])
                 task.result_summary = f"{task.findings_count} finding(s), {task.critical_count} critical"
+
+            elif task.task_type == "pattern_scan":
+                content = (file_contents or {}).get(task.target, "")
+                ext = "." + task.target.rsplit(".", 1)[-1].lower() if "." in task.target else ""
+                language = self._PATTERN_LANG_EXTENSIONS.get(ext, "")
+                findings = []
+                findings += engines["pattern"].scan(task.target, content, language=language or None)
+                findings += engines["code"].scan_text(task.target, content)
+                findings += engines["malware"].scan(task.target, content)
+                findings += engines["secrets"].scan(task.target, content)
+                task.raw_results = findings
+                task.findings_count = len(findings)
+                task.critical_count = len([f for f in findings if getattr(f, "severity", "") == "Critical"])
+                task.result_summary = f"{task.findings_count} finding(s) [{language or 'unknown'}], {task.critical_count} critical"
+
+            elif task.task_type == "container_scan":
+                content = (file_contents or {}).get(task.target, "")
+                findings = engines["container"].analyze(task.target, content)
+                task.raw_results = findings
+                task.findings_count = len(findings)
+                task.critical_count = len([f for f in findings if f.severity == "Critical"])
+                task.result_summary = f"{task.findings_count} finding(s), {task.critical_count} critical"
+
+            elif task.task_type == "dependency_scan":
+                content = (file_contents or {}).get(task.target, "")
+                findings = engines["dependency"].scan_manifest(content)
+                task.raw_results = findings
+                task.findings_count = len(findings)
+                task.critical_count = len([f for f in findings if f.severity == "Critical"])
+                task.result_summary = f"{task.findings_count} known-vulnerable dependenc{'y' if task.findings_count==1 else 'ies'}"
 
             elif task.task_type == "pdf_scan":
                 raw_bytes = (file_contents or {}).get(task.target, b"")
@@ -6105,24 +6243,150 @@ class SwarmOrchestrator:
             progress_cb()
         return task
 
+    @staticmethod
+    def _is_transient_error(error_msg: str) -> bool:
+        transient_markers = ["timeout", "timed out", "connection", "temporarily",
+                             "reset by peer", "refused", "unreachable"]
+        low = (error_msg or "").lower()
+        return any(m in low for m in transient_markers)
+
+    def _execute_with_retry(self, task: AgentTask, engines: Dict[str, Any],
+                            file_contents: Optional[Dict[str, Any]], progress_cb: Optional[Any]) -> AgentTask:
+        self._execute_task(task, engines, file_contents, progress_cb=None)
+        while (task.status == AgentTaskStatus.FAILED and task.retry_count < self.MAX_RETRIES
+               and self._is_transient_error(task.error)):
+            task.retry_count += 1
+            time.sleep(0.05 * task.retry_count)  # brief backoff, kept short for interactive use
+            task.status = AgentTaskStatus.PENDING
+            task.error = ""
+            self._execute_task(task, engines, file_contents, progress_cb=None)
+        if progress_cb:
+            progress_cb()
+        return task
+
     def run_swarm(self, engines: Dict[str, Any], file_contents: Optional[Dict[str, Any]] = None,
-                  progress_cb: Optional[Any] = None) -> SwarmReport:
+                  progress_cb: Optional[Any] = None, incremental: bool = False,
+                  auto_synthesize: bool = True, correlator: Optional["ExploitChainCorrelator"] = None,
+                  posture_scorer: Optional["SecurityPostureScorer"] = None,
+                  exec_summary_gen: Optional["ExecutiveSummaryGenerator"] = None) -> SwarmReport:
+        """
+        Adaptive concurrency: processes tasks in batches. If a batch's
+        failure rate exceeds FAILURE_RATE_BACKOFF_THRESHOLD, effective
+        concurrency is halved for the next batch (back off under stress,
+        similar in spirit to TCP congestion control). After enough clean
+        batches in a row, concurrency ramps back up toward max_workers.
+        This means a flaky target (e.g. a rate-limited host) doesn't get
+        hammered at full concurrency while everything else in the queue
+        keeps moving at full speed.
+        """
+        start_time = time.time()
+        self.effective_worker_history = []
+
         pending = [t for t in self.tasks if t.status in (AgentTaskStatus.PENDING, AgentTaskStatus.REJECTED)]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            futures = [pool.submit(self._execute_task, t, engines, file_contents, progress_cb) for t in pending]
-            for future in concurrent.futures.as_completed(futures):
-                future.result()
-        return self.build_report()
+        if incremental:
+            pending = [t for t in pending if not self._maybe_skip_unchanged(t, file_contents)]
+
+        effective_workers = self.max_workers
+        remaining = list(pending)
+        consecutive_clean_batches = 0
+
+        while remaining:
+            # Batch size equals current concurrency (one full "wave" of parallel
+            # execution per batch) rather than a multiple of it — this is what
+            # makes adaptation responsive at realistic swarm sizes. A larger
+            # multiplier would mean small-to-moderate swarms (well under 32
+            # files, which describes most single-service codebases) complete
+            # in a single batch and never get a chance to adapt at all.
+            batch_size = max(effective_workers, 1)
+            batch = remaining[:batch_size]
+            remaining = remaining[len(batch):]
+            self.effective_worker_history.append(effective_workers)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as pool:
+                futures = [pool.submit(self._execute_with_retry, t, engines, file_contents, progress_cb)
+                          for t in batch]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+
+            batch_run = [t for t in batch if t.status != AgentTaskStatus.SKIPPED]
+            batch_failures = sum(1 for t in batch_run if t.status == AgentTaskStatus.FAILED)
+            failure_rate = batch_failures / max(len(batch_run), 1)
+
+            if failure_rate > self.FAILURE_RATE_BACKOFF_THRESHOLD and effective_workers > 1:
+                effective_workers = max(1, effective_workers // 2)
+                consecutive_clean_batches = 0
+            elif failure_rate == 0:
+                consecutive_clean_batches += 1
+                if (consecutive_clean_batches >= self.CLEAN_BATCHES_BEFORE_RAMP_UP
+                        and effective_workers < self.max_workers):
+                    effective_workers = min(self.max_workers, effective_workers * 2)
+                    consecutive_clean_batches = 0
+
+        report = self.build_report()
+        report.duration_seconds = time.time() - start_time
+
+        if auto_synthesize and correlator and posture_scorer and exec_summary_gen:
+            report.briefing = self.synthesize(report, correlator, posture_scorer, exec_summary_gen)
+
+        return report
+
+    def synthesize(self, report: SwarmReport, correlator: "ExploitChainCorrelator",
+                   posture_scorer: "SecurityPostureScorer",
+                   exec_summary_gen: "ExecutiveSummaryGenerator") -> SwarmIntelligenceBriefing:
+        """
+        The automatic post-run synthesis: pulls every task's raw results back
+        out, sorts them by which engine produced them, and feeds the combined
+        set into the Exploit Chain Correlator, Posture Scorer, and Executive
+        Summary generator — so a swarm run produces ONE consolidated picture
+        instead of a pile of disconnected per-task results the user has to
+        manually cross-reference themselves.
+        """
+        all_semantic: List[Any] = []
+        all_code: List[Any] = []
+        all_malware: List[Any] = []
+        all_container: List[Any] = []
+        all_secrets: List[Any] = []
+        network_reports: List[Any] = []
+
+        for t in report.tasks:
+            if t.status != AgentTaskStatus.DONE or t.raw_results is None:
+                continue
+            if t.task_type in ("file_scan", "file_scan_inmem", "pattern_scan"):
+                for f in t.raw_results:
+                    if isinstance(f, Finding):
+                        all_semantic.append(f)
+                    elif isinstance(f, VulnerabilityFinding):
+                        all_code.append(f)
+                    elif isinstance(f, MalwareFinding):
+                        all_malware.append(f)
+                    elif isinstance(f, SecretFinding):
+                        all_secrets.append(f)
+            elif t.task_type == "container_scan":
+                all_container.extend(t.raw_results)
+            elif t.task_type == "host_audit":
+                network_reports.append(t.raw_results)
+
+        combined_network = network_reports[0] if network_reports else None
+        chains = correlator.correlate(all_semantic, all_code, all_malware, all_container,
+                                      [], combined_network, all_secrets)
+        posture = posture_scorer.score(all_code, all_semantic, all_malware, [], all_secrets, [], [])
+        summary_text = exec_summary_gen.summarize(all_code + all_semantic, [], [], [])
+
+        return SwarmIntelligenceBriefing(
+            exploit_chains=chains, posture_score=posture, executive_summary=summary_text,
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
     def build_report(self) -> SwarmReport:
         total = len(self.tasks)
         done = sum(1 for t in self.tasks if t.status == AgentTaskStatus.DONE)
         failed = sum(1 for t in self.tasks if t.status == AgentTaskStatus.FAILED)
         rejected = sum(1 for t in self.tasks if t.status == AgentTaskStatus.REJECTED)
+        skipped = sum(1 for t in self.tasks if t.status == AgentTaskStatus.SKIPPED)
         total_findings = sum(t.findings_count for t in self.tasks)
         total_critical = sum(t.critical_count for t in self.tasks)
         return SwarmReport(
-            total_tasks=total, completed=done, failed=failed, rejected=rejected,
+            total_tasks=total, completed=done, failed=failed, rejected=rejected, skipped=skipped,
             total_findings=total_findings, total_critical=total_critical,
             tasks=list(self.tasks), generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
@@ -7170,11 +7434,23 @@ diff_scanner = st.session_state.diff_scanner
 
 # ---- Header ----
 st.markdown(
-    "<h1 style='margin-bottom:0px;'>🛡️ SENTINEL AI <span class='neon-cyan'>[THREAT & VULNERABILITY INTELLIGENCE]</span></h1>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    "<p style='color:#6b7280;margin-top:0px;'>Static code scanning · Dependency CVE intel · Network anomaly detection · LLM-assisted triage · Simulated containment</p>",
+    """
+    <div class="bb-hero">
+        <div class="bb-title-row">
+            <span class="bb-cube">🔷</span>
+            <h1 class="bb-title">BLUE<span class="bb-accent">BLOCK</span> AI</h1>
+        </div>
+        <p class="bb-tagline">Autonomous Threat &amp; Vulnerability Intelligence Platform — semantic taint analysis,
+        network defense, and multi-agent security orchestration in one console.</p>
+        <div class="bb-stat-row">
+            <div class="bb-stat"><b>18</b> Engines</div>
+            <div class="bb-stat"><b>149</b> Detection Rules</div>
+            <div class="bb-stat"><b>30</b> Tracked CVEs</div>
+            <div class="bb-stat"><b>24</b> Compliance Controls</div>
+            <div class="bb-stat"><b>6</b> Standards Frameworks</div>
+        </div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -8663,26 +8939,53 @@ with tab_swarm:
 
         target_kind = st.radio(
             "Target type",
-            ["Uploaded Python files", "Uploaded PDFs", "Authorized local directory",
+            ["Uploaded files (mixed types)", "Uploaded PDFs", "Authorized local directory",
              "Authorized URLs", "Authorized hosts"],
             key="swarm_target_kind",
         )
 
-        worker_count = st.slider(
-            "Worker pool size", 1, SwarmOrchestrator.HARD_MAX_WORKERS, 8, key="worker_count",
-            help=f"Hard-capped at {SwarmOrchestrator.HARD_MAX_WORKERS} regardless of input — "
-                 "this bounds concurrent execution, not how many tasks get queued.",
-        )
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            worker_count = st.slider(
+                "Worker pool size (starting point)", 1, SwarmOrchestrator.HARD_MAX_WORKERS, 8, key="worker_count",
+                help=f"Hard-capped at {SwarmOrchestrator.HARD_MAX_WORKERS} regardless of input. Adaptive "
+                     "concurrency will automatically back this off under a high failure rate and ramp it "
+                     "back up during clean runs — this is only the starting concurrency.",
+            )
+        with wc2:
+            incremental_mode = st.checkbox(
+                "Incremental scan (skip unchanged files)", value=False, key="incremental_mode",
+                help="Skips any file whose content hash matches the last time THIS orchestrator scanned "
+                     "it. Useful for repeated campaigns over the same codebase — only re-scans what changed.",
+            )
+            auto_synthesize_mode = st.checkbox(
+                "Auto-generate Intelligence Briefing", value=True, key="auto_synth_mode",
+                help="After the swarm completes, automatically feed all results into the Exploit Chain "
+                     "Correlator, Posture Scorer, and Executive Summary generator for one consolidated view.",
+            )
 
         launch_disabled = False
         swarm_file_contents: Dict[str, Any] = {}
 
-        if target_kind == "Uploaded Python files":
-            up = st.file_uploader("Upload .py files", accept_multiple_files=True, type=["py"], key="swarm_py_upload")
+        if target_kind == "Uploaded files (mixed types)":
+            up = st.file_uploader(
+                "Upload files — auto-routed by type to the right engine",
+                accept_multiple_files=True, key="swarm_py_upload",
+                type=["py", "js", "ts", "php", "java", "go", "c", "cs", "rb", "rs",
+                     "yml", "yaml", "txt", "json"],
+            )
             if up:
                 for uf in up:
-                    swarm_file_contents[uf.name] = uf.read().decode("utf-8", errors="ignore")
-                st.caption(f"{len(swarm_file_contents)} file(s) ready — will become {len(swarm_file_contents)} task(s).")
+                    raw = uf.read()
+                    try:
+                        swarm_file_contents[uf.name] = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        swarm_file_contents[uf.name] = raw
+                dispatch_preview = {name: SwarmOrchestrator.detect_task_type(name) for name in swarm_file_contents}
+                st.caption(f"{len(swarm_file_contents)} file(s) ready. Routing: " +
+                          ", ".join(f"`{n}`→{t}" for n, t in list(dispatch_preview.items())[:6]) +
+                          (f" (+{len(dispatch_preview)-6} more)" if len(dispatch_preview) > 6 else ""))
+
 
         elif target_kind == "Uploaded PDFs":
             up = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"], key="swarm_pdf_upload")
@@ -8698,6 +9001,10 @@ with tab_swarm:
                 launch_disabled = True
             else:
                 chosen_dir = st.selectbox("Authorized directory", [e.value for e in dir_scopes], key="swarm_dir_choice")
+                st.caption("Auto-dispatches by file type: .py → semantic+code+malware+secrets · "
+                          "Dockerfile/compose/K8s YAML → container security · requirements.txt/package.json → "
+                          "dependency CVEs · .js/.php/.java/.go/.c/.cs/.rb/.rs → language-specific pattern rules · "
+                          ".pdf → structural threat scan.")
 
         elif target_kind == "Authorized URLs":
             dom_scopes = [e for e in auth_manager.list_scope() if e.target_type == "domain"]
@@ -8723,12 +9030,12 @@ with tab_swarm:
             swarm_orchestrator.reset()
 
             try:
-                if target_kind == "Uploaded Python files" and swarm_file_contents:
+                if target_kind == "Uploaded files (mixed types)" and swarm_file_contents:
                     swarm_orchestrator.build_file_tasks(list(swarm_file_contents.keys()))
                 elif target_kind == "Uploaded PDFs" and swarm_file_contents:
                     swarm_orchestrator.build_pdf_tasks(list(swarm_file_contents.keys()))
                 elif target_kind == "Authorized local directory":
-                    swarm_orchestrator.build_directory_tasks(chosen_dir, extensions=(".py",))
+                    swarm_orchestrator.build_directory_tasks(chosen_dir)  # default extensions now cover all engines
                 elif target_kind == "Authorized URLs":
                     urls = [u.strip() for u in url_list_str.splitlines() if u.strip()]
                     swarm_orchestrator.build_url_tasks(urls)
@@ -8746,14 +9053,21 @@ with tab_swarm:
                         "semantic": semantic_scanner, "code": code_scanner,
                         "malware": malware_scanner, "secrets": entropy_scanner,
                         "url": url_scanner_engine, "network": network_scanner,
-                        "pdf": pdf_analyzer_engine,
+                        "pdf": pdf_analyzer_engine, "pattern": semantic_scanner.pattern_scanner,
+                        "container": container_analyzer, "dependency": dep_scanner,
                     }
-                    with st.spinner(f"Running {task_count} task(s) across {swarm_orchestrator.max_workers} worker(s)..."):
-                        report = swarm_orchestrator.run_swarm(engines, file_contents=swarm_file_contents)
+                    with st.spinner(f"Running {task_count} task(s) starting at {swarm_orchestrator.max_workers} "
+                                    f"worker(s) (adaptive concurrency will adjust automatically)..."):
+                        report = swarm_orchestrator.run_swarm(
+                            engines, file_contents=swarm_file_contents,
+                            incremental=incremental_mode, auto_synthesize=auto_synthesize_mode,
+                            correlator=exploit_correlator, posture_scorer=posture_scorer,
+                            exec_summary_gen=exec_summary_gen,
+                        )
                     st.session_state.swarm_reports.append(report)
-                    st.success(f"Swarm complete: {report.completed}/{report.total_tasks} tasks done, "
-                              f"{report.rejected} rejected (out of scope), {report.total_findings} total findings. "
-                              f"See the Results tab.")
+                    st.success(f"Swarm complete in {report.duration_seconds:.1f}s: {report.completed}/{report.total_tasks} "
+                              f"done, {report.skipped} skipped (unchanged), {report.rejected} rejected (out of scope), "
+                              f"{report.total_findings} total findings. See the Results tab.")
             except PermissionError as e:
                 st.error(f"Authorization error: {e}")
 
@@ -8771,12 +9085,16 @@ with tab_swarm:
                                       format_func=lambda i: report_options[i], key="swarm_report_pick")
             report = swarm_reports[picked_idx]
 
-            r1, r2, r3, r4, r5 = st.columns(5)
+            r1, r2, r3, r4, r5, r6 = st.columns(6)
             r1.metric("Total Tasks", report.total_tasks)
             r2.metric("Completed", report.completed)
-            r3.metric("Rejected (Scope)", report.rejected)
-            r4.metric("Failed", report.failed)
-            r5.metric("Total Findings", report.total_findings, delta=f"{report.total_critical} critical" if report.total_critical else None)
+            r3.metric("Skipped (unchanged)", report.skipped)
+            r4.metric("Rejected (Scope)", report.rejected)
+            r5.metric("Failed", report.failed)
+            r6.metric("Duration", f"{report.duration_seconds:.1f}s")
+
+            st.metric("Total Findings", report.total_findings,
+                     delta=f"{report.total_critical} critical" if report.total_critical else None)
 
             task_df = pd.DataFrame([t.to_dict() for t in report.tasks])
             st.dataframe(task_df, use_container_width=True, height=350)
@@ -8786,13 +9104,40 @@ with tab_swarm:
             if worst_tasks:
                 st.markdown("**Highest-risk tasks:**")
                 for t in worst_tasks[:10]:
-                    st.markdown(f"- 🔴 `{t.target}` — {t.result_summary}")
+                    st.markdown(f"- 🔴 `{t.target}` [{t.task_type}] — {t.result_summary}")
+
+            retried_tasks = [t for t in report.tasks if t.retry_count > 0]
+            if retried_tasks:
+                st.caption(f"↻ {len(retried_tasks)} task(s) required a retry due to a transient error "
+                          f"(automatically recovered).")
 
             rejected_tasks = [t for t in report.tasks if t.status == AgentTaskStatus.REJECTED]
             if rejected_tasks:
                 with st.expander(f"⛔ {len(rejected_tasks)} task(s) rejected — out of authorized scope"):
                     for t in rejected_tasks:
                         st.markdown(f"- `{t.target}`: {t.error}")
+
+            if report.briefing:
+                st.markdown("---")
+                st.markdown("### 🧠 Swarm Intelligence Briefing")
+                st.caption("Auto-generated by feeding this run's combined results into the Exploit Chain "
+                          "Correlator, Posture Scorer, and Executive Summary generator.")
+
+                bp1, bp2 = st.columns(2)
+                bp1.metric("Posture Score", f"{report.briefing.posture_score.overall}/100",
+                          delta=report.briefing.posture_score.grade)
+                bp2.metric("Exploit Chains Found", len(report.briefing.exploit_chains))
+
+                if report.briefing.exploit_chains:
+                    st.markdown("**Correlated attack chains from this run:**")
+                    for chain in report.briefing.exploit_chains:
+                        with st.expander(f"[{chain.severity}] {chain.title}"):
+                            for step in chain.steps:
+                                st.markdown(f"{step.order}. **[{step.source_engine}]** {step.description}")
+                            st.markdown(f"**Remediation priority:** {chain.remediation_priority}")
+
+                with st.expander("📄 Executive Summary"):
+                    st.markdown(report.briefing.executive_summary.replace("\n", "  \n"))
 
             swarm_json = json.dumps(report.to_dict(), indent=2, default=str)
             st.download_button("⬇️ Download Swarm Report (JSON)", data=swarm_json,
