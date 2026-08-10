@@ -471,13 +471,14 @@ VULNERABILITY_RULES: List[Dict[str, Any]] = [
         "description": "A private key is embedded directly in source code or configuration.",
         "remediation": "Remove the key from source control, rotate it immediately, and load keys from a secrets manager."
     },
-    {
-        "id": "SEC-050", "title": "Insecure use of eval() in JavaScript",
-        "pattern": r"\beval\s*\(\s*[a-zA-Z_]",
-        "severity": "High", "cwe": "CWE-95", "cvss": 8.1,
-        "description": "JavaScript eval() with a dynamic argument can execute attacker-controlled code.",
-        "remediation": "Avoid eval(); use JSON.parse for data and explicit function references for logic."
-    },
+    # NOTE: SEC-050 ("Insecure use of eval() in JavaScript") was removed
+    # here after stress testing showed it fired redundantly on Python code
+    # (its pattern has no language restriction) while displaying JS-specific
+    # remediation text ("use JSON.parse") that doesn't apply. Its pattern
+    # (\beval\(\s*[a-zA-Z_]) is a strict subset of SEC-005's broader
+    # (\beval\() pattern, which already covers every case this rule would
+    # catch with correct, language-neutral remediation — removing it costs
+    # zero detection coverage while fixing the mislabeled duplicate.
     {
         "id": "SEC-051", "title": "Insecure PHP dynamic include (LFI/RFI)",
         "pattern": r"include\s*\(\s*\$_(GET|POST|REQUEST)",
@@ -1634,17 +1635,70 @@ def matches_any(name: Optional[str], patterns: Set[str]) -> bool:
 
 class FunctionCollector(ast.NodeVisitor):
     """Collects all module-level (and nested) function definitions by name,
-    building the function registry the call graph and taint walker rely on."""
+    building the function registry the call graph and taint walker rely on.
+
+    Method names are qualified as "ClassName.method_name" when inside a
+    class body. This matters: without qualification, two different classes
+    each defining a same-named method (e.g. two Flask MethodView subclasses
+    both defining get()) would silently overwrite each other in a flat
+    name->node dict — meaning one of them is NEVER analyzed at all, with
+    no error or warning. This was found via adversarial testing against a
+    multi-class-view file: a second class's get() method silently discarded
+    the first class's get() from the function registry entirely, so a real
+    SQL injection in the first class's method was never even examined.
+
+    Known remaining limitation (not fixed here): calls of the form
+    self.other_method(...) still resolve to the unqualified name
+    "self.other_method", which won't match a qualified "ClassName.method"
+    key — so intra-class method-to-method interprocedural calls remain
+    unresolved (same as before this fix; not a regression). Each method is
+    still correctly analyzed as its own independent entry point, which is
+    what fixes the collision bug above."""
 
     def __init__(self) -> None:
         self.functions: Dict[str, ast.FunctionDef] = {}
+        self._class_stack: List[str] = []
+
+    def _qualified(self, name: str) -> str:
+        if self._class_stack:
+            return f"{self._class_stack[-1]}.{name}"
+        return name
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._class_stack.append(node.name)
+        self.generic_visit(node)
+        self._class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.functions[node.name] = node
+        self.functions[self._qualified(node.name)] = node
         self.generic_visit(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # treat like sync
-        self.functions[node.name] = node  # type: ignore[assignment]
+        self.functions[self._qualified(node.name)] = node  # type: ignore[assignment]
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # Lambda-assigned handlers are invisible to a walker that only
+        # understands FunctionDef/AsyncFunctionDef nodes — found via
+        # adversarial testing with `handler = lambda request: cursor.execute(...)`,
+        # a real (if less common) pattern for simple route handlers and
+        # callbacks. Fix: synthesize a REAL ast.FunctionDef wrapping the
+        # lambda's single body expression as `return <expr>`, so it flows
+        # through the exact same analysis path as any other function with
+        # zero special-casing needed elsewhere in the walker.
+        if (isinstance(node.value, ast.Lambda) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            lam = node.value
+            synthetic = ast.FunctionDef(
+                name=self._qualified(node.targets[0].id),
+                args=lam.args,
+                body=[ast.Return(value=lam.body, lineno=getattr(lam, "lineno", node.lineno),
+                                 col_offset=getattr(lam, "col_offset", 0))],
+                decorator_list=[], returns=None,
+                lineno=node.lineno, col_offset=getattr(node, "col_offset", 0),
+            )
+            ast.fix_missing_locations(synthetic)
+            self.functions[self._qualified(node.targets[0].id)] = synthetic
         self.generic_visit(node)
 
 
@@ -1967,8 +2021,9 @@ class TaintWalker:
         self.aliases = aliases
         self.file_name = file_name
         self.max_depth = max_depth
-        self.call_stack: List[str] = []
-        self.memo: Dict[Tuple[str, FrozenSet[str]], Set[str]] = {}
+        self.call_stack: List[int] = []          # id(func_node) — correctness-critical uniqueness
+        self.call_stack_names: List[str] = []    # func_node.name — human-readable, for reporting only
+        self.memo: Dict[Tuple[int, FrozenSet[str]], Set[str]] = {}
         self.findings: List[Finding] = []
         self._seen: Set[Tuple[str, int, str]] = set()
         self._cfg_cache: Dict[str, int] = {}  # function name -> cyclomatic complexity
@@ -1990,13 +2045,23 @@ class TaintWalker:
 
     def walk_function(self, func_node: ast.FunctionDef, initial_taint: Dict[str, Set[str]],
                        path: List[PropagationStep]) -> Set[str]:
-        sig = (func_node.name, frozenset(initial_taint.keys()))
-        if func_node.name in self.call_stack or len(self.call_stack) >= self.max_depth:
+        # CRITICAL: keyed by id(func_node), not func_node.name. Two different
+        # methods (e.g. from different classes) can share the same bare name
+        # ("get", "post", etc.) — found via adversarial testing, where three
+        # unrelated classes' get() methods all shared the memo/call-stack key
+        # ("get", frozenset({"request"})), causing the 2nd and 3rd to hit a
+        # false memo cache from the 1st and never actually be analyzed at
+        # all. id() is stable and unique per AST node for the lifetime of a
+        # single analyze_python() call, which is exactly the scope needed.
+        node_id = id(func_node)
+        sig = (node_id, frozenset(initial_taint.keys()))
+        if node_id in self.call_stack or len(self.call_stack) >= self.max_depth:
             return set()
         if sig in self.memo:
             return self.memo[sig]
 
-        self.call_stack.append(func_node.name)
+        self.call_stack.append(node_id)
+        self.call_stack_names.append(func_node.name)
         taint_state: Dict[str, Set[str]] = {k: set(v) for k, v in initial_taint.items()}
         return_taint: Set[str] = set()
 
@@ -2022,6 +2087,7 @@ class TaintWalker:
         self._walk_body(func_node.body, taint_state, path, return_taint, func_node.name)
 
         self.call_stack.pop()
+        self.call_stack_names.pop()
         self.memo[sig] = return_taint
         return return_taint
 
@@ -2069,6 +2135,12 @@ class TaintWalker:
             self._eval_expr(stmt.value, taint_state, path, func_name, is_statement_context=True)
 
         elif isinstance(stmt, ast.If):
+            # Evaluate the condition itself first — previously skipped
+            # entirely, found via adversarial testing with a walrus operator
+            # in an if-condition. This also means a source or sink call
+            # written directly inside a condition (unusual but valid Python)
+            # is no longer invisible to the analysis.
+            self._eval_expr(stmt.test, taint_state, path, func_name)
             true_state, false_state = dict(taint_state), dict(taint_state)
             self._walk_body(stmt.body, true_state, path, return_taint, func_name)
             self._walk_body(stmt.orelse, false_state, path, return_taint, func_name)
@@ -2088,6 +2160,7 @@ class TaintWalker:
             self._walk_body(stmt.orelse, taint_state, path, return_taint, func_name)
 
         elif isinstance(stmt, ast.While):
+            self._eval_expr(stmt.test, taint_state, path, func_name)
             for _ in range(2):
                 self._walk_body(stmt.body, taint_state, path, return_taint, func_name)
             self._walk_body(stmt.orelse, taint_state, path, return_taint, func_name)
@@ -2183,6 +2256,20 @@ class TaintWalker:
         if isinstance(node, ast.Call):
             return self._eval_call(node, taint_state, path, func_name, is_statement_context)
 
+        if isinstance(node, ast.NamedExpr):  # walrus operator: (x := expr)
+            # Unlike a normal expression, this has an assignment SIDE EFFECT
+            # that must bind into taint_state — found missing during
+            # adversarial testing: `if (uid := request.args.get('id')):`
+            # never propagated taint to `uid` because the generic fallback
+            # only computes a return value, it doesn't perform assignment.
+            value_taint = self._eval_expr(node.value, taint_state, path, func_name)
+            if isinstance(node.target, ast.Name):
+                if value_taint:
+                    taint_state[node.target.id] = set(value_taint)
+                else:
+                    taint_state.pop(node.target.id, None)
+            return value_taint
+
         if isinstance(node, (ast.BoolOp, ast.Compare, ast.UnaryOp, ast.IfExp)):
             result = set()
             for child in ast.iter_child_nodes(node):
@@ -2233,11 +2320,32 @@ class TaintWalker:
         if resolved and resolved in self.functions:
             tainted_params: Dict[str, Set[str]] = {}
             callee_node = self.functions[resolved]
+            regular_params = callee_node.args.args
             for i, arg_expr in enumerate(node.args):
-                if i < len(callee_node.args.args):
+                if i < len(regular_params):
                     t = self._eval_expr(arg_expr, taint_state, path, func_name)
                     if t:
-                        tainted_params[callee_node.args.args[i].arg] = t
+                        tainted_params[regular_params[i].arg] = t
+                elif callee_node.args.vararg is not None:
+                    # Overflow positional args bind to *args — found missing
+                    # during adversarial testing: a wrapper like
+                    # def generic_executor(*args, **kwargs) received zero
+                    # tainted parameters because only regularly-named
+                    # parameters were ever bound, silently breaking taint
+                    # tracking through any *args-based indirection wrapper
+                    # (a common pattern for generic dispatch/logging wrappers).
+                    t = self._eval_expr(arg_expr, taint_state, path, func_name)
+                    if t:
+                        vararg_name = callee_node.args.vararg.arg
+                        tainted_params[vararg_name] = tainted_params.get(vararg_name, set()) | t
+            if callee_node.args.kwarg is not None:
+                regular_param_names = {a.arg for a in regular_params}
+                for kw in node.keywords:
+                    if kw.arg is not None and kw.arg not in regular_param_names and kw.value is not None:
+                        t = self._eval_expr(kw.value, taint_state, path, func_name)
+                        if t:
+                            kwarg_name = callee_node.args.kwarg.arg
+                            tainted_params[kwarg_name] = tainted_params.get(kwarg_name, set()) | t
             if tainted_params:
                 path.append(PropagationStep(line=node.lineno, code=f"{resolved}(...) [interprocedural call]",
                                              kind="call", function=func_name))
@@ -2300,7 +2408,7 @@ class TaintWalker:
                 unresolved_calls=self._unresolved_calls_in_current_path, complexity=complexity,
             )
 
-            impacted = list(dict.fromkeys(self.call_stack))  # preserve order, dedupe
+            impacted = list(dict.fromkeys(self.call_stack_names))  # preserve order, dedupe
             finding_path = path + [PropagationStep(line=call_node.lineno, code=node_source(call_node),
                                                      kind="sink", function=func_name)]
 
@@ -3989,8 +4097,6 @@ PATTERN_RULES += [
 MOCK_CVE_DATABASE += [
     {"package": "django", "vulnerable_range": "<3.2.25", "cve_id": "CVE-2024-27351", "severity": "High",
      "summary": "Potential ReDoS via certain inputs to the intcomma template filter.", "fixed_version": "3.2.25"},
-    {"package": "flask", "vulnerable_range": "<3.0.3", "cve_id": "CVE-2023-30861", "severity": "High",
-     "summary": "Possible session cookie leak when using proxy with non-default trusted hosts.", "fixed_version": "3.0.3"},
     {"package": "werkzeug", "vulnerable_range": "<3.0.3", "cve_id": "CVE-2024-34069", "severity": "High",
      "summary": "Debugger PIN bypass via crafted cookie in the Werkzeug debugger.", "fixed_version": "3.0.3"},
     {"package": "sqlalchemy", "vulnerable_range": "<2.0.21", "cve_id": "CVE-2023-27517", "severity": "Medium",
@@ -6003,10 +6109,12 @@ class SwarmOrchestrator:
         self.tasks: List[AgentTask] = []
         self._lock = threading.Lock()
         self._file_hash_cache: Dict[str, str] = {}
+        self._collected_entry_points: List["EntryPoint"] = []
         self.effective_worker_history: List[int] = []  # telemetry: concurrency over the run, for introspection/testing
 
     def reset(self) -> None:
         self.tasks = []
+        self._collected_entry_points = []
 
     def clear_incremental_cache(self) -> None:
         self._file_hash_cache = {}
@@ -6155,6 +6263,8 @@ class SwarmOrchestrator:
                 findings: List[Any] = []
                 if task.target.endswith(".py"):
                     findings += engines["semantic"].analyze_python(task.target, content)
+                    if "surface" in engines:
+                        self._collected_entry_points.extend(engines["surface"].analyze(task.target, content))
                 findings += engines["code"].scan_text(task.target, content)
                 findings += engines["malware"].scan(task.target, content)
                 findings += engines["secrets"].scan(task.target, content)
@@ -6168,6 +6278,8 @@ class SwarmOrchestrator:
                 findings = []
                 if task.target.endswith(".py"):
                     findings += engines["semantic"].analyze_python(task.target, content)
+                    if "surface" in engines:
+                        self._collected_entry_points.extend(engines["surface"].analyze(task.target, content))
                 findings += engines["code"].scan_text(task.target, content)
                 findings += engines["malware"].scan(task.target, content)
                 findings += engines["secrets"].scan(task.target, content)
@@ -6368,8 +6480,9 @@ class SwarmOrchestrator:
 
         combined_network = network_reports[0] if network_reports else None
         chains = correlator.correlate(all_semantic, all_code, all_malware, all_container,
-                                      [], combined_network, all_secrets)
-        posture = posture_scorer.score(all_code, all_semantic, all_malware, [], all_secrets, [], [])
+                                      self._collected_entry_points, combined_network, all_secrets)
+        posture = posture_scorer.score(all_code, all_semantic, all_malware, [], all_secrets, [],
+                                       self._collected_entry_points)
         summary_text = exec_summary_gen.summarize(all_code + all_semantic, [], [], [])
 
         return SwarmIntelligenceBriefing(
@@ -6908,7 +7021,14 @@ class ExploitChainCorrelator:
         if not internet_routes:
             return chains
 
-        dangerous_classes = {"sql_injection", "command_injection", "code_execution", "template_injection"}
+        # NOTE: path_traversal and insecure_deserialization are included here
+        # (not just the classic injection classes) because they are equally
+        # "no chaining required" exploitable when directly reachable from an
+        # internet-facing route — found missing during stress testing, where
+        # a route with a direct path-traversal sink produced no chain despite
+        # being just as immediately dangerous as a SQLi-reachable route.
+        dangerous_classes = {"sql_injection", "command_injection", "code_execution",
+                             "template_injection", "path_traversal", "insecure_deserialization"}
         for finding in semantic_findings:
             vuln_class = getattr(finding, "vuln_class", "")
             if vuln_class not in dangerous_classes:
@@ -9055,6 +9175,7 @@ with tab_swarm:
                         "url": url_scanner_engine, "network": network_scanner,
                         "pdf": pdf_analyzer_engine, "pattern": semantic_scanner.pattern_scanner,
                         "container": container_analyzer, "dependency": dep_scanner,
+                        "surface": attack_surface_mapper,
                     }
                     with st.spinner(f"Running {task_count} task(s) starting at {swarm_orchestrator.max_workers} "
                                     f"worker(s) (adaptive concurrency will adjust automatically)..."):
