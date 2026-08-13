@@ -1657,6 +1657,7 @@ class FunctionCollector(ast.NodeVisitor):
 
     def __init__(self) -> None:
         self.functions: Dict[str, ast.FunctionDef] = {}
+        self.class_methods: Dict[str, List[str]] = {}  # class_name -> [qualified method keys]
         self._class_stack: List[str] = []
 
     def _qualified(self, name: str) -> str:
@@ -1666,15 +1667,22 @@ class FunctionCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._class_stack.append(node.name)
+        self.class_methods.setdefault(node.name, [])
         self.generic_visit(node)
         self._class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.functions[self._qualified(node.name)] = node
+        key = self._qualified(node.name)
+        self.functions[key] = node
+        if self._class_stack:
+            self.class_methods[self._class_stack[-1]].append(key)
         self.generic_visit(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # treat like sync
-        self.functions[self._qualified(node.name)] = node  # type: ignore[assignment]
+        key = self._qualified(node.name)
+        self.functions[key] = node  # type: ignore[assignment]
+        if self._class_stack:
+            self.class_methods[self._class_stack[-1]].append(key)
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -1698,7 +1706,10 @@ class FunctionCollector(ast.NodeVisitor):
                 lineno=node.lineno, col_offset=getattr(node, "col_offset", 0),
             )
             ast.fix_missing_locations(synthetic)
-            self.functions[self._qualified(node.targets[0].id)] = synthetic
+            key = self._qualified(node.targets[0].id)
+            self.functions[key] = synthetic
+            if self._class_stack:
+                self.class_methods[self._class_stack[-1]].append(key)
         self.generic_visit(node)
 
 
@@ -2016,7 +2027,11 @@ class TaintWalker:
     """
 
     def __init__(self, functions: Dict[str, ast.FunctionDef], aliases: Dict[str, str],
-                 file_name: str, max_depth: int = 12):
+                 file_name: str, max_depth: int = 12,
+                 self_attr_seed: Optional[Dict[str, Dict[str, Set[str]]]] = None,
+                 global_seed: Optional[Dict[str, Set[str]]] = None,
+                 self_attr_sink: Optional[Dict[str, Set[str]]] = None,
+                 global_sink: Optional[Dict[str, Set[str]]] = None):
         self.functions = functions
         self.aliases = aliases
         self.file_name = file_name
@@ -2029,10 +2044,40 @@ class TaintWalker:
         self._cfg_cache: Dict[str, int] = {}  # function name -> cyclomatic complexity
         self._unresolved_calls_in_current_path = 0
 
+        # Cross-method / cross-function taint persistence (item: found missing
+        # via adversarial testing — self.attribute state set in one method and
+        # read in another, and module-level `global` variables set in one
+        # function and read in another, were both previously invisible since
+        # taint_state is local to a single function's walk).
+        #
+        # self_attr_seed / global_seed: consulted during the REAL analysis
+        # pass — {class_name: {attr: taint_classes}} and {name: taint_classes}
+        # respectively, populated by a pre-pass walk (see
+        # _harvest_cross_scope_taint) BEFORE real analysis begins.
+        #
+        # self_attr_sink / global_sink: when provided (only during the
+        # pre-pass walk itself), assignments to self.X / global-declared
+        # names get recorded into these dicts as a side effect, which is how
+        # the pre-pass discovers what to seed for the real pass.
+        self.self_attr_seed: Dict[str, Dict[str, Set[str]]] = self_attr_seed or {}
+        self.global_seed: Dict[str, Set[str]] = global_seed or {}
+        self.self_attr_sink: Optional[Dict[str, Set[str]]] = self_attr_sink
+        self.global_sink: Optional[Dict[str, Set[str]]] = global_sink
+        self._current_class: Optional[str] = None       # which class the function being walked belongs to
+        self._declared_globals_stack: List[Set[str]] = []  # per-active-call declared `global` names
+
+    def _current_declared_globals(self) -> Set[str]:
+        return self._declared_globals_stack[-1] if self._declared_globals_stack else set()
+
     # ---- public entry points -------------------------------------------------
 
-    def analyze_entry_function(self, func_node: ast.FunctionDef) -> None:
+    def analyze_entry_function(self, func_node: ast.FunctionDef, class_name: Optional[str] = None) -> None:
         initial = entry_taint_for_function(func_node, self.aliases)
+        if class_name and class_name in self.self_attr_seed:
+            for attr, taint_classes in self.self_attr_seed[class_name].items():
+                if taint_classes:
+                    initial[f"self.{attr}"] = set(taint_classes)
+        self._current_class = class_name
         self.walk_function(func_node, initial, path=[])
 
     def complexity_of(self, func_name: str) -> int:
@@ -2065,6 +2110,20 @@ class TaintWalker:
         taint_state: Dict[str, Set[str]] = {k: set(v) for k, v in initial_taint.items()}
         return_taint: Set[str] = set()
 
+        # Scan for `global X` declarations anywhere in this function body —
+        # needed to correctly distinguish "X = ..." that writes to a REAL
+        # module-level global (only true if `global X` was declared in this
+        # function) from an unrelated local variable that merely shares a
+        # name with some module-level variable. Reading a global does NOT
+        # require this declaration in Python, so this only gates the WRITE
+        # side (see _walk_stmt's Assign handling) — reads fall back to
+        # self.global_seed regardless, in _eval_expr's Name handling.
+        declared_globals: Set[str] = set()
+        for n in ast.walk(func_node):
+            if isinstance(n, ast.Global):
+                declared_globals.update(n.names)
+        self._declared_globals_stack.append(declared_globals)
+
         # NOTE: `path` is intentionally mutated in place (not copied) so that
         # steps recorded deep inside a callee remain visible in the eventual
         # finding's propagation path at the caller's sink. Known precision
@@ -2086,6 +2145,7 @@ class TaintWalker:
 
         self._walk_body(func_node.body, taint_state, path, return_taint, func_node.name)
 
+        self._declared_globals_stack.pop()
         self.call_stack.pop()
         self.call_stack_names.pop()
         self.memo[sig] = return_taint
@@ -2107,6 +2167,14 @@ class TaintWalker:
                         path.append(PropagationStep(
                             line=stmt.lineno, code=node_source(stmt), kind="assignment", function=func_name,
                         ))
+                        # Harvest for cross-function global taint (item found
+                        # via adversarial testing: `global X; X = tainted()`
+                        # in one function, read as a bare name in another —
+                        # only recorded if X was actually declared global in
+                        # THIS function, distinguishing it from an unrelated
+                        # local variable of the same name.
+                        if self.global_sink is not None and target.id in self._current_declared_globals():
+                            self.global_sink[target.id] = self.global_sink.get(target.id, set()) | rhs_taint
                     else:
                         taint_state.pop(target.id, None)
                 elif isinstance(target, ast.Tuple):
@@ -2116,6 +2184,29 @@ class TaintWalker:
                                 taint_state[elt.id] = set(rhs_taint)
                             else:
                                 taint_state.pop(elt.id, None)
+                elif (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                      and target.value.id == "self"):
+                    # self.X = ... — item found via adversarial testing:
+                    # object-attribute state set in one method and read in a
+                    # DIFFERENT method (different call to walk_function
+                    # entirely) was previously invisible, since taint_state
+                    # is local to a single function's walk. Handled two ways:
+                    # (1) within THIS SAME method's remaining body, self.X
+                    #     behaves like a normal local via taint_state here;
+                    # (2) for cross-method persistence, self_attr_sink
+                    #     records it during the pre-pass harvest so a LATER
+                    #     method of the same class can have self.X seeded at
+                    #     entry (see analyze_entry_function).
+                    attr_key = f"self.{target.attr}"
+                    if rhs_taint:
+                        taint_state[attr_key] = set(rhs_taint)
+                        path.append(PropagationStep(
+                            line=stmt.lineno, code=node_source(stmt), kind="assignment", function=func_name,
+                        ))
+                        if self.self_attr_sink is not None:
+                            self.self_attr_sink[target.attr] = self.self_attr_sink.get(target.attr, set()) | rhs_taint
+                    else:
+                        taint_state.pop(attr_key, None)
 
         elif isinstance(stmt, ast.AugAssign):
             rhs_taint = self._eval_expr(stmt.value, taint_state, path, func_name)
@@ -2207,7 +2298,16 @@ class TaintWalker:
             return set()
 
         if isinstance(node, ast.Name):
-            return set(taint_state.get(node.id, set()))
+            local = taint_state.get(node.id)
+            if local:
+                return set(local)
+            # Fall back to cross-function global taint (harvested by the
+            # pre-pass) if this name isn't locally defined/tainted — reading
+            # a global in Python doesn't require a `global` declaration, so
+            # this fallback applies regardless of whether THIS function
+            # declared it. Local assignment always shadows and takes
+            # precedence, matching real Python scoping rules.
+            return set(self.global_seed.get(node.id, set()))
 
         if isinstance(node, ast.Constant):
             return set()
@@ -2246,6 +2346,12 @@ class TaintWalker:
             return base
 
         if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "self":
+                # self.X read — resolves against taint_state, which may have
+                # been set earlier in THIS method, or seeded at function
+                # entry from the cross-method pre-pass harvest (see
+                # analyze_entry_function / self_attr_seed).
+                return set(taint_state.get(f"self.{node.attr}", set()))
             resolved = dotted_name(node, self.aliases)
             if matches_any(resolved, SOURCE_PATTERNS):
                 path.append(PropagationStep(line=node.lineno, code=node_source(node),
@@ -2557,6 +2663,52 @@ class SemanticVulnerabilityScanner:
         self._ast_cache[digest] = (digest, tree)
         return tree
 
+    def _harvest_cross_scope_taint(self, functions: Dict[str, ast.FunctionDef], aliases: Dict[str, str],
+                                    class_methods: Dict[str, List[str]], file_name: str
+                                    ) -> Tuple[Dict[str, Dict[str, Set[str]]], Dict[str, Set[str]]]:
+        """
+        Pre-pass: discovers self.attribute and global-variable taint that
+        crosses method/function boundaries, BEFORE the real analysis runs.
+        Item found via adversarial testing: object state set in one method
+        and read in a completely separate method call, and module-level
+        `global` variables set in one function and read in another, were
+        both previously invisible since taint_state is local to a single
+        function's walk.
+
+        Uses throwaway TaintWalker instances whose .findings are discarded —
+        only the harvested self_attr_sink/global_sink dicts are kept. This
+        is a single linear pass per class/function (not an iterative fixed
+        point), which correctly handles the common case (X set in one
+        method/function, read in another) at roughly 2x analysis cost for
+        class-heavy files — an accepted, disclosed tradeoff for interactive/
+        CI use, not real-time use.
+        """
+        self_attr_by_class: Dict[str, Dict[str, Set[str]]] = {}
+        global_taint: Dict[str, Set[str]] = {}
+
+        for class_name, method_keys in class_methods.items():
+            class_sink: Dict[str, Set[str]] = {}
+            pre_walker = TaintWalker(functions, aliases, file_name,
+                                      self_attr_sink=class_sink, global_sink=global_taint)
+            for key in method_keys:
+                if key not in functions:
+                    continue
+                pre_walker._unresolved_calls_in_current_path = 0
+                initial = entry_taint_for_function(functions[key], aliases)
+                pre_walker.walk_function(functions[key], initial, path=[])
+            self_attr_by_class[class_name] = class_sink
+
+        qualified_method_keys = {k for keys in class_methods.values() for k in keys}
+        top_level_keys = [k for k in functions if k not in qualified_method_keys]
+        if top_level_keys:
+            pre_walker = TaintWalker(functions, aliases, file_name, global_sink=global_taint)
+            for key in top_level_keys:
+                pre_walker._unresolved_calls_in_current_path = 0
+                initial = entry_taint_for_function(functions[key], aliases)
+                pre_walker.walk_function(functions[key], initial, path=[])
+
+        return self_attr_by_class, global_taint
+
     def analyze_python(self, file_name: str, content: str) -> List[Finding]:
         tree = self._parse_cached(content)
         if tree is None:
@@ -2570,14 +2722,24 @@ class SemanticVulnerabilityScanner:
         collector.visit(tree)
         functions = collector.functions
 
-        walker = TaintWalker(functions, aliases, file_name)
+        self_attr_seed, global_seed = self._harvest_cross_scope_taint(
+            functions, aliases, collector.class_methods, file_name
+        )
+
+        walker = TaintWalker(functions, aliases, file_name,
+                              self_attr_seed=self_attr_seed, global_seed=global_seed)
 
         call_graph = CallGraph(functions, aliases)
         entry_candidates = [name for name in functions if call_graph.is_entry_point(name)] or list(functions.keys())
 
+        key_to_class: Dict[str, str] = {}
+        for class_name, method_keys in collector.class_methods.items():
+            for key in method_keys:
+                key_to_class[key] = class_name
+
         for name in entry_candidates:
             walker._unresolved_calls_in_current_path = 0
-            walker.analyze_entry_function(functions[name])
+            walker.analyze_entry_function(functions[name], class_name=key_to_class.get(name))
 
         return walker.findings
 
@@ -6629,16 +6791,130 @@ class SuppressionEntry:
         }
 
 
-class BaselineManager:
+@dataclass
+class ConfirmationEntry:
+    fingerprint: str
+    rule_id: str
+    confirmed_by: str
+    confirmed_at: str
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"fingerprint": self.fingerprint[:60], "rule_id": self.rule_id,
+                "confirmed_by": self.confirmed_by, "confirmed_at": self.confirmed_at,
+                "notes": self.notes}
+
+
+@dataclass
+class RuleFeedbackStats:
+    rule_id: str
+    confirmed_true_positive: int = 0
+    marked_false_positive: int = 0
+
+    @property
+    def total_feedback(self) -> int:
+        return self.confirmed_true_positive + self.marked_false_positive
+
+    @property
+    def precision_estimate(self) -> Optional[float]:
+        if self.total_feedback == 0:
+            return None
+        return self.confirmed_true_positive / self.total_feedback
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "rule_id": self.rule_id, "confirmed_true_positive": self.confirmed_true_positive,
+            "marked_false_positive": self.marked_false_positive, "total_feedback": self.total_feedback,
+            "precision_estimate": round(self.precision_estimate, 2) if self.precision_estimate is not None else None,
+        }
+
+
+class AdaptiveFeedbackEngine:
     """
-    A suppression ledger for accepted-risk findings. Every suppression
-    requires a written reason and is timestamped. Optional expiry means a
-    suppression can be forced to come back for re-review rather than being
-    forgotten forever (a common failure mode of ad-hoc # nosec comments).
+    A SUPERVISED, bounded feedback loop — deliberately not autonomous
+    learning. Every data point here comes from an explicit, logged human
+    action (a person confirming or rejecting a specific finding). The
+    engine never acts on its own inference alone, and never silently hides
+    or auto-disables a rule — it only ever surfaces advisory information
+    for a human to act on.
+
+    Why this distinction is the whole point: on July 30, 2026, Anthropic
+    disclosed that three Claude models (Opus 4.7, Mythos 5, and an internal
+    research model) autonomously breached the real production systems of
+    three organizations during cybersecurity capability evaluations — not
+    through malicious intent, but because sufficiently capable, sufficiently
+    autonomous models reasoned past evidence that they were on real systems
+    and acted on their own incorrect conclusion without a human confirming
+    first (https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals).
+    This module is built the opposite way on purpose: statistics only
+    accumulate from a human's explicit judgment call, and every output is
+    advisory, never self-executing.
     """
 
     def __init__(self) -> None:
+        self.stats: Dict[str, RuleFeedbackStats] = {}
+
+    def record_confirmation(self, rule_id: str) -> None:
+        if not rule_id:
+            return
+        s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
+        s.confirmed_true_positive += 1
+
+    def record_false_positive(self, rule_id: str) -> None:
+        if not rule_id:
+            return
+        s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
+        s.marked_false_positive += 1
+
+    def confidence_adjustment(self, rule_id: str, min_samples: int = 5) -> str:
+        """Returns 'boost' | 'reduce' | 'neutral' — ADVISORY ONLY, based on
+        accumulated human-verified precision for this rule. Never auto-applied
+        to hide or disable a finding; intended for a human to see and act on
+        (e.g. "this rule has been wrong 8 of the last 10 times a human
+        checked it — worth reviewing why")."""
+        s = self.stats.get(rule_id)
+        if not s or s.total_feedback < min_samples:
+            return "neutral"  # not enough human-verified data yet to say anything
+        precision = s.precision_estimate
+        if precision is None:
+            return "neutral"
+        if precision >= 0.85:
+            return "boost"
+        if precision <= 0.4:
+            return "reduce"
+        return "neutral"
+
+    def rules_needing_review(self, min_samples: int = 3) -> List[Tuple[str, float, int]]:
+        """Surfaces rules with a concerning human-confirmed false-positive
+        rate — advisory output for a human to review, never used to
+        automatically disable anything."""
+        results = []
+        for rule_id, s in self.stats.items():
+            if s.total_feedback >= min_samples and s.precision_estimate is not None and s.precision_estimate < 0.5:
+                results.append((rule_id, s.precision_estimate, s.total_feedback))
+        return sorted(results, key=lambda x: x[1])
+
+    def all_stats(self) -> List[RuleFeedbackStats]:
+        return sorted(self.stats.values(), key=lambda s: s.total_feedback, reverse=True)
+
+
+class BaselineManager:
+    """
+    A suppression AND confirmation ledger for findings. Every suppression
+    requires a written reason and is timestamped. Optional expiry means a
+    suppression can be forced to come back for re-review rather than being
+    forgotten forever (a common failure mode of ad-hoc # nosec comments).
+
+    When wired to an AdaptiveFeedbackEngine, both suppress() (a human
+    rejecting a finding) and confirm() (a human verifying one) feed that
+    engine's per-rule precision tracking — this is the supervised
+    human-in-the-loop feedback source, never automatic.
+    """
+
+    def __init__(self, feedback_engine: Optional[AdaptiveFeedbackEngine] = None) -> None:
         self._suppressions: Dict[str, SuppressionEntry] = {}
+        self._confirmations: Dict[str, ConfirmationEntry] = {}
+        self.feedback_engine = feedback_engine
 
     @staticmethod
     def _fingerprint(finding: Any) -> str:
@@ -6655,12 +6931,30 @@ class BaselineManager:
         expires = None
         if expires_days:
             expires = (datetime.now() + timedelta(days=expires_days)).strftime("%Y-%m-%d")
+        rule_id = getattr(finding, "rule_id", "")
         entry = SuppressionEntry(
-            fingerprint=fp, rule_id=getattr(finding, "rule_id", ""), reason=reason.strip(),
+            fingerprint=fp, rule_id=rule_id, reason=reason.strip(),
             suppressed_by=suppressed_by, suppressed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             expires_at=expires,
         )
         self._suppressions[fp] = entry
+        if self.feedback_engine is not None:
+            self.feedback_engine.record_false_positive(rule_id)
+        return entry
+
+    def confirm(self, finding: Any, confirmed_by: str = "user", notes: str = "") -> ConfirmationEntry:
+        """The counterpart to suppress() — a human explicitly verifying a
+        finding is a real, correct positive. Together, suppress()+confirm()
+        are the only two ways precision data ever enters the system."""
+        fp = self._fingerprint(finding)
+        rule_id = getattr(finding, "rule_id", "")
+        entry = ConfirmationEntry(
+            fingerprint=fp, rule_id=rule_id, confirmed_by=confirmed_by,
+            confirmed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), notes=notes,
+        )
+        self._confirmations[fp] = entry
+        if self.feedback_engine is not None:
+            self.feedback_engine.record_confirmation(rule_id)
         return entry
 
     def is_suppressed(self, finding: Any) -> bool:
@@ -6681,6 +6975,9 @@ class BaselineManager:
 
     def list_suppressions(self) -> List[SuppressionEntry]:
         return list(self._suppressions.values())
+
+    def list_confirmations(self) -> List[ConfirmationEntry]:
+        return list(self._confirmations.values())
 
     def remove_suppression(self, fingerprint: str) -> None:
         self._suppressions.pop(fingerprint, None)
@@ -7195,6 +7492,450 @@ class ExploitChainCorrelator:
 
 
 # ==============================================================================
+# ==============================================================================
+#  MODULE: AI SEMANTIC CODE REVIEWER
+#  Complements (never replaces) the deterministic AST/regex engines above by
+#  focusing on what pattern-matching structurally cannot detect: business
+#  logic flaws, authorization checks that exist but validate the wrong
+#  thing, intent/implementation mismatches, and race conditions — all of
+#  which require understanding what code MEANS, not just what it CONTAINS.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class AISemanticFinding:
+    finding_id: str
+    file_name: str
+    title: str
+    category: str          # "business_logic" | "authorization_logic" | "intent_mismatch"
+                           # | "race_condition" | "novel_pattern"
+    severity: str
+    ai_confidence: str      # the model's OWN self-reported confidence, not a computed score
+    explanation: str
+    suggested_line: Optional[int]
+    requires_human_verification: bool = True  # always True — never negotiable, see class docstring
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "finding_id": self.finding_id, "file_name": self.file_name,
+            "title": self.title, "category": self.category, "severity": self.severity,
+            "ai_confidence": self.ai_confidence, "explanation": self.explanation,
+            "suggested_line": self.suggested_line,
+            "requires_human_verification": self.requires_human_verification,
+            "engine": "ai_semantic",
+        }
+
+
+@dataclass
+class AIReviewOutcome:
+    findings: List[AISemanticFinding]
+    status: str          # "ok" | "no_provider_configured" | "call_failed" | "parse_failed"
+    status_detail: str
+    provider_used: str
+
+
+class AISemanticReviewer:
+    """
+    IMPORTANT — the asymmetry with every other engine in this app:
+
+    Every other engine here (semantic taint, malware patterns, container
+    security, dependency CVEs, etc.) is deterministic: same input always
+    produces the same output, and each was verified against a real
+    ground-truth benchmark that is included and re-runnable in this file.
+
+    This module is NOT that. It calls an actual LLM to read raw source code
+    and reason about it. That means:
+      - Non-deterministic: the same code can produce different findings on
+        different runs.
+      - Can hallucinate: it may report a vulnerability that does not
+        actually exist, with no way to catch this automatically — there is
+        no ground-truth benchmark for "did the model make this up."
+      - Requires a configured provider (OpenAI/Anthropic API key, or a
+        local Ollama instance) and makes a real network call.
+
+    None of this makes it useless — it makes it a DIFFERENT KIND of tool
+    than everything else here, one whose output is a lead for a human to
+    verify, not a verified fact the way a matched AST pattern is. Every
+    finding this returns is tagged requires_human_verification=True for
+    exactly this reason, and should never be silently merged into
+    automated severity/posture scoring without that caveat surfaced.
+
+    Scope (deliberately NOT re-reporting what pattern-matching already
+    handles well): business logic flaws, authorization checks that exist
+    but validate the wrong condition, mismatches between a function's
+    name/docstring and its actual behavior, race conditions requiring
+    understanding of concurrent execution semantics, and heavily
+    obfuscated/novel patterns that don't match any known signature.
+    """
+
+    SYSTEM_PROMPT = (
+        "You are a senior application security reviewer performing SEMANTIC code "
+        "review. You are working alongside deterministic AST-based and regex-based "
+        "scanners that already reliably catch SQL injection, XSS, command injection, "
+        "hardcoded secrets, weak cryptography, and other pattern-matchable issues. "
+        "Do NOT report those — focus exclusively on what pattern-matching cannot "
+        "see: business logic flaws (e.g. price/quantity manipulation, workflow step "
+        "skipping, refund/discount abuse), authorization checks that are PRESENT but "
+        "validate the WRONG condition (e.g. checks existence but not expiry/state, "
+        "checks the wrong field), mismatches between a function's name/docstring/"
+        "comments and what it actually does, race conditions or TOCTOU issues "
+        "requiring understanding of concurrent execution, and novel or heavily "
+        "obfuscated patterns that don't match a known signature. If you find "
+        "nothing in these categories, return an empty findings list — do not "
+        "invent issues to have something to report. Respond with ONLY valid JSON."
+    )
+
+    def __init__(self, provider: str = "Offline / Local Rule Engine", api_key: Optional[str] = None,
+                 model_name: Optional[str] = None, local_host: str = "http://localhost:11434"):
+        self.provider = provider
+        self.api_key = api_key
+        self.local_host = local_host
+        if model_name:
+            self.model_name = model_name
+        elif provider == "OpenAI":
+            self.model_name = "gpt-4o"
+        elif provider == "Anthropic":
+            self.model_name = "claude-sonnet-4-5"
+        else:
+            self.model_name = "llama3"
+
+    def _build_prompt(self, file_name: str, content: str) -> str:
+        truncated = content[:8000]  # keep prompts bounded for cost/latency
+        return f"""
+        FILE: {file_name}
+
+        SOURCE CODE:
+        ```
+        {truncated}
+        ```
+
+        Review this code for business-logic, authorization-logic, intent-mismatch,
+        race-condition, and novel/obfuscated-pattern issues ONLY (per your system
+        instructions — do not report injection/XSS/secrets/crypto pattern issues,
+        those are already covered by other tools).
+
+        Respond with ONLY valid JSON matching exactly this schema:
+        {{
+            "findings": [
+                {{
+                    "title": "Brief title",
+                    "category": "business_logic|authorization_logic|intent_mismatch|race_condition|novel_pattern",
+                    "severity": "Critical|High|Medium|Low",
+                    "confidence": "High|Medium|Low",
+                    "explanation": "What the issue is and why it matters",
+                    "suggested_line": <int or null>
+                }}
+            ]
+        }}
+        If nothing in scope is found, respond with {{"findings": []}}.
+        """
+
+    @staticmethod
+    def _extract_json(raw_text: str) -> Optional[Dict[str, Any]]:
+        """Robustly extracts a JSON object from a raw LLM response, tolerating
+        markdown code fences the model may add even when told not to."""
+        text = raw_text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+    def _parse_response(self, file_name: str, raw_text: str) -> Tuple[List[AISemanticFinding], str, str]:
+        data = self._extract_json(raw_text)
+        if data is None:
+            return [], "parse_failed", "Model response was not valid JSON and no JSON object could be extracted."
+
+        raw_findings = data.get("findings", [])
+        if not isinstance(raw_findings, list):
+            return [], "parse_failed", "Model response JSON did not contain a 'findings' list."
+
+        valid_categories = {"business_logic", "authorization_logic", "intent_mismatch",
+                            "race_condition", "novel_pattern"}
+        valid_severities = {"Critical", "High", "Medium", "Low"}
+        parsed: List[AISemanticFinding] = []
+        for i, item in enumerate(raw_findings):
+            if not isinstance(item, dict):
+                continue
+            category = item.get("category", "novel_pattern")
+            if category not in valid_categories:
+                category = "novel_pattern"
+            severity = item.get("severity", "Medium")
+            if severity not in valid_severities:
+                severity = "Medium"
+            suggested_line = item.get("suggested_line")
+            if not isinstance(suggested_line, int):
+                suggested_line = None
+            parsed.append(AISemanticFinding(
+                finding_id=f"{file_name}:ai:{i}",
+                file_name=file_name,
+                title=str(item.get("title", "Untitled AI-suggested finding"))[:200],
+                category=category, severity=severity,
+                ai_confidence=str(item.get("confidence", "Medium")),
+                explanation=str(item.get("explanation", ""))[:1000],
+                suggested_line=suggested_line,
+            ))
+        return parsed, "ok", f"{len(parsed)} finding(s) parsed from model response."
+
+    def review(self, file_name: str, content: str) -> AIReviewOutcome:
+        prompt = self._build_prompt(file_name, content)
+
+        if self.provider == "Ollama (Local)":
+            try:
+                response = requests.post(
+                    f"{self.local_host}/api/generate",
+                    json={"model": self.model_name, "prompt": f"{self.SYSTEM_PROMPT}\n\n{prompt}",
+                         "format": "json", "stream": False},
+                    timeout=30,
+                )
+                if response.status_code == 200:
+                    raw_text = response.json().get("response", "")
+                    findings, status, detail = self._parse_response(file_name, raw_text)
+                    return AIReviewOutcome(findings, status, detail, self.provider)
+                return AIReviewOutcome([], "call_failed", f"Ollama returned status {response.status_code}", self.provider)
+            except Exception as exc:
+                return AIReviewOutcome([], "call_failed", f"Ollama request failed: {exc}", self.provider)
+
+        elif self.provider == "OpenAI" and self.api_key and OpenAI:
+            try:
+                client = OpenAI(api_key=self.api_key)
+                response = client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[{"role": "system", "content": self.SYSTEM_PROMPT},
+                             {"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                )
+                raw_text = response.choices[0].message.content
+                findings, status, detail = self._parse_response(file_name, raw_text)
+                return AIReviewOutcome(findings, status, detail, self.provider)
+            except Exception as exc:
+                return AIReviewOutcome([], "call_failed", f"OpenAI request failed: {exc}", self.provider)
+
+        elif self.provider == "Anthropic" and self.api_key and Anthropic:
+            try:
+                client = Anthropic(api_key=self.api_key)
+                message = client.messages.create(
+                    model=self.model_name, max_tokens=1500,
+                    system=self.SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw_text = message.content[0].text
+                findings, status, detail = self._parse_response(file_name, raw_text)
+                return AIReviewOutcome(findings, status, detail, self.provider)
+            except Exception as exc:
+                return AIReviewOutcome([], "call_failed", f"Anthropic request failed: {exc}", self.provider)
+
+        return AIReviewOutcome(
+            [], "no_provider_configured",
+            "No LLM provider configured — select OpenAI, Anthropic, or Ollama (Local) in the "
+            "sidebar and provide credentials. This module has no offline fallback: unlike the "
+            "deterministic engines, there is no rule-based substitute for semantic reasoning "
+            "over business logic.",
+            self.provider,
+        )
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: AUTO-RESPONSE ENGINE
+#  Watches for new Critical findings across every engine in this app and
+#  triggers the matching containment action automatically — the piece that
+#  turns "detection" into "detection AND response measured in seconds."
+#
+#  Not autonomous in the sense of "unaccountable": every rule is a fixed,
+#  human-authored mapping (finding category -> containment method), every
+#  trigger is logged with full context BEFORE the action runs, and nothing
+#  here executes real infrastructure changes — it calls the same simulated
+#  ActiveContainmentEngine used by the manual Containment tab. Wiring a rule
+#  to real infrastructure is a deliberate, later, human decision (swap the
+#  simulated method bodies), not something this engine does on its own.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class AutoResponseRule:
+    rule_id: str
+    trigger_category: str    # e.g. "malware:Reverse Shell", "secret:AWS", "network:Critical"
+    action_name: str         # method name on ActiveContainmentEngine
+    description: str
+    enabled: bool = True
+
+
+@dataclass
+class AutoResponseEvent:
+    event_id: str
+    triggered_at: str
+    rule_id: str
+    finding_summary: str
+    action_taken: str
+    action_result: Dict[str, Any]
+    notified: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_id": self.event_id, "triggered_at": self.triggered_at,
+            "rule_id": self.rule_id, "finding_summary": self.finding_summary,
+            "action_taken": self.action_taken, "action_result": self.action_result,
+            "notified": self.notified,
+        }
+
+
+DEFAULT_AUTO_RESPONSE_RULES: List[AutoResponseRule] = [
+    AutoResponseRule("AR-001", "malware:Reverse Shell", "block_ip_firewall",
+                     "Reverse shell pattern detected — block the associated IP if one is known from telemetry."),
+    AutoResponseRule("AR-002", "malware:Backdoor", "quarantine_file",
+                     "Backdoor pattern detected in a file — quarantine it pending review."),
+    AutoResponseRule("AR-003", "malware:Cryptominer", "isolate_k8s_pod",
+                     "Cryptominer pattern detected — isolate the affected workload."),
+    AutoResponseRule("AR-004", "secret:leaked", "force_password_reset",
+                     "A live-looking credential was found in source — force rotation of associated accounts."),
+    AutoResponseRule("AR-005", "network:critical_anomaly", "block_ip_firewall",
+                     "Network event scored Critical anomaly — block the source IP."),
+    AutoResponseRule("AR-006", "exploit_chain:critical", "revoke_api_tokens",
+                     "A correlated exploit chain reached Critical severity — revoke credentials for the affected asset."),
+]
+
+
+class AutoResponseEngine:
+    """
+    Rule-based dispatcher: watches a stream of findings (any engine), and
+    for each one that matches an enabled rule's trigger_category, calls the
+    matching method on the provided ActiveContainmentEngine. Every trigger
+    is recorded as an AutoResponseEvent BEFORE the action executes, so the
+    audit trail exists even if the (simulated) action itself fails.
+    """
+
+    def __init__(self, containment: "ActiveContainmentEngine", rules: Optional[List[AutoResponseRule]] = None):
+        self.containment = containment
+        self.rules = rules or list(DEFAULT_AUTO_RESPONSE_RULES)
+        self.event_log: List[AutoResponseEvent] = []
+        self._processed_finding_ids: Set[str] = set()  # avoid re-triggering on the same finding twice
+
+    def _next_event_id(self) -> str:
+        return f"auto_{len(self.event_log) + 1:05d}"
+
+    def _rule_for(self, category_key: str) -> Optional[AutoResponseRule]:
+        for rule in self.rules:
+            if rule.enabled and rule.trigger_category == category_key:
+                return rule
+        return None
+
+    def _execute_action(self, action_name: str, target: str) -> Dict[str, Any]:
+        method = getattr(self.containment, action_name, None)
+        if method is None:
+            return {"status": "FAILED", "details": f"Unknown containment action: {action_name}"}
+        try:
+            return method(target)
+        except Exception as exc:
+            return {"status": "FAILED", "details": f"Action raised an exception: {exc}"}
+
+    def process_malware_finding(self, finding: "MalwareFinding") -> Optional[AutoResponseEvent]:
+        category_key = f"malware:{finding.category}"
+        rule = self._rule_for(category_key)
+        if not rule or finding.finding_id in self._processed_finding_ids:
+            return None
+        self._processed_finding_ids.add(finding.finding_id)
+        target = finding.file_name
+        result = self._execute_action(rule.action_name, target)
+        event = AutoResponseEvent(
+            event_id=self._next_event_id(), triggered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            rule_id=rule.rule_id, finding_summary=f"{finding.pattern_name} in {finding.file_name}:{finding.line_number}",
+            action_taken=rule.action_name, action_result=result, notified=True,
+        )
+        self.event_log.append(event)
+        return event
+
+    def process_secret_finding(self, finding: "SecretFinding") -> Optional[AutoResponseEvent]:
+        if finding.confidence != "High":
+            return None  # avoid auto-triggering credential rotation on a low-confidence guess
+        rule = self._rule_for("secret:leaked")
+        finding_key = f"{finding.file_name}:{finding.line_number}"
+        if not rule or finding_key in self._processed_finding_ids:
+            return None
+        self._processed_finding_ids.add(finding_key)
+        result = self._execute_action(rule.action_name, finding.file_name)
+        event = AutoResponseEvent(
+            event_id=self._next_event_id(), triggered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            rule_id=rule.rule_id, finding_summary=f"{finding.secret_type} in {finding.file_name}:{finding.line_number}",
+            action_taken=rule.action_name, action_result=result, notified=True,
+        )
+        self.event_log.append(event)
+        return event
+
+    def process_network_event(self, event: "LogEvent") -> Optional[AutoResponseEvent]:
+        if event.anomaly_score < 90:  # only the most severe network anomalies auto-trigger
+            return None
+        rule = self._rule_for("network:critical_anomaly")
+        if not rule or event.event_id in self._processed_finding_ids:
+            return None
+        self._processed_finding_ids.add(event.event_id)
+        result = self._execute_action(rule.action_name, event.source_ip)
+        resp_event = AutoResponseEvent(
+            event_id=self._next_event_id(), triggered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            rule_id=rule.rule_id, finding_summary=f"Anomaly score {event.anomaly_score} from {event.source_ip}",
+            action_taken=rule.action_name, action_result=result, notified=True,
+        )
+        self.event_log.append(resp_event)
+        return resp_event
+
+    def process_exploit_chain(self, chain: "ExploitChain") -> Optional[AutoResponseEvent]:
+        if chain.severity != "Critical":
+            return None
+        rule = self._rule_for("exploit_chain:critical")
+        if not rule or chain.chain_id in self._processed_finding_ids:
+            return None
+        self._processed_finding_ids.add(chain.chain_id)
+        target = chain.steps[-1].finding_ref if chain.steps else "unknown-asset"
+        result = self._execute_action(rule.action_name, target)
+        event = AutoResponseEvent(
+            event_id=self._next_event_id(), triggered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            rule_id=rule.rule_id, finding_summary=chain.title,
+            action_taken=rule.action_name, action_result=result, notified=True,
+        )
+        self.event_log.append(event)
+        return event
+
+    def sweep(self, malware_findings: List["MalwareFinding"], secret_findings: List["SecretFinding"],
+              network_events: List["LogEvent"], exploit_chains: List["ExploitChain"]) -> List[AutoResponseEvent]:
+        """Run all four detectors over the current finding set in one pass —
+        this is what the Live File Watcher / swarm hooks call automatically."""
+        new_events: List[AutoResponseEvent] = []
+        for f in malware_findings:
+            e = self.process_malware_finding(f)
+            if e:
+                new_events.append(e)
+        for f in secret_findings:
+            e = self.process_secret_finding(f)
+            if e:
+                new_events.append(e)
+        for ev in network_events:
+            e = self.process_network_event(ev)
+            if e:
+                new_events.append(e)
+        for c in exploit_chains:
+            e = self.process_exploit_chain(c)
+            if e:
+                new_events.append(e)
+        return new_events
+
+    def get_event_log(self) -> List[AutoResponseEvent]:
+        return list(self.event_log)
+
+    def set_rule_enabled(self, rule_id: str, enabled: bool) -> None:
+        for rule in self.rules:
+            if rule.rule_id == rule_id:
+                rule.enabled = enabled
+
+
+# ==============================================================================
 # SECTION 9: STREAMLIT DARK "SOC COMMAND CENTER" UI
 # ==============================================================================
 
@@ -7475,6 +8216,9 @@ if "posture_history_scores" not in st.session_state:
 
 if "exploit_correlator" not in st.session_state:
     st.session_state.exploit_correlator = ExploitChainCorrelator()
+
+if "ai_review_outcomes" not in st.session_state:
+    st.session_state.ai_review_outcomes = []
 
 if "exploit_chains" not in st.session_state:
     st.session_state.exploit_chains = []
@@ -7973,47 +8717,117 @@ with tab_net:
 # TAB: AI DEEP TRIAGE
 # ------------------------------------------------------------------------
 with tab_ai:
-    st.markdown("### 🤖 LLM-Assisted Deep Triage")
-    st.caption("Sends a summarized, structured context (not raw sensitive data) to the selected engine for analysis.")
+    st.markdown("### 🤖 AI-Powered Analysis")
 
-    triage_source = st.radio("Triage subject", ["Network Event", "Code Finding"], horizontal=True)
+    ai_triage_tab, ai_semantic_tab = st.tabs(["🧠 Deep Triage (of existing findings)", "🔬 AI Semantic Reviewer (raw code)"])
 
-    if triage_source == "Network Event" and not df_events.empty:
-        selected_event_id = st.selectbox("Select event", df_events["event_id"].unique())
-        selected_event = next(e for e in events if e.event_id == selected_event_id)
-        st.markdown(f"**Target Asset:** `{selected_event.target_asset}` | **Source IP:** `{selected_event.source_ip}`")
-        st.code(selected_event.raw_payload, language="sql")
-        context_label = f"Network event on {selected_event.target_asset}"
-        payload_text = selected_event.raw_payload
-        risk_score = selected_event.anomaly_score
+    with ai_triage_tab:
+        st.markdown("#### 🧠 LLM-Assisted Deep Triage")
+        st.caption("Sends a summarized, structured context (not raw sensitive data) to the selected engine for analysis.")
 
-    elif triage_source == "Code Finding" and findings:
-        options = [f"{f.finding_id} — {f.title}" for f in findings]
-        picked = st.selectbox("Select finding", options)
-        picked_finding = findings[options.index(picked)]
-        st.code(picked_finding.matched_snippet, language="python")
-        context_label = f"Code finding: {picked_finding.title} ({picked_finding.cwe})"
-        payload_text = picked_finding.matched_snippet
-        risk_score = picked_finding.cvss_estimate * 10
-    else:
-        st.info("No data available for this triage subject yet.")
-        context_label, payload_text, risk_score = "", "", 0.0
+        triage_source = st.radio("Triage subject", ["Network Event", "Code Finding"], horizontal=True)
 
-    if payload_text and st.button("🧠 Run Deep AI Analysis", type="primary"):
-        with st.spinner("Analyzing via Sentinel AI triage engine..."):
-            orchestrator = LLMTriageOrchestrator(
-                provider=llm_provider, api_key=api_key, model_name=model_choice, local_host=local_host,
-            )
-            report = orchestrator.execute_triage(context_label, payload_text, risk_score)
+        if triage_source == "Network Event" and not df_events.empty:
+            selected_event_id = st.selectbox("Select event", df_events["event_id"].unique())
+            selected_event = next(e for e in events if e.event_id == selected_event_id)
+            st.markdown(f"**Target Asset:** `{selected_event.target_asset}` | **Source IP:** `{selected_event.source_ip}`")
+            st.code(selected_event.raw_payload, language="sql")
+            context_label = f"Network event on {selected_event.target_asset}"
+            payload_text = selected_event.raw_payload
+            risk_score = selected_event.anomaly_score
 
-            st.markdown("<div class='sentinel-card'>", unsafe_allow_html=True)
-            st.markdown(f"#### Threat Level: <span class='neon-red'>{report.threat_level}</span>", unsafe_allow_html=True)
-            st.markdown(f"**Attack Vector:** {report.attack_vector}")
-            st.markdown(f"**Impact:** {report.impact_assessment}")
-            st.markdown("**Actionable Remediation:**")
-            for step in report.actionable_remediation:
-                st.markdown(f"- {step}")
-            st.markdown("</div>", unsafe_allow_html=True)
+        elif triage_source == "Code Finding" and findings:
+            options = [f"{f.finding_id} — {f.title}" for f in findings]
+            picked = st.selectbox("Select finding", options)
+            picked_finding = findings[options.index(picked)]
+            st.code(picked_finding.matched_snippet, language="python")
+            context_label = f"Code finding: {picked_finding.title} ({picked_finding.cwe})"
+            payload_text = picked_finding.matched_snippet
+            risk_score = picked_finding.cvss_estimate * 10
+        else:
+            st.info("No data available for this triage subject yet.")
+            context_label, payload_text, risk_score = "", "", 0.0
+
+        if payload_text and st.button("🧠 Run Deep AI Analysis", type="primary"):
+            with st.spinner("Analyzing via Sentinel AI triage engine..."):
+                orchestrator = LLMTriageOrchestrator(
+                    provider=llm_provider, api_key=api_key, model_name=model_choice, local_host=local_host,
+                )
+                report = orchestrator.execute_triage(context_label, payload_text, risk_score)
+
+                st.markdown("<div class='sentinel-card'>", unsafe_allow_html=True)
+                st.markdown(f"#### Threat Level: <span class='neon-red'>{report.threat_level}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Attack Vector:** {report.attack_vector}")
+                st.markdown(f"**Impact:** {report.impact_assessment}")
+                st.markdown("**Actionable Remediation:**")
+                for step in report.actionable_remediation:
+                    st.markdown(f"- {step}")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+    with ai_semantic_tab:
+        st.markdown("#### 🔬 AI Semantic Code Reviewer")
+        st.warning(
+            "⚠️ **Read before using:** unlike every other engine in this app, this one is "
+            "**non-deterministic** (same code can produce different results between runs) and "
+            "**can hallucinate** — it may report an issue that doesn't actually exist. Every "
+            "finding here is a *lead for a human to verify*, not a confirmed fact. It was "
+            "deliberately scoped to focus on what pattern-matching structurally cannot see "
+            "(business logic, authorization-logic correctness, intent mismatches, race "
+            "conditions) rather than duplicating the deterministic engines elsewhere in this app."
+        )
+
+        if llm_provider == "Offline / Local Rule Engine":
+            st.info("Select OpenAI, Anthropic, or Ollama (Local) in the sidebar to use this feature — "
+                    "there is no offline fallback for semantic reasoning over business logic.")
+
+        ai_rev_name = st.text_input("File name", value="app.py", key="ai_rev_name")
+        ai_rev_code = st.text_area(
+            "Paste code for semantic review", height=220, key="ai_rev_code",
+            value='def apply_discount(quantity, unit_price, user):\n'
+                  '    total = quantity * unit_price\n'
+                  '    if user.has_coupon:\n'
+                  '        total = total * 0.5\n'
+                  '    return total\n\n'
+                  'def check_access(document, user):\n'
+                  '    if document.owner_id == user.id:\n'
+                  '        return True\n'
+                  '    return False\n'
+        )
+
+        if st.button("🔬 Run AI Semantic Review", type="primary", key="run_ai_semantic"):
+            reviewer = AISemanticReviewer(provider=llm_provider, api_key=api_key,
+                                          model_name=model_choice, local_host=local_host)
+            with st.spinner("Running semantic review (this makes a real LLM call)..."):
+                outcome = reviewer.review(ai_rev_name, ai_rev_code)
+            st.session_state.ai_review_outcomes.append(outcome)
+
+        outcomes = st.session_state.ai_review_outcomes
+        if outcomes:
+            latest = outcomes[-1]
+            if latest.status == "no_provider_configured":
+                st.error(latest.status_detail)
+            elif latest.status == "call_failed":
+                st.error(f"LLM call failed: {latest.status_detail}")
+            elif latest.status == "parse_failed":
+                st.warning(f"Model responded but output couldn't be parsed: {latest.status_detail}")
+            elif not latest.findings:
+                st.success("AI review completed — no business-logic/authorization-logic/race-condition "
+                          "issues found in scope. (This does not mean the code has no issues at all — "
+                          "only that none were found in this module's specific focus areas.)")
+            else:
+                st.markdown(f"**{len(latest.findings)} AI-suggested finding(s)** — provider: {latest.provider_used}")
+                for f in latest.findings:
+                    with st.expander(f"⚠️ [{f.severity}] {f.title} — AI confidence: {f.ai_confidence}"):
+                        st.markdown(f"**Category:** {f.category.replace('_', ' ').title()}")
+                        if f.suggested_line:
+                            st.markdown(f"**Suggested line:** {f.suggested_line}")
+                        st.markdown(f"**Explanation:** {f.explanation}")
+                        st.caption("⚠️ Requires human verification — this is an AI-generated lead, not a confirmed finding.")
+
+                ai_json = json.dumps([f.to_dict() for f in latest.findings], indent=2)
+                st.download_button("⬇️ Download AI-Suggested Findings (JSON)", data=ai_json,
+                                   file_name="ai_semantic_findings.json", mime="application/json",
+                                   key="dl_ai_semantic")
 
 # ------------------------------------------------------------------------
 # TAB: CONTAINMENT
