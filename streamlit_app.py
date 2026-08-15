@@ -8220,6 +8220,9 @@ if "exploit_correlator" not in st.session_state:
 if "ai_review_outcomes" not in st.session_state:
     st.session_state.ai_review_outcomes = []
 
+if "auto_response_engine" not in st.session_state:
+    st.session_state.auto_response_engine = AutoResponseEngine(st.session_state.containment_engine)
+
 if "exploit_chains" not in st.session_state:
     st.session_state.exploit_chains = []
 
@@ -8238,8 +8241,11 @@ if "swarm_reports" not in st.session_state:
 if "diff_scanner" not in st.session_state:
     st.session_state.diff_scanner = None  # built after semantic_scanner/code_scanner exist below
 
+if "adaptive_feedback" not in st.session_state:
+    st.session_state.adaptive_feedback = AdaptiveFeedbackEngine()
+
 if "baseline_manager" not in st.session_state:
-    st.session_state.baseline_manager = BaselineManager()
+    st.session_state.baseline_manager = BaselineManager(feedback_engine=st.session_state.adaptive_feedback)
 
 if "knowledge_base" not in st.session_state:
     st.session_state.knowledge_base = VulnerabilityKnowledgeBase()
@@ -8258,6 +8264,7 @@ if "semantic_findings" not in st.session_state:
 
 engine = st.session_state.ingestion_engine
 containment = st.session_state.containment_engine
+auto_response_engine = st.session_state.auto_response_engine
 code_scanner = st.session_state.code_scanner
 dep_scanner = st.session_state.dep_scanner
 asset_inventory = st.session_state.asset_inventory
@@ -8291,6 +8298,7 @@ auth_manager = st.session_state.auth_manager
 swarm_orchestrator = st.session_state.swarm_orchestrator
 pdf_analyzer_engine = st.session_state.pdf_analyzer
 baseline_manager = st.session_state.baseline_manager
+adaptive_feedback = st.session_state.adaptive_feedback
 knowledge_base = st.session_state.knowledge_base
 if st.session_state.diff_scanner is None:
     st.session_state.diff_scanner = DiffScanner(semantic_scanner, code_scanner)
@@ -8874,6 +8882,45 @@ with tab_contain:
             st.dataframe(pd.DataFrame(history), use_container_width=True)
         else:
             st.info("No containment actions triggered yet.")
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Auto-Response Engine")
+    st.caption(
+        "Fixed, human-authored rules only — a Critical malware pattern, a high-confidence leaked "
+        "credential, a severe network anomaly, or a Critical exploit chain triggers the matching "
+        "containment action automatically. Every rule maps to exactly one action; nothing here "
+        "infers a NEW response on its own. Every trigger is logged before the action runs."
+    )
+
+    ar1, ar2 = st.columns([2, 1])
+    with ar1:
+        rules_df = pd.DataFrame([
+            {"Rule": r.rule_id, "Trigger": r.trigger_category, "Action": r.action_name,
+             "Enabled": "✅" if r.enabled else "⛔", "Description": r.description}
+            for r in auto_response_engine.rules
+        ])
+        st.dataframe(rules_df, use_container_width=True, height=220)
+    with ar2:
+        rule_to_toggle = st.selectbox("Toggle a rule", [r.rule_id for r in auto_response_engine.rules], key="toggle_rule")
+        if st.button("Toggle Enabled/Disabled", key="toggle_rule_btn"):
+            current = next(r.enabled for r in auto_response_engine.rules if r.rule_id == rule_to_toggle)
+            auto_response_engine.set_rule_enabled(rule_to_toggle, not current)
+            st.rerun()
+
+    if st.button("⚙️ Sweep Current Findings for Auto-Response Triggers", type="primary", key="run_auto_sweep"):
+        new_events = auto_response_engine.sweep(malware_findings, secret_findings, events,
+                                                 st.session_state.exploit_chains)
+        if new_events:
+            st.success(f"{len(new_events)} auto-response action(s) triggered — see log below.")
+        else:
+            st.info("No new triggers — either nothing matched an enabled rule, or matching "
+                    "findings were already processed in a prior sweep.")
+
+    event_log = auto_response_engine.get_event_log()
+    if event_log:
+        st.markdown(f"**{len(event_log)} auto-response event(s) logged:**")
+        log_df = pd.DataFrame([e.to_dict() for e in event_log])
+        st.dataframe(log_df, use_container_width=True)
 
 # ------------------------------------------------------------------------
 # TAB: COMPLIANCE MAPPING
@@ -10147,51 +10194,93 @@ with tab_toolkit:
 
     # ── BASELINE MANAGER ──────────────────────────────────────────────────────
     with tk_baseline:
-        st.markdown("#### ✅ Baseline / Suppression Manager")
-        st.caption("Mark a finding as accepted risk with a mandatory written reason. "
-                   "Suppressions can optionally expire, forcing periodic re-review instead of "
-                   "being forgotten forever.")
+        st.markdown("#### ✅ Baseline Manager & Adaptive Rule Reliability")
+        st.caption(
+            "Confirm or suppress findings with a human judgment call — both feed a supervised "
+            "reliability tracker per rule. This is deliberately NOT autonomous learning: nothing "
+            "here adjusts itself from its own inferences. Every data point traces back to an "
+            "explicit, logged human decision, and every output is advisory for a human to act on, "
+            "never self-applied."
+        )
 
         all_findings_pool = list(findings) + list(semantic_findings)
         if all_findings_pool:
             options = [f"{getattr(f,'rule_id','?')} — {getattr(f,'title','?')} ({getattr(f,'file_name','')}:{getattr(f,'line_number', getattr(f,'sink_line',''))})"
                       for f in all_findings_pool]
-            picked_idx = st.selectbox("Finding to suppress", range(len(options)),
+            picked_idx = st.selectbox("Finding to review", range(len(options)),
                                       format_func=lambda i: options[i], key="baseline_pick")
             picked_finding = all_findings_pool[picked_idx]
 
-            reason = st.text_area("Reason (required)", key="baseline_reason",
-                                  placeholder="e.g. False positive — this uses a parameterized query the scanner didn't recognize.")
-            suppressed_by = st.text_input("Your name/handle", value="reviewer", key="baseline_by")
-            expiry_days = st.number_input("Expires in (days, 0 = never)", min_value=0, value=90, key="baseline_expiry")
+            bl_col1, bl_col2 = st.columns(2)
 
-            if st.button("✅ Suppress This Finding", type="primary", key="run_suppress"):
-                try:
-                    entry = baseline_manager.suppress(
-                        picked_finding, reason=reason, suppressed_by=suppressed_by,
-                        expires_days=expiry_days if expiry_days > 0 else None,
-                    )
-                    st.success(f"Suppressed. Expires: {entry.expires_at or 'Never'}")
-                except ValueError as e:
-                    st.error(str(e))
+            with bl_col1:
+                st.markdown("**✅ Confirm as real**")
+                reviewer_name_confirm = st.text_input("Your name/handle", value="reviewer", key="confirm_by")
+                confirm_notes = st.text_input("Notes (optional)", key="confirm_notes")
+                if st.button("✅ Confirm This Finding Is Real", key="run_confirm"):
+                    entry = baseline_manager.confirm(picked_finding, confirmed_by=reviewer_name_confirm, notes=confirm_notes)
+                    st.success(f"Confirmed by {entry.confirmed_by} at {entry.confirmed_at}")
+
+            with bl_col2:
+                st.markdown("**⛔ Suppress as false positive**")
+                reason = st.text_area("Reason (required)", key="baseline_reason",
+                                      placeholder="e.g. False positive — this uses a parameterized query the scanner didn't recognize.")
+                suppressed_by = st.text_input("Your name/handle", value="reviewer", key="baseline_by")
+                expiry_days = st.number_input("Expires in (days, 0 = never)", min_value=0, value=90, key="baseline_expiry")
+                if st.button("⛔ Suppress This Finding", key="run_suppress"):
+                    try:
+                        entry = baseline_manager.suppress(
+                            picked_finding, reason=reason, suppressed_by=suppressed_by,
+                            expires_days=expiry_days if expiry_days > 0 else None,
+                        )
+                        st.success(f"Suppressed. Expires: {entry.expires_at or 'Never'}")
+                    except ValueError as e:
+                        st.error(str(e))
         else:
-            st.info("No findings available yet to suppress — run a scan in another tab first.")
+            st.info("No findings available yet to review — run a scan in another tab first.")
 
         st.markdown("---")
-        suppressions = baseline_manager.list_suppressions()
-        if suppressions:
-            st.markdown(f"**{len(suppressions)} active suppression(s):**")
-            supp_df = pd.DataFrame([s.to_dict() for s in suppressions])
-            st.dataframe(supp_df, use_container_width=True)
+        col_supp, col_conf = st.columns(2)
+        with col_supp:
+            suppressions = baseline_manager.list_suppressions()
+            st.markdown(f"**{len(suppressions)} active suppression(s)**")
+            if suppressions:
+                supp_df = pd.DataFrame([s.to_dict() for s in suppressions])
+                st.dataframe(supp_df, use_container_width=True, height=200)
+                remove_fp = st.selectbox("Remove a suppression",
+                                         ["-"] + [s.fingerprint for s in suppressions], key="remove_supp")
+                if remove_fp != "-" and st.button("🗑️ Remove Suppression", key="remove_supp_btn"):
+                    baseline_manager.remove_suppression(remove_fp)
+                    st.success("Removed.")
+                    st.rerun()
 
-            remove_fp = st.selectbox("Remove a suppression",
-                                     ["-"] + [s.fingerprint for s in suppressions], key="remove_supp")
-            if remove_fp != "-" and st.button("🗑️ Remove Suppression", key="remove_supp_btn"):
-                baseline_manager.remove_suppression(remove_fp)
-                st.success("Removed.")
-                st.rerun()
+        with col_conf:
+            confirmations = baseline_manager.list_confirmations()
+            st.markdown(f"**{len(confirmations)} confirmation(s)**")
+            if confirmations:
+                conf_df = pd.DataFrame([c.to_dict() for c in confirmations])
+                st.dataframe(conf_df, use_container_width=True, height=200)
+
+        st.markdown("---")
+        st.markdown("#### 📊 Adaptive Rule Reliability (advisory — human-supervised only)")
+        rule_stats = adaptive_feedback.all_stats()
+        if rule_stats:
+            stats_df = pd.DataFrame([s.to_dict() for s in rule_stats])
+            st.dataframe(stats_df, use_container_width=True)
+
+            needs_review = adaptive_feedback.rules_needing_review(min_samples=3)
+            if needs_review:
+                st.markdown("**⚠️ Rules with a concerning human-confirmed false-positive rate "
+                           "(review the rule definition, don't auto-disable):**")
+                for rule_id, precision, total in needs_review:
+                    st.markdown(f"- `{rule_id}`: {precision:.0%} precision across {total} human review(s)")
+            else:
+                st.caption("No rules currently show a concerning false-positive rate at the "
+                          "minimum sample threshold.")
         else:
-            st.info("No suppressions yet.")
+            st.info("No feedback recorded yet. Confirm or suppress findings above to start "
+                    "building reliability data for each rule — this is the tool's actual "
+                    "learning mechanism: supervised, transparent, and reversible.")
 
     # ── CUSTOM RULE BUILDER ───────────────────────────────────────────────────
     with tk_rules:
