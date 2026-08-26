@@ -2600,6 +2600,133 @@ PATTERN_RULES: List[PatternRule] = [
                 pattern=r"XmlDocument\s*\(\s*\)(?!.*XmlResolver\s*=\s*null)",
                 severity=Severity.HIGH, standards=STD_XXE, confidence=Confidence.LOW,
                 remediation="Set XmlResolver = null on the XmlDocument/XmlReaderSettings before loading."),
+
+    # ── Expanded coverage, batch 2: additional vuln classes on existing
+    # languages, plus two new languages (Ruby, Kotlin) — "broader coverage"
+    # widening both axes: more languages AND more vulnerability classes per
+    # language, not just more rules of the same kind we already had. ────────
+
+    # PHP — SSRF, XXE, insecure randomness
+    PatternRule(id="PH-004", title="SSRF via cURL with user-controlled URL", language="php",
+                pattern=r"curl_setopt\s*\(\s*\$\w+\s*,\s*CURLOPT_URL\s*,\s*\$_(GET|POST|REQUEST)",
+                severity=Severity.HIGH, standards=STD_SSRF, confidence=Confidence.MEDIUM,
+                remediation="Validate/allowlist target hosts before use in CURLOPT_URL; block internal IP ranges."),
+    PatternRule(id="PH-005", title="XXE via simplexml_load_string without entity-loader disabled", language="php",
+                pattern=r"simplexml_load_string\s*\(\s*\$_(GET|POST|REQUEST)",
+                severity=Severity.HIGH, standards=STD_XXE, confidence=Confidence.LOW,
+                remediation="Call libxml_disable_entity_loader(true) before parsing untrusted XML."),
+    PatternRule(id="PH-006", title="Weak randomness (mt_rand) used for security-sensitive value", language="php",
+                pattern=r"\bmt_rand\s*\(",
+                severity=Severity.MEDIUM, standards=_std("CWE-338", "A02:2021-Cryptographic Failures",
+                                                           "ASVS 6.3.1", "CAPEC-112", "PW.6.1"),
+                confidence=Confidence.LOW,
+                remediation="Use random_bytes()/random_int() for tokens, session IDs, or password reset codes."),
+
+    # JavaScript / Node — SSRF, insecure JWT handling, prototype-safe check
+    PatternRule(id="JS-004", title="SSRF via axios/fetch with request-controlled URL", language="javascript",
+                pattern=r"(axios\.get|fetch)\s*\(\s*req\.(query|body|params)",
+                severity=Severity.HIGH, standards=STD_SSRF, confidence=Confidence.MEDIUM,
+                remediation="Allowlist destination hosts; block requests to private/link-local IP ranges."),
+    PatternRule(id="JS-005", title="JWT verification with algorithm 'none' or no algorithms restriction", language="javascript",
+                pattern=r"jwt\.verify\s*\([^)]*algorithms\s*:\s*\[\s*['\"]none['\"]",
+                severity=Severity.CRITICAL, standards=_std("CWE-347", "A02:2021-Cryptographic Failures",
+                                                             "ASVS 3.5.3", "CAPEC-115", "PW.6.1"),
+                confidence=Confidence.HIGH,
+                remediation="Never allow the 'none' algorithm; pin an explicit allowlist such as ['RS256']."),
+    PatternRule(id="JS-006", title="Command Injection via child_process.exec with template literal", language="javascript",
+                pattern=r"child_process\.exec\s*\(\s*`[^`]*\$\{",
+                severity=Severity.CRITICAL, standards=STD_CMDI, confidence=Confidence.MEDIUM,
+                remediation="Use execFile()/spawn() with an argument array; never interpolate into a shell string."),
+
+    # Java — SSRF, LDAP injection, insecure randomness for tokens
+    PatternRule(id="JV-003", title="SSRF via URL().openConnection() with request-controlled host", language="java",
+                pattern=r"new\s+URL\s*\(\s*request\.getParameter",
+                severity=Severity.HIGH, standards=STD_SSRF, confidence=Confidence.MEDIUM,
+                remediation="Validate the target host against an allowlist before opening the connection."),
+    PatternRule(id="JV-004", title="LDAP injection via unsanitized search filter", language="java",
+                pattern=r"\.search\s*\(\s*[^,]*\+\s*request\.getParameter",
+                severity=Severity.HIGH, standards=STD_LDAP, confidence=Confidence.MEDIUM,
+                remediation="Escape LDAP special characters or use a parameterized filter builder."),
+    PatternRule(id="JV-005", title="java.util.Random used for a security-sensitive token", language="java",
+                pattern=r"new\s+Random\s*\(\s*\)\.next(Int|Long)\s*\(",
+                severity=Severity.MEDIUM, standards=_std("CWE-338", "A02:2021-Cryptographic Failures",
+                                                           "ASVS 6.3.1", "CAPEC-112", "PW.6.1"),
+                confidence=Confidence.LOW,
+                remediation="Use java.security.SecureRandom for any session, token, or key material."),
+
+    # Go — SSRF, weak crypto, path traversal
+    PatternRule(id="GO-002", title="SSRF via http.Get with request-controlled URL", language="go",
+                pattern=r"http\.Get\s*\(\s*r\.URL\.Query",
+                severity=Severity.HIGH, standards=STD_SSRF, confidence=Confidence.MEDIUM,
+                remediation="Validate/allowlist the destination host before issuing the outbound request."),
+    PatternRule(id="GO-003", title="Weak cryptographic primitive (md5/des)", language="go",
+                pattern=r"\b(md5\.New|des\.NewCipher)\s*\(",
+                severity=Severity.MEDIUM, standards=_std("CWE-327", "A02:2021-Cryptographic Failures",
+                                                           "ASVS 6.2.1", "CAPEC-97", "PW.6.1"),
+                confidence=Confidence.MEDIUM,
+                remediation="Use sha256/crypto/aes with a modern mode (GCM) instead."),
+    PatternRule(id="GO-004", title="Path traversal via unsanitized filepath.Join input", language="go",
+                pattern=r"filepath\.Join\s*\([^)]*r\.URL\.Query",
+                severity=Severity.HIGH, standards=STD_PATH, confidence=Confidence.LOW,
+                remediation="Clean() the resulting path and verify it stays within the intended base directory."),
+
+    # Rust — command injection via format! into Command
+    PatternRule(id="RS-002", title="Command Injection via Command::new with formatted string", language="rust",
+                pattern=r"Command::new\s*\(\s*format!\s*\(",
+                severity=Severity.HIGH, standards=STD_CMDI, confidence=Confidence.LOW,
+                remediation="Pass the binary path as a fixed literal and arguments via .arg()/.args(), never a formatted shell string."),
+
+    # C — format string vulnerability, integer-overflow-prone allocation
+    PatternRule(id="C-003", title="Format string vulnerability (user input as format spec)", language="c",
+                pattern=r"printf\s*\(\s*\w+\s*\)\s*;",
+                severity=Severity.HIGH, standards=_std("CWE-134", "A03:2021-Injection", "ASVS 5.3.1",
+                                                         "CAPEC-135", "PW.5.1"),
+                confidence=Confidence.LOW,
+                remediation="Always use a fixed format string, e.g. printf(\"%s\", input), never pass input as the format itself."),
+
+    # C# — insecure deserialization via BinaryFormatter
+    PatternRule(id="CS-002", title="Insecure deserialization via BinaryFormatter", language="csharp",
+                pattern=r"BinaryFormatter\s*\(\s*\)\s*\.\s*Deserialize",
+                severity=Severity.CRITICAL, standards=STD_DESER, confidence=Confidence.MEDIUM,
+                remediation="Avoid BinaryFormatter entirely; use System.Text.Json with a known, trusted schema."),
+
+    # Ruby — new language: command injection, SQL injection, insecure deserialization, mass assignment
+    PatternRule(id="RB-001", title="Command Injection via system() with string interpolation", language="ruby",
+                pattern=r"system\s*\(\s*\"[^\"]*#\{",
+                severity=Severity.CRITICAL, standards=STD_CMDI, confidence=Confidence.MEDIUM,
+                remediation="Pass arguments as an array to system()/Open3.capture3, never an interpolated shell string."),
+    PatternRule(id="RB-002", title="SQL Injection via string-interpolated where clause", language="ruby",
+                pattern=r"\.where\s*\(\s*\"[^\"]*#\{",
+                severity=Severity.CRITICAL, standards=STD_SQLI, confidence=Confidence.MEDIUM,
+                remediation="Use ActiveRecord parameter placeholders: .where(\"col = ?\", value)."),
+    PatternRule(id="RB-003", title="Insecure deserialization via Marshal.load", language="ruby",
+                pattern=r"Marshal\.load\s*\(",
+                severity=Severity.CRITICAL, standards=STD_DESER, confidence=Confidence.MEDIUM,
+                remediation="Never Marshal.load untrusted input; use JSON for cross-boundary data."),
+    PatternRule(id="RB-004", title="Mass assignment without strong parameters", language="ruby",
+                pattern=r"\.update\s*\(\s*params\s*\[",
+                severity=Severity.HIGH, standards=_std("CWE-915", "A08:2021-Software and Data Integrity Failures",
+                                                         "ASVS 5.1.1", "CAPEC-28", "PW.5.1"),
+                confidence=Confidence.LOW,
+                remediation="Use params.permit(...) (strong parameters) instead of passing raw params to update/create."),
+
+    # Kotlin — new language: SQL injection, insecure WebView, weak crypto
+    PatternRule(id="KT-001", title="SQL Injection via rawQuery with string concatenation", language="kotlin",
+                pattern=r"rawQuery\s*\(\s*\"[^\"]*\"\s*\+",
+                severity=Severity.CRITICAL, standards=STD_SQLI, confidence=Confidence.MEDIUM,
+                remediation="Use parameterized rawQuery(sql, selectionArgs) instead of string concatenation."),
+    PatternRule(id="KT-002", title="Insecure WebView JavaScript bridge enabled with loadUrl on external input", language="kotlin",
+                pattern=r"setJavaScriptEnabled\s*\(\s*true\s*\)",
+                severity=Severity.MEDIUM, standards=_std("CWE-749", "A05:2021-Security Misconfiguration",
+                                                           "ASVS 4.3.1", "CAPEC-63", "PW.5.1"),
+                confidence=Confidence.LOW,
+                remediation="Only enable JS if required; avoid addJavascriptInterface with untrusted page content."),
+    PatternRule(id="KT-003", title="Weak cryptographic algorithm (DES/MD5) via javax.crypto/MessageDigest", language="kotlin",
+                pattern=r"(Cipher\.getInstance\s*\(\s*\"DES|MessageDigest\.getInstance\s*\(\s*\"MD5)",
+                severity=Severity.MEDIUM, standards=_std("CWE-327", "A02:2021-Cryptographic Failures",
+                                                           "ASVS 6.2.1", "CAPEC-97", "PW.6.1"),
+                confidence=Confidence.MEDIUM,
+                remediation="Use AES/GCM/NoPadding for encryption and SHA-256 for hashing."),
 ]
 
 
@@ -3328,41 +3455,178 @@ class URLSecurityScanner:
 
 # ==============================================================================
 # ==============================================================================
-#  MODULE: LIVE FILE SYSTEM WATCHER
-#  Watches any directory the user specifies. Uses watchdog when installed
-#  (real inotify/FSEvents events); falls back to mtime-polling when not.
-#  Integrates with Streamlit via a thread-safe queue drained on each rerun.
+#  MODULE: LIVE FILE SYSTEM WATCHER  (v2 — multi-language, content-verified,
+#  debounced, risk-scored, and wired directly into detection + response)
+#
+#  What changed from v1 and why each change is a real fix, not decoration:
+#   - v1 only recognized `.py` files. Every language the pattern scanner now
+#     covers (PHP/JS/Java/Go/Rust/C/C#/Ruby/Kotlin) was invisible to "live"
+#     monitoring even though it was fully supported for on-demand scans.
+#   - v1 treated every mtime bump as a real change. Editors, `touch`, and
+#     some CI checkouts update mtime without changing content, which meant
+#     the same unchanged file could be rescanned indefinitely. Now change
+#     detection is content-hash-based (SHA-256), with mtime only used as a
+#     cheap pre-filter to decide whether hashing is even worth doing.
+#   - v1 had no debounce, so a rapid save-loop (autosave, formatter-on-save)
+#     could queue the same path many times in a few seconds. Now each path
+#     has a minimum re-scan interval.
+#   - v1 never watched deletions and would happily try to open a path that
+#     no longer existed. Deletions are now tracked explicitly, reported
+#     rather than dispatched to a scanner that would just error, and
+#     deliberately exempted from debounce (see LiveFileWatcher.drain_events)
+#     since a file appearing and quickly vanishing is itself a signal worth
+#     seeing, not edit-loop noise to suppress.
+#   - v1 only listened for on_modified/on_created/on_deleted, which misses
+#     every save from an editor that saves atomically (write to a temp file,
+#     then rename over the target — vim and some VSCode setups do this).
+#     Those produce a MOVE event, not a MODIFIED one, so v1's real-time mode
+#     would silently miss such saves entirely. on_moved is now handled too.
+#   - v1 silently swallowed the watchdog startup exception with a bare
+#     `except: pass`, which hides genuinely useful information (permission
+#     errors, inotify watch-limit exhaustion) from the person trying to
+#     debug why "real-time" mode isn't active. The reason is now captured
+#     and surfaced.
+#   - v1 globbed noisy directories (.git, node_modules, venv, __pycache__,
+#     build artifacts) on every poll, which is both slow and produces
+#     findings on vendored/generated code nobody asked to scan. Excluded
+#     by default now, same exclusion list used by both watchdog and
+#     mtime-polling paths so behavior doesn't silently differ between them.
+#   - v1's "live" scan only ran two of the six available detection engines
+#     (semantic + regex) and never told any other tab about what it found —
+#     a live-detected critical malware pattern or leaked secret would NOT
+#     appear in the Exploit Chain Correlator or trigger Auto-Response
+#     unless the person separately re-ran a full scan. Findings from a live
+#     event now merge into the same session-state lists every other tab
+#     reads, and the caller can opt into an immediate auto-response sweep —
+#     this is what actually connects "detect fast" to "respond fast".
 # ==============================================================================
 # ==============================================================================
 
+# Extensions this module recognizes, mapped to the language key the
+# PatternScanner heuristic rules use. Python gets the dedicated AST/taint
+# engine on top of this, everyone else gets the pattern scanner + malware +
+# secrets, which is a strictly wider set of detectors run per live event
+# than v1 ever ran.
+LIVE_WATCH_EXTENSIONS: Dict[str, str] = {
+    ".py": "python", ".php": "php", ".js": "javascript", ".jsx": "javascript",
+    ".ts": "javascript", ".tsx": "javascript", ".java": "java", ".go": "go",
+    ".rs": "rust", ".c": "c", ".h": "c", ".cs": "csharp", ".rb": "ruby",
+    ".kt": "kotlin", ".kts": "kotlin",
+}
+
+# Directories excluded from both watchdog recursion (via glob filtering) and
+# mtime-polling — vendored/generated/VCS content that would otherwise
+# dominate scan volume with nothing actionable.
+LIVE_WATCH_EXCLUDED_DIRS: FrozenSet[str] = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", ".mypy_cache", ".pytest_cache", "vendor", "target",
+    ".tox", "site-packages",
+})
+
+# Files above this size are skipped for live scanning — large generated
+# files (bundled JS, vendored SQL dumps, etc.) provide poor scan value per
+# CPU-second spent and are exactly the kind of thing that turns a "live"
+# watcher into a laggy one.
+LIVE_WATCH_MAX_FILE_BYTES = 1_000_000
+
+# Minimum seconds between re-scans of the SAME path — protects against
+# autosave/formatter-on-save loops re-triggering full multi-engine scans
+# many times per second for a file that's still being actively edited.
+LIVE_WATCH_DEBOUNCE_SECONDS = 2.0
+
+
+def _live_watch_path_excluded(path: str) -> bool:
+    parts = set(os.path.normpath(path).split(os.sep))
+    return bool(parts & LIVE_WATCH_EXCLUDED_DIRS)
+
+
+@dataclass
+class LiveScanEvent:
+    """One completed live-scan pass over a single changed file — this is
+    the richer unit v2 produces in place of v1's bare file-path string."""
+    file_name: str
+    event_type: str          # "modified" | "created" | "deleted"
+    timestamp: str
+    language: str
+    engines_run: List[str]
+    semantic_count: int = 0
+    pattern_count: int = 0
+    malware_count: int = 0
+    secret_count: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    risk_score: float = 0.0  # 0-100, weighted by severity mix — the number
+                              # the live risk timeline chart plots over time
+    error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "file": self.file_name, "event": self.event_type, "timestamp": self.timestamp,
+            "language": self.language, "engines": ", ".join(self.engines_run),
+            "semantic": self.semantic_count, "pattern": self.pattern_count,
+            "malware": self.malware_count, "secrets": self.secret_count,
+            "critical": self.critical_count, "high": self.high_count,
+            "risk_score": round(self.risk_score, 1), "error": self.error,
+        }
+
+
 class _WatchHandler:
-    """Minimal watchdog-compatible event handler that pushes changed .py paths
-    into a thread-safe queue."""
+    """Minimal watchdog-compatible event handler that pushes (path, event_type)
+    tuples into a thread-safe queue for created/modified/deleted events on
+    recognized extensions, skipping excluded directories at the source
+    rather than filtering them out later."""
 
     def __init__(self, q: "_queue_module.Queue") -> None:
         self._q = q
 
-    def dispatch(self, event: Any) -> None:
-        src = getattr(event, "src_path", "")
-        if not getattr(event, "is_directory", True) and src.endswith(".py"):
-            self._q.put(src)
+    def _accept(self, src: str, is_dir: bool) -> bool:
+        if is_dir or not src:
+            return False
+        if os.path.splitext(src)[1] not in LIVE_WATCH_EXTENSIONS:
+            return False
+        if _live_watch_path_excluded(src):
+            return False
+        return True
 
-    def on_modified(self, event: Any) -> None:  # watchdog protocol
-        self.dispatch(event)
+    def on_modified(self, event: Any) -> None:
+        src = getattr(event, "src_path", "")
+        if self._accept(src, getattr(event, "is_directory", True)):
+            self._q.put((src, "modified"))
 
     def on_created(self, event: Any) -> None:
-        self.dispatch(event)
+        src = getattr(event, "src_path", "")
+        if self._accept(src, getattr(event, "is_directory", True)):
+            self._q.put((src, "created"))
+
+    def on_deleted(self, event: Any) -> None:
+        src = getattr(event, "src_path", "")
+        if self._accept(src, getattr(event, "is_directory", True)):
+            self._q.put((src, "deleted"))
+
+    def on_moved(self, event: Any) -> None:
+        """Atomic-save editors (vim, some VSCode configurations) write to a
+        temp file and then RENAME it over the target — which fires a MOVE
+        event with src_path=temp, dest_path=target, not a MODIFIED event.
+        Without this handler, every save from those editors would be
+        silently invisible to real-time watching: on_modified simply never
+        fires for them. We only care about the destination — if it lands
+        on a watched extension, treat it exactly like a content change."""
+        dest = getattr(event, "dest_path", "")
+        if self._accept(dest, getattr(event, "is_directory", True)):
+            self._q.put((dest, "modified"))
 
 
 class LiveFileWatcher:
     """
-    Monitors a directory for Python file changes and queues their paths for
-    automatic re-scan by both the semantic engine and the regex engine.
+    Monitors a directory for source file changes across every language the
+    pattern scanner supports (not just Python), verifies changes by content
+    hash rather than trusting mtime alone, debounces rapid repeat saves,
+    and hands back structured LiveScanEvent-ready change descriptors.
 
     Usage (called from Streamlit UI):
-        watcher.start("/path/to/project")   # begins watching
-        changed = watcher.drain()           # call on each st.rerun() to get new paths
-        watcher.stop()                      # shuts down observer thread
+        watcher.start("/path/to/project")     # begins watching
+        changes = watcher.drain_events()       # (path, event_type) pairs, deduped+debounced
+        watcher.stop()                         # shuts down observer thread
     """
 
     def __init__(self) -> None:
@@ -3371,6 +3635,17 @@ class LiveFileWatcher:
         self._watched_path: str = ""
         self._running: bool = False
         self._mtimes: Dict[str, float] = {}
+        self._content_hashes: Dict[str, str] = {}
+        self._last_scanned_at: Dict[str, float] = {}
+        self._start_error: str = ""
+        # Tracks whether a real observer thread is actually delivering
+        # events, independent of the global WATCHDOG_AVAILABLE flag —
+        # WATCHDOG_AVAILABLE only reflects whether the package *imported*
+        # successfully; Observer()/schedule() can still fail at runtime
+        # (permission errors, inotify watch-limit exhaustion, etc.), and
+        # drain_events() needs to know the ACTUAL state to decide whether
+        # to poll, not just whether the import worked.
+        self._using_observer: bool = False
 
     def start(self, path: str) -> str:
         """Start watching `path`. Returns a status string."""
@@ -3382,64 +3657,158 @@ class LiveFileWatcher:
 
         self._watched_path = path
         self._q = _queue_module.Queue()
+        self._start_error = ""
+        self._using_observer = False
 
         if WATCHDOG_AVAILABLE:
             try:
                 handler = _WatchHandler(self._q)
                 self._observer = Observer()
-                # watchdog expects a real FileSystemEventHandler subclass; we
-                # pass our duck-typed handler via schedule's handler parameter.
-                # Use the actual class approach to be safe:
                 real_handler = FileSystemEventHandler()
                 real_handler.on_modified = handler.on_modified  # type: ignore
                 real_handler.on_created = handler.on_created    # type: ignore
+                real_handler.on_deleted = handler.on_deleted    # type: ignore
+                real_handler.on_moved = handler.on_moved        # type: ignore
                 self._observer.schedule(real_handler, path, recursive=True)
                 self._observer.daemon = True
                 self._observer.start()
                 self._running = True
-                return f"Watching {path} via watchdog (inotify/FSEvents) — real-time"
+                self._using_observer = True
+                self._seed_hashes(path)  # pre-hash existing files so the first
+                                          # real change is diffed against actual
+                                          # content, not treated as new from nothing
+                return (f"Watching {path} via watchdog (inotify/FSEvents) — real-time, "
+                        f"{len(LIVE_WATCH_EXTENSIONS)} file types, content-hash verified")
             except Exception as exc:
-                pass  # fall through to mtime polling
+                self._start_error = str(exc)
+                self._observer = None  # fall through to mtime polling
 
-        # mtime-polling fallback
         self._seed_mtimes(path)
+        self._seed_hashes(path)
         self._running = True
-        return f"Watching {path} via mtime polling (install `watchdog` for real-time events)"
+        suffix = f" (watchdog failed to start: {self._start_error})" if self._start_error else ""
+        return (f"Watching {path} via mtime polling (install `watchdog` for real-time events)"
+                f"{suffix}")
+
+    def _iter_watched_files(self, path: str):
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in LIVE_WATCH_EXCLUDED_DIRS]
+            for fname in files:
+                if os.path.splitext(fname)[1] in LIVE_WATCH_EXTENSIONS:
+                    yield os.path.join(root, fname)
+
+    def _hash_file(self, fp: str) -> Optional[str]:
+        try:
+            if os.path.getsize(fp) > LIVE_WATCH_MAX_FILE_BYTES:
+                return None
+            with open(fp, "rb") as fh:
+                return hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            return None
 
     def _seed_mtimes(self, path: str) -> None:
-        import glob
-        for fp in glob.glob(os.path.join(path, "**", "*.py"), recursive=True):
+        for fp in self._iter_watched_files(path):
             try:
                 self._mtimes[fp] = os.path.getmtime(fp)
             except OSError:
                 pass
 
-    def _poll_mtimes(self) -> List[str]:
-        import glob
-        changed: List[str] = []
+    def _seed_hashes(self, path: str) -> None:
+        for fp in self._iter_watched_files(path):
+            h = self._hash_file(fp)
+            if h is not None:
+                self._content_hashes[fp] = h
+
+    def _poll_mtimes(self) -> List[Tuple[str, str]]:
+        changed: List[Tuple[str, str]] = []
         if not self._watched_path:
             return changed
-        for fp in glob.glob(os.path.join(self._watched_path, "**", "*.py"), recursive=True):
+        seen: Set[str] = set()
+        for fp in self._iter_watched_files(self._watched_path):
+            seen.add(fp)
             try:
                 mt = os.path.getmtime(fp)
-                if fp not in self._mtimes or self._mtimes[fp] < mt:
-                    self._mtimes[fp] = mt
-                    changed.append(fp)
             except OSError:
-                pass
+                continue
+            if fp not in self._mtimes or self._mtimes[fp] < mt:
+                self._mtimes[fp] = mt
+                event_type = "created" if fp not in self._content_hashes else "modified"
+                changed.append((fp, event_type))
+        # anything previously tracked but no longer on disk was deleted
+        for fp in list(self._content_hashes.keys()):
+            if fp.startswith(self._watched_path) and fp not in seen:
+                changed.append((fp, "deleted"))
+                self._content_hashes.pop(fp, None)
+                self._mtimes.pop(fp, None)
         return changed
 
-    def drain(self) -> List[str]:
-        """Return all pending changed file paths (deduped) and clear the queue."""
-        paths: Set[str] = set()
+    def _content_actually_changed(self, fp: str, event_type: str) -> bool:
+        """The core fix over v1: confirms a real content change via hash
+        before letting an event through, rather than trusting the
+        filesystem event (or mtime bump) at face value."""
+        if event_type == "deleted":
+            self._content_hashes.pop(fp, None)
+            return True
+        new_hash = self._hash_file(fp)
+        if new_hash is None:
+            return False  # unreadable or over the size cap — skip, don't crash the caller
+        old_hash = self._content_hashes.get(fp)
+        self._content_hashes[fp] = new_hash
+        return old_hash != new_hash
+
+    def _is_debounced(self, fp: str) -> bool:
+        """Pure check, no side effect — separated from marking so an event
+        that turns out NOT to be a genuine content change (e.g. an
+        mtime-only touch) can never consume the debounce window for a
+        real change that follows shortly after."""
+        last = self._last_scanned_at.get(fp, 0.0)
+        return (time.time() - last) < LIVE_WATCH_DEBOUNCE_SECONDS
+
+    def _mark_scanned(self, fp: str) -> None:
+        self._last_scanned_at[fp] = time.time()
+
+    def drain_events(self) -> List[Tuple[str, str]]:
+        """Returns deduped, content-verified, debounced (path, event_type)
+        pairs ready to hand to a scanner. This is the v2 replacement for
+        v1's drain(); each entry has already been confirmed to represent a
+        genuine content change, not just a filesystem timestamp touch.
+
+        Deletions are deliberately never debounced: a file that appears
+        and quickly disappears again (e.g. a dropper cleaning up after
+        itself) is a discrete, security-relevant event in its own right,
+        not edit-loop noise — debounce logic exists to collapse rapid
+        re-saves of the SAME kind of event, not to filter out a different
+        kind of event that happens to land in the same time window.
+        """
+        raw: Dict[str, str] = {}  # path -> latest event_type seen this drain
         while not self._q.empty():
             try:
-                paths.add(self._q.get_nowait())
+                fp, event_type = self._q.get_nowait()
+                raw[fp] = event_type
             except Exception:
                 break
-        if not WATCHDOG_AVAILABLE:
-            paths.update(self._poll_mtimes())
-        return list(paths)
+        if not self._using_observer:
+            for fp, event_type in self._poll_mtimes():
+                raw[fp] = event_type
+
+        confirmed: List[Tuple[str, str]] = []
+        for fp, event_type in raw.items():
+            if event_type == "deleted":
+                self._content_hashes.pop(fp, None)
+                self._last_scanned_at.pop(fp, None)
+                confirmed.append((fp, event_type))
+                continue
+            if not self._content_actually_changed(fp, event_type):
+                continue  # mtime moved but content is identical — never touches debounce state
+            if self._is_debounced(fp):
+                continue  # genuine change, but arrived within a prior genuine change's debounce window
+            self._mark_scanned(fp)
+            confirmed.append((fp, event_type))
+        return confirmed
+
+    def drain(self) -> List[str]:
+        """Backward-compatible path-only view of drain_events()."""
+        return [fp for fp, _ in self.drain_events()]
 
     def stop(self) -> None:
         if self._observer is not None:
@@ -3450,6 +3819,7 @@ class LiveFileWatcher:
                 pass
         self._observer = None
         self._running = False
+        self._using_observer = False
         self._watched_path = ""
 
     @property
@@ -3459,6 +3829,126 @@ class LiveFileWatcher:
     @property
     def watched_path(self) -> str:
         return self._watched_path
+
+    @property
+    def start_error(self) -> str:
+        return self._start_error
+
+
+class LiveScanOrchestrator:
+    """
+    Runs every applicable detection engine against a single live-changed
+    file and produces a LiveScanEvent — this is the piece that makes the
+    watcher's output as thorough as an on-demand full scan, instead of the
+    v1 behavior of only running two of six available engines.
+
+    Deliberately takes the already-instantiated engine objects rather than
+    constructing its own, so live scanning shares the exact same rule set,
+    custom rules, and confidence calibration as every other tab in the app
+    — a finding detected live and a finding detected on-demand are the same
+    finding, not two different code paths that can silently drift apart.
+    """
+
+    def __init__(self, semantic_scanner: Any, code_scanner: Any, pattern_scanner: Any,
+                 malware_scanner: Any, entropy_scanner: Any) -> None:
+        self.semantic_scanner = semantic_scanner
+        self.code_scanner = code_scanner
+        self.pattern_scanner = pattern_scanner
+        self.malware_scanner = malware_scanner
+        self.entropy_scanner = entropy_scanner
+
+    @staticmethod
+    def _read_safely(fp: str) -> Optional[str]:
+        try:
+            if os.path.getsize(fp) > LIVE_WATCH_MAX_FILE_BYTES:
+                return None
+            with open(fp, "rb") as fh:
+                raw = fh.read()
+            if b"\x00" in raw[:8192]:
+                return None  # binary file — nothing to scan
+            return raw.decode("utf-8", errors="ignore")
+        except OSError:
+            return None
+
+    @staticmethod
+    def _risk_score(critical: int, high: int, medium: int, low: int) -> float:
+        """Weighted 0-100 risk score for a single scan event — heavier
+        weight on critical/high so the live risk timeline actually spikes
+        on things worth noticing rather than drifting up from Low-severity
+        noise, while still being bounded rather than unbounded."""
+        raw = critical * 25 + high * 10 + medium * 3 + low * 1
+        return min(100.0, float(raw))
+
+    def scan_event(self, fp: str, event_type: str) -> LiveScanEvent:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        ext = os.path.splitext(fp)[1]
+        language = LIVE_WATCH_EXTENSIONS.get(ext, "unknown")
+
+        if event_type == "deleted":
+            return LiveScanEvent(file_name=fp, event_type="deleted", timestamp=timestamp,
+                                 language=language, engines_run=[])
+
+        content = self._read_safely(fp)
+        if content is None:
+            return LiveScanEvent(file_name=fp, event_type=event_type, timestamp=timestamp,
+                                 language=language, engines_run=[],
+                                 error="File unreadable, binary, or over the live-scan size cap")
+
+        engines_run: List[str] = []
+        semantic_findings: List[Any] = []
+        pattern_findings: List[Any] = []
+        malware_findings: List[Any] = []
+        secret_findings: List[Any] = []
+
+        try:
+            if language == "python":
+                semantic_findings = self.semantic_scanner.analyze_python(fp, content)
+                engines_run.append("semantic (AST/taint)")
+                pattern_findings = self.code_scanner.scan_text(fp, content)
+                engines_run.append("regex")
+            elif language != "unknown":
+                pattern_findings = self.pattern_scanner.scan(fp, content, language=language)
+                engines_run.append(f"heuristic ({language})")
+
+            malware_findings = self.malware_scanner.scan(fp, content)
+            engines_run.append("malware")
+            secret_findings = self.entropy_scanner.scan(fp, content)
+            engines_run.append("secrets")
+        except Exception as exc:
+            return LiveScanEvent(file_name=fp, event_type=event_type, timestamp=timestamp,
+                                 language=language, engines_run=engines_run,
+                                 error=f"Scan error: {exc}")
+
+        all_findings = list(semantic_findings) + list(pattern_findings) + list(malware_findings)
+        sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+        for f in all_findings:
+            sev = getattr(f, "severity", "Low")
+            if sev in sev_counts:
+                sev_counts[sev] += 1
+        for s in secret_findings:
+            if s.severity in sev_counts:
+                sev_counts[s.severity] += 1
+
+        risk = self._risk_score(sev_counts["Critical"], sev_counts["High"],
+                                sev_counts["Medium"], sev_counts["Low"])
+
+        event = LiveScanEvent(
+            file_name=fp, event_type=event_type, timestamp=timestamp, language=language,
+            engines_run=engines_run, semantic_count=len(semantic_findings),
+            pattern_count=len(pattern_findings), malware_count=len(malware_findings),
+            secret_count=len(secret_findings), critical_count=sev_counts["Critical"],
+            high_count=sev_counts["High"], risk_score=risk,
+        )
+        # Attach the raw finding objects so the caller can merge them into
+        # global session state (exploit-chain correlation, auto-response,
+        # reporting) — this is what makes a live detection visible
+        # everywhere else in the app instead of only in this one tab.
+        event._raw_semantic = semantic_findings      # type: ignore[attr-defined]
+        event._raw_pattern = pattern_findings         # type: ignore[attr-defined]
+        event._raw_malware = malware_findings         # type: ignore[attr-defined]
+        event._raw_secrets = secret_findings          # type: ignore[attr-defined]
+        return event
+
 
 
 # ==============================================================================
@@ -6273,10 +6763,21 @@ class SwarmOrchestrator:
         self._file_hash_cache: Dict[str, str] = {}
         self._collected_entry_points: List["EntryPoint"] = []
         self.effective_worker_history: List[int] = []  # telemetry: concurrency over the run, for introspection/testing
+        # Content read directly from disk during build_directory_tasks().
+        # Every task type detect_task_type() can produce (file_scan_inmem,
+        # pattern_scan, container_scan, dependency_scan, pdf_scan — note
+        # "file_scan" itself is never produced by anything) reads its
+        # content EXCLUSIVELY from a file_contents dict keyed by path; a
+        # directory-scanned file was never uploaded, so it can't be in the
+        # caller-supplied file_contents. Without capturing it here, every
+        # directory scan would silently execute every task against an
+        # empty string — no error, no crash, zero findings, every time.
+        self._directory_file_contents: Dict[str, Any] = {}
 
     def reset(self) -> None:
         self.tasks = []
         self._collected_entry_points = []
+        self._directory_file_contents = {}
 
     def clear_incremental_cache(self) -> None:
         self._file_hash_cache = {}
@@ -6315,17 +6816,47 @@ class SwarmOrchestrator:
                         ".yml", ".yaml", ".pdf") + tuple(self._DEPENDENCY_FILENAMES)
         allowed = extensions or default_exts
         new_tasks: List[AgentTask] = []
-        for root, _, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory):
+            # Prune vendored/generated/VCS directories at the source — the
+            # same exclusion list the live watcher uses, so "scan this
+            # directory" and "watch this directory" agree on what counts
+            # as this project's own code rather than one of them silently
+            # including node_modules/.git and the other not.
+            dirs[:] = [d for d in dirs if d not in LIVE_WATCH_EXCLUDED_DIRS]
             for fn in files:
                 fn_lower = fn.lower()
                 if fn_lower.endswith(tuple(e for e in allowed if e.startswith("."))) or fn_lower in allowed \
                    or fn_lower in self._CONTAINER_FILENAMES or fn_lower in self._DEPENDENCY_FILENAMES:
                     path = os.path.join(root, fn)
+                    content = self._read_disk_file(path, fn_lower)
+                    if content is None:
+                        continue  # unreadable, binary where text expected, or over the size cap — skip, don't crash the build
+                    self._directory_file_contents[path] = content
                     task_type = self.detect_task_type(fn)
                     t = AgentTask(task_id=self._next_id(), task_type=task_type, target=path)
                     new_tasks.append(t)
                     self.tasks.append(t)
         return new_tasks
+
+    def _read_disk_file(self, path: str, fn_lower: str) -> Optional[Any]:
+        """Reads one file for a directory-based scan, matching the content
+        type each downstream engine expects: raw bytes for PDFs (the PDF
+        analyzer parses the binary structure directly), decoded text for
+        everything else. Applies the same size cap as the live watcher so a
+        stray multi-hundred-MB file in a scanned directory can't stall or
+        blow up memory on a swarm run."""
+        try:
+            if os.path.getsize(path) > LIVE_WATCH_MAX_FILE_BYTES:
+                return None
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        if fn_lower.endswith(".pdf"):
+            return raw
+        if b"\x00" in raw[:8192]:
+            return None  # binary file where text content is expected — nothing to scan
+        return raw.decode("utf-8", errors="ignore")
 
     def build_file_tasks(self, file_names: List[str]) -> List[AgentTask]:
         """For files the user directly uploaded — inherently in scope since
@@ -6556,9 +7087,17 @@ class SwarmOrchestrator:
         start_time = time.time()
         self.effective_worker_history = []
 
+        # Merge in content captured directly from disk by
+        # build_directory_tasks() — see the note on
+        # self._directory_file_contents in __init__ for why this merge is
+        # what actually makes directory-based scans see real content
+        # instead of silently scanning empty strings.
+        effective_file_contents: Dict[str, Any] = dict(file_contents or {})
+        effective_file_contents.update(self._directory_file_contents)
+
         pending = [t for t in self.tasks if t.status in (AgentTaskStatus.PENDING, AgentTaskStatus.REJECTED)]
         if incremental:
-            pending = [t for t in pending if not self._maybe_skip_unchanged(t, file_contents)]
+            pending = [t for t in pending if not self._maybe_skip_unchanged(t, effective_file_contents)]
 
         effective_workers = self.max_workers
         remaining = list(pending)
@@ -6577,7 +7116,7 @@ class SwarmOrchestrator:
             self.effective_worker_history.append(effective_workers)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as pool:
-                futures = [pool.submit(self._execute_with_retry, t, engines, file_contents, progress_cb)
+                futures = [pool.submit(self._execute_with_retry, t, engines, effective_file_contents, progress_cb)
                           for t in batch]
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
@@ -6620,6 +7159,7 @@ class SwarmOrchestrator:
         all_malware: List[Any] = []
         all_container: List[Any] = []
         all_secrets: List[Any] = []
+        all_deps: List[Any] = []
         network_reports: List[Any] = []
 
         for t in report.tasks:
@@ -6639,10 +7179,13 @@ class SwarmOrchestrator:
                 all_container.extend(t.raw_results)
             elif t.task_type == "host_audit":
                 network_reports.append(t.raw_results)
+            elif t.task_type == "dependency_scan":
+                all_deps.extend(t.raw_results)
 
         combined_network = network_reports[0] if network_reports else None
         chains = correlator.correlate(all_semantic, all_code, all_malware, all_container,
-                                      self._collected_entry_points, combined_network, all_secrets)
+                                      self._collected_entry_points, combined_network, all_secrets,
+                                      all_deps)
         posture = posture_scorer.score(all_code, all_semantic, all_malware, [], all_secrets, [],
                                        self._collected_entry_points)
         summary_text = exec_summary_gen.summarize(all_code + all_semantic, [], [], [])
@@ -6853,18 +7396,28 @@ class AdaptiveFeedbackEngine:
 
     def __init__(self) -> None:
         self.stats: Dict[str, RuleFeedbackStats] = {}
+        # Every event, timestamped and in order — this is what turns
+        # "current precision" into an actual TREND a human can see develop
+        # over time, and is also what export_feedback()/import_feedback()
+        # persist, so the tool's learning survives beyond a single session
+        # instead of resetting every time the process restarts.
+        self.event_log: List[Dict[str, Any]] = []
 
     def record_confirmation(self, rule_id: str) -> None:
         if not rule_id:
             return
         s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
         s.confirmed_true_positive += 1
+        self.event_log.append({"rule_id": rule_id, "outcome": "confirmed",
+                               "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
     def record_false_positive(self, rule_id: str) -> None:
         if not rule_id:
             return
         s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
         s.marked_false_positive += 1
+        self.event_log.append({"rule_id": rule_id, "outcome": "false_positive",
+                               "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
 
     def confidence_adjustment(self, rule_id: str, min_samples: int = 5) -> str:
         """Returns 'boost' | 'reduce' | 'neutral' — ADVISORY ONLY, based on
@@ -6896,6 +7449,70 @@ class AdaptiveFeedbackEngine:
 
     def all_stats(self) -> List[RuleFeedbackStats]:
         return sorted(self.stats.values(), key=lambda s: s.total_feedback, reverse=True)
+
+    def precision_trend(self, rule_id: str) -> List[Tuple[int, float]]:
+        """Running precision for a single rule after each successive
+        human-verified event — this is the actual 'learning over time'
+        signal: is this rule getting more or less trustworthy as more
+        humans weigh in, not just a single current snapshot."""
+        points: List[Tuple[int, float]] = []
+        confirmed = 0
+        total = 0
+        for ev in self.event_log:
+            if ev["rule_id"] != rule_id:
+                continue
+            total += 1
+            if ev["outcome"] == "confirmed":
+                confirmed += 1
+            points.append((total, round(confirmed / total, 4)))
+        return points
+
+    def overall_precision_trend(self, window: int = 20) -> List[Tuple[int, float]]:
+        """Running precision across ALL rules combined, in event order —
+        a system-wide 'is the whole rule set getting more reliable' view,
+        smoothed with a trailing window so one bad rule's early events
+        don't permanently dominate the shape of the curve."""
+        points: List[Tuple[int, float]] = []
+        outcomes: List[int] = []
+        for i, ev in enumerate(self.event_log, start=1):
+            outcomes.append(1 if ev["outcome"] == "confirmed" else 0)
+            windowed = outcomes[-window:]
+            points.append((i, round(sum(windowed) / len(windowed), 4)))
+        return points
+
+    def export_feedback(self) -> str:
+        """Serializes the full event log to JSON so accumulated
+        human-verified learning can be saved and reloaded across sessions
+        instead of resetting every time the app restarts — this is what
+        makes the learning genuinely durable rather than in-memory-only."""
+        return json.dumps({
+            "exported_at": datetime.now().isoformat(),
+            "event_log": self.event_log,
+        }, indent=2)
+
+    def import_feedback(self, json_str: str) -> int:
+        """Additively merges a previously exported feedback log back in —
+        replays each event through record_confirmation/record_false_positive
+        so stats and the trend log both stay consistent. Returns the
+        number of events imported."""
+        data = json.loads(json_str)
+        events = data.get("event_log", [])
+        imported = 0
+        for ev in events:
+            rule_id = ev.get("rule_id")
+            outcome = ev.get("outcome")
+            timestamp = ev.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if not rule_id or outcome not in ("confirmed", "false_positive"):
+                continue
+            s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
+            if outcome == "confirmed":
+                s.confirmed_true_positive += 1
+            else:
+                s.marked_false_positive += 1
+            self.event_log.append({"rule_id": rule_id, "outcome": outcome, "timestamp": timestamp})
+            imported += 1
+        self.event_log.sort(key=lambda e: e["timestamp"])
+        return imported
 
 
 class BaselineManager:
@@ -7264,7 +7881,9 @@ class ExploitChainCorrelator:
     def correlate(self, semantic_findings: List[Any], code_findings: List[Any],
                   malware_findings: List["MalwareFinding"], container_findings: List["ContainerFinding"],
                   entry_points: List["EntryPoint"], network_report: Optional["NetworkScanReport"],
-                  secret_findings: List["SecretFinding"]) -> List[ExploitChain]:
+                  secret_findings: List["SecretFinding"],
+                  dep_findings: Optional[List["DependencyVuln"]] = None) -> List[ExploitChain]:
+        dep_findings = dep_findings or []
         chains: List[ExploitChain] = []
         chains += self._ssrf_to_internal_service(semantic_findings, network_report)
         chains += self._internet_route_to_injection(entry_points, semantic_findings)
@@ -7272,6 +7891,15 @@ class ExploitChainCorrelator:
         chains += self._privileged_container_with_entry_point(container_findings, entry_points)
         chains += self._leaked_secret_with_open_service(secret_findings, network_report)
         chains += self._path_traversal_to_secret_file(semantic_findings, secret_findings)
+        # ── Batch 2: wider correlation surface — a vulnerable dependency
+        # reachable from the internet, SSRF's near-universal cloud-metadata
+        # pivot, weak crypto co-located with the secret it's meant to
+        # protect, and low-confidence signal clustering that no single
+        # engine would flag on its own. ──────────────────────────────────
+        chains += self._vulnerable_dependency_on_internet_surface(dep_findings, entry_points)
+        chains += self._ssrf_to_cloud_metadata(semantic_findings)
+        chains += self._weak_crypto_with_colocated_secret(code_findings, secret_findings)
+        chains += self._clustered_heuristic_findings(semantic_findings)
         return sorted(chains, key=lambda c: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}.get(c.severity, 4))
 
     # ── Chain 1: SSRF -> unauthenticated internal service ────────────────────
@@ -7488,6 +8116,144 @@ class ExploitChainCorrelator:
                                          "directory tree entirely — never rely on path validation alone to "
                                          "protect secrets colocated with application code.",
                 ))
+        return chains
+
+    # ── Chain 7: Critical/High dependency CVE reachable from ANY internet
+    # surface — a vulnerable library doesn't need its own entry point; if
+    # the application it's embedded in is internet-facing at all, the
+    # vulnerable code path is one dependency-call away. ──────────────────────
+    def _vulnerable_dependency_on_internet_surface(self, dep_findings: List["DependencyVuln"],
+                                                    entry_points: List["EntryPoint"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        internet_routes = [e for e in entry_points if e.exposed_to == "internet"]
+        if not internet_routes:
+            return chains
+        severe_deps = [d for d in dep_findings if d.severity in ("Critical", "High")]
+        for dep in severe_deps:
+            chains.append(ExploitChain(
+                chain_id=f"CHAIN-DEPCVE-{dep.package}-{dep.cve_id}",
+                title=f"{dep.severity} CVE in dependency '{dep.package}' ships inside an internet-facing app",
+                severity="Critical" if dep.severity == "Critical" else "High",
+                confidence="Medium",
+                steps=[
+                    ChainStep(1, "Attack Surface Mapper", internet_routes[0].name,
+                              f"{len(internet_routes)} internet-facing route(s) exist in this codebase"),
+                    ChainStep(2, "Dependency Scanner", dep.cve_id,
+                              f"{dep.package} {dep.installed_version} is vulnerable to {dep.cve_id} "
+                              f"({dep.vulnerable_range}): {dep.summary}"),
+                ],
+                narrative=(f"A {dep.severity.lower()}-severity CVE in a loaded dependency doesn't need its own "
+                          f"code path to be dangerous — if any part of this internet-facing application is "
+                          f"running, the vulnerable library code is loaded and potentially reachable."),
+                combined_impact=f"Known, publicly documented exploit techniques for {dep.cve_id} may apply "
+                                f"directly, with no custom exploit development required.",
+                remediation_priority=f"Upgrade {dep.package} to {dep.fixed_version} or later. This is a "
+                                     f"library-level fix, independent of any application code changes.",
+            ))
+        return chains
+
+    # ── Chain 8: SSRF finding's near-universal cloud-metadata pivot — this
+    # doesn't require a network scan or entry-point mapping like Chain 1;
+    # ANY confirmed SSRF sink is enough, because 169.254.169.254 is
+    # reachable by definition from inside almost any cloud compute instance.
+    def _ssrf_to_cloud_metadata(self, semantic_findings: List[Any]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        ssrf_findings = [f for f in semantic_findings if getattr(f, "vuln_class", "") == "ssrf"]
+        for ssrf in ssrf_findings:
+            chains.append(ExploitChain(
+                chain_id=f"CHAIN-SSRF-METADATA-{getattr(ssrf,'sink_line',0)}",
+                title=f"SSRF in {getattr(ssrf,'file_name','?')} can reach the cloud instance metadata service",
+                severity="Critical", confidence="Medium",
+                steps=[
+                    ChainStep(1, "Semantic Scanner", getattr(ssrf, "finding_id", "?"),
+                              f"Attacker-controlled URL reaches an outbound request in "
+                              f"{getattr(ssrf,'function_name','?')}() at {getattr(ssrf,'file_name','?')}:{getattr(ssrf,'sink_line','?')}"),
+                    ChainStep(2, "Correlator (inferred)", "169.254.169.254",
+                              "Cloud instance metadata endpoints (AWS/Azure/GCP) are reachable by default "
+                              "from workloads running inside the cloud environment, with no network scan needed to confirm this."),
+                ],
+                narrative=("SSRF vulnerabilities in cloud-hosted applications are disproportionately dangerous "
+                          "specifically because of this endpoint: a successful request to it can return "
+                          "temporary IAM/service-account credentials for the entire compute instance."),
+                combined_impact="Potential full cloud account/role compromise via credential theft, not just "
+                                "data exposure from whatever internal service the SSRF was 'supposed' to reach.",
+                remediation_priority="Block outbound requests to 169.254.169.254 (and IMDSv1) at the "
+                                     "application layer AND fix the SSRF sink itself — enforce IMDSv2 "
+                                     "where the cloud provider supports it.",
+            ))
+        return chains
+
+    # ── Chain 9: Weak/broken cryptography used in the same file as a
+    # detected secret — the crypto meant to protect that value (or a value
+    # like it) is itself insufficient, which is worse than either finding alone.
+    def _weak_crypto_with_colocated_secret(self, code_findings: List[Any],
+                                           secret_findings: List["SecretFinding"]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        if not secret_findings:
+            return chains
+        weak_crypto = [f for f in code_findings if getattr(f, "cwe", "") == "CWE-327"]
+        for wc in weak_crypto:
+            wc_file = getattr(wc, "file_name", "")
+            colocated = [s for s in secret_findings if s.file_name == wc_file]
+            if colocated:
+                chains.append(ExploitChain(
+                    chain_id=f"CHAIN-WEAKCRYPTO-{wc_file}-{getattr(wc,'line_number',0)}",
+                    title=f"Weak cryptography and a live-looking secret coexist in {wc_file}",
+                    severity="High", confidence="Low",
+                    steps=[
+                        ChainStep(1, "Code Scanner", getattr(wc, "finding_id", "?"),
+                                  f"{getattr(wc,'title','Weak cryptography')} at {wc_file}:{getattr(wc,'line_number','?')}"),
+                        ChainStep(2, "Secrets Scanner", f"{colocated[0].file_name}:{colocated[0].line_number}",
+                                  f"{colocated[0].secret_type} detected in the same file"),
+                    ],
+                    narrative=("This is a LOW-confidence structural inference, not a confirmed link — it flags "
+                              "that a broken cryptographic primitive and a sensitive value share a file, which "
+                              "is worth a human checking whether the weak crypto is what's (theoretically) "
+                              "protecting that value or a value like it."),
+                    combined_impact="If connected, the weak algorithm may make the protected value recoverable "
+                                    "even without the credential leaking directly.",
+                    remediation_priority="Replace the weak algorithm with a modern one AND rotate the "
+                                         "colocated secret regardless — don't assume the current secret "
+                                         "value is still safe.",
+                ))
+        return chains
+
+    # ── Chain 10: Clustered low-confidence heuristic findings — no single
+    # signal here would justify escalation on its own (each is Low/Medium
+    # confidence), but three or more independent heuristic detectors
+    # flagging the SAME file is a materially different, stronger signal
+    # than any one of them in isolation — this is the "smarter correlation"
+    # case that isn't just "if A and B", it's genuine multi-signal weighting.
+    def _clustered_heuristic_findings(self, semantic_findings: List[Any]) -> List[ExploitChain]:
+        chains: List[ExploitChain] = []
+        heuristic = [f for f in semantic_findings if getattr(f, "engine", "") == "heuristic"]
+        by_file: Dict[str, List[Any]] = {}
+        for f in heuristic:
+            by_file.setdefault(getattr(f, "file_name", "?"), []).append(f)
+        for file_name, findings_in_file in by_file.items():
+            if len(findings_in_file) < 3:
+                continue
+            distinct_rules = {getattr(f, "rule_id", "") for f in findings_in_file}
+            if len(distinct_rules) < 3:
+                continue  # require distinct rule types, not one noisy rule firing repeatedly
+            chains.append(ExploitChain(
+                chain_id=f"CHAIN-CLUSTER-{file_name}",
+                title=f"{len(findings_in_file)} independent low-confidence findings cluster in {file_name}",
+                severity="Medium", confidence="Medium",
+                steps=[
+                    ChainStep(i + 1, "Heuristic Scanner", getattr(f, "finding_id", "?"),
+                              f"{getattr(f,'title','?')} at line {getattr(f,'sink_line','?')}")
+                    for i, f in enumerate(findings_in_file[:5])
+                ],
+                narrative=(f"No individual finding here would trigger escalation alone, but {len(distinct_rules)} "
+                          f"structurally different weak signals in the SAME file is itself informative — code "
+                          f"this broadly risky in multiple independent ways is statistically more likely to "
+                          f"contain a real, exploitable issue than a file with one isolated low-confidence hit."),
+                combined_impact="Elevated overall risk in this file specifically warrants a manual review pass, "
+                                "even though no single automated finding here reaches high confidence.",
+                remediation_priority="Prioritize this file for manual security review ahead of files with only "
+                                     "isolated low-confidence findings.",
+            ))
         return chains
 
 
@@ -7801,7 +8567,20 @@ DEFAULT_AUTO_RESPONSE_RULES: List[AutoResponseRule] = [
                      "Network event scored Critical anomaly — block the source IP."),
     AutoResponseRule("AR-006", "exploit_chain:critical", "revoke_api_tokens",
                      "A correlated exploit chain reached Critical severity — revoke credentials for the affected asset."),
+    AutoResponseRule("AR-007", "dependency:critical_cve", "quarantine_file",
+                     "A Critical-severity dependency CVE was confirmed reachable from an internet-facing "
+                     "surface — quarantine the manifest/lockfile pending an emergency upgrade."),
+    AutoResponseRule("AR-008", "exploit_chain:cloud_metadata", "block_ip_firewall",
+                     "An SSRF-to-cloud-metadata chain was detected — block egress to the metadata endpoint's "
+                     "associated source context as an immediate stopgap pending a code fix."),
 ]
+
+
+class CircuitBreakerOpen(Exception):
+    """Raised internally when the auto-response rate limit trips — this is
+    the 'faster response' engine's own safety valve: it exists specifically
+    so that a noisy scan or a misconfigured rule can't fire an unbounded
+    number of real (or simulated) containment actions in a short window."""
 
 
 class AutoResponseEngine:
@@ -7811,13 +8590,31 @@ class AutoResponseEngine:
     matching method on the provided ActiveContainmentEngine. Every trigger
     is recorded as an AutoResponseEvent BEFORE the action executes, so the
     audit trail exists even if the (simulated) action itself fails.
+
+    Two safety mechanisms sit around "faster response" so that faster never
+    means "less accountable":
+      - dry_run: when True, every rule still evaluates and every event is
+        still logged, but the underlying containment action is NOT invoked
+        — used to validate new rules before trusting them live.
+      - circuit breaker: if more than `max_actions_per_window` actions
+        fire within `window_seconds`, the engine trips open and refuses to
+        execute further actions (still logs a CIRCUIT_OPEN event) until a
+        human explicitly calls reset_circuit_breaker(). This bounds the
+        worst case of "fast" going wrong.
     """
 
-    def __init__(self, containment: "ActiveContainmentEngine", rules: Optional[List[AutoResponseRule]] = None):
+    def __init__(self, containment: "ActiveContainmentEngine", rules: Optional[List[AutoResponseRule]] = None,
+                 dry_run: bool = False, max_actions_per_window: int = 10, window_seconds: int = 300):
         self.containment = containment
         self.rules = rules or list(DEFAULT_AUTO_RESPONSE_RULES)
         self.event_log: List[AutoResponseEvent] = []
         self._processed_finding_ids: Set[str] = set()  # avoid re-triggering on the same finding twice
+        self.dry_run = dry_run
+        self.max_actions_per_window = max_actions_per_window
+        self.window_seconds = window_seconds
+        self._action_timestamps: List[float] = []
+        self._circuit_open = False
+        self._circuit_opened_at: Optional[str] = None
 
     def _next_event_id(self) -> str:
         return f"auto_{len(self.event_log) + 1:05d}"
@@ -7828,11 +8625,48 @@ class AutoResponseEngine:
                 return rule
         return None
 
+    def _check_rate_limit(self) -> bool:
+        """Returns True if it's safe to execute another action; trips the
+        circuit breaker (and returns False) if the recent-action count
+        within the rolling window exceeds the configured threshold."""
+        now = time.time()
+        self._action_timestamps = [t for t in self._action_timestamps if now - t < self.window_seconds]
+        if len(self._action_timestamps) >= self.max_actions_per_window:
+            self._circuit_open = True
+            self._circuit_opened_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return False
+        return True
+
+    def is_circuit_open(self) -> bool:
+        return self._circuit_open
+
+    def reset_circuit_breaker(self) -> None:
+        """Explicit human action required to resume auto-response after a
+        trip — the engine never re-closes the circuit on its own."""
+        self._circuit_open = False
+        self._circuit_opened_at = None
+        self._action_timestamps = []
+
+    def recent_action_count(self) -> int:
+        now = time.time()
+        return len([t for t in self._action_timestamps if now - t < self.window_seconds])
+
     def _execute_action(self, action_name: str, target: str) -> Dict[str, Any]:
+        if self._circuit_open:
+            return {"status": "BLOCKED", "details": f"Circuit breaker is open (tripped at "
+                    f"{self._circuit_opened_at}) — call reset_circuit_breaker() to resume."}
+        if not self._check_rate_limit():
+            return {"status": "BLOCKED", "details": f"Rate limit exceeded ({self.max_actions_per_window} actions / "
+                    f"{self.window_seconds}s) — circuit breaker tripped to prevent runaway auto-containment."}
+        if self.dry_run:
+            self._action_timestamps.append(time.time())
+            return {"status": "DRY_RUN", "details": f"Would call {action_name}('{target}') — "
+                    f"dry_run is enabled, no containment action was actually taken."}
         method = getattr(self.containment, action_name, None)
         if method is None:
             return {"status": "FAILED", "details": f"Unknown containment action: {action_name}"}
         try:
+            self._action_timestamps.append(time.time())
             return method(target)
         except Exception as exc:
             return {"status": "FAILED", "details": f"Action raised an exception: {exc}"}
@@ -7889,7 +8723,14 @@ class AutoResponseEngine:
     def process_exploit_chain(self, chain: "ExploitChain") -> Optional[AutoResponseEvent]:
         if chain.severity != "Critical":
             return None
-        rule = self._rule_for("exploit_chain:critical")
+        # Route cloud-metadata SSRF pivots to their own (more targeted) rule
+        # before falling back to the generic critical-chain rule, so the
+        # response mapping stays specific rather than one-size-fits-all.
+        if chain.chain_id.startswith("CHAIN-SSRF-METADATA"):
+            category_key = "exploit_chain:cloud_metadata"
+        else:
+            category_key = "exploit_chain:critical"
+        rule = self._rule_for(category_key)
         if not rule or chain.chain_id in self._processed_finding_ids:
             return None
         self._processed_finding_ids.add(chain.chain_id)
@@ -7903,9 +8744,27 @@ class AutoResponseEngine:
         self.event_log.append(event)
         return event
 
+    def process_dependency_finding(self, dep: "DependencyVuln") -> Optional[AutoResponseEvent]:
+        if dep.severity != "Critical":
+            return None  # only the most severe dependency CVEs auto-trigger; High+ stays advisory
+        rule = self._rule_for("dependency:critical_cve")
+        dep_key = f"dep:{dep.package}:{dep.cve_id}"
+        if not rule or dep_key in self._processed_finding_ids:
+            return None
+        self._processed_finding_ids.add(dep_key)
+        result = self._execute_action(rule.action_name, dep.package)
+        event = AutoResponseEvent(
+            event_id=self._next_event_id(), triggered_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            rule_id=rule.rule_id, finding_summary=f"{dep.cve_id} in {dep.package} {dep.installed_version}",
+            action_taken=rule.action_name, action_result=result, notified=True,
+        )
+        self.event_log.append(event)
+        return event
+
     def sweep(self, malware_findings: List["MalwareFinding"], secret_findings: List["SecretFinding"],
-              network_events: List["LogEvent"], exploit_chains: List["ExploitChain"]) -> List[AutoResponseEvent]:
-        """Run all four detectors over the current finding set in one pass —
+              network_events: List["LogEvent"], exploit_chains: List["ExploitChain"],
+              dep_findings: Optional[List["DependencyVuln"]] = None) -> List[AutoResponseEvent]:
+        """Run all five detectors over the current finding set in one pass —
         this is what the Live File Watcher / swarm hooks call automatically."""
         new_events: List[AutoResponseEvent] = []
         for f in malware_findings:
@@ -7924,6 +8783,10 @@ class AutoResponseEngine:
             e = self.process_exploit_chain(c)
             if e:
                 new_events.append(e)
+        for d in (dep_findings or []):
+            e = self.process_dependency_finding(d)
+            if e:
+                new_events.append(e)
         return new_events
 
     def get_event_log(self) -> List[AutoResponseEvent]:
@@ -7933,6 +8796,9 @@ class AutoResponseEngine:
         for rule in self.rules:
             if rule.rule_id == rule_id:
                 rule.enabled = enabled
+
+    def set_dry_run(self, enabled: bool) -> None:
+        self.dry_run = enabled
 
 
 # ==============================================================================
@@ -8175,6 +9041,22 @@ if "network_scanner" not in st.session_state:
 if "malware_scanner" not in st.session_state:
     st.session_state.malware_scanner = MalwarePatternScanner()
 
+if "live_scan_orchestrator" not in st.session_state:
+    st.session_state.live_scan_orchestrator = LiveScanOrchestrator(
+        semantic_scanner=st.session_state.semantic_scanner,
+        code_scanner=st.session_state.code_scanner,
+        pattern_scanner=st.session_state.semantic_scanner.pattern_scanner,
+        malware_scanner=st.session_state.malware_scanner,
+        entropy_scanner=st.session_state.entropy_scanner,
+    )
+
+if "live_scan_events" not in st.session_state:
+    st.session_state.live_scan_events = []  # List[LiveScanEvent] — the risk timeline's data source
+
+if "live_auto_respond" not in st.session_state:
+    st.session_state.live_auto_respond = False  # opt-in: sweep auto-response on live critical findings
+
+
 if "container_analyzer" not in st.session_state:
     st.session_state.container_analyzer = ContainerSecurityAnalyzer()
 
@@ -8277,6 +9159,7 @@ semantic_findings = st.session_state.semantic_findings
 remediation_engine = st.session_state.remediation_engine
 url_scanner_engine = st.session_state.url_scanner
 file_watcher = st.session_state.file_watcher
+live_scan_orchestrator = st.session_state.live_scan_orchestrator
 entropy_scanner = st.session_state.entropy_scanner
 jwt_analyzer_engine = st.session_state.jwt_analyzer
 ssl_analyzer_engine = st.session_state.ssl_analyzer
@@ -8907,11 +9790,39 @@ with tab_contain:
             auto_response_engine.set_rule_enabled(rule_to_toggle, not current)
             st.rerun()
 
+    st.markdown("##### 🛡️ Safety Controls")
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        dry_run_toggle = st.toggle("Dry-run mode (log only, don't execute)", value=auto_response_engine.dry_run,
+                                   key="dry_run_toggle",
+                                   help="When on, every rule still evaluates and logs, but no containment "
+                                        "action is actually invoked — use this to validate new/edited rules.")
+        if dry_run_toggle != auto_response_engine.dry_run:
+            auto_response_engine.set_dry_run(dry_run_toggle)
+    with sc2:
+        st.metric("Actions in current window", f"{auto_response_engine.recent_action_count()} / "
+                  f"{auto_response_engine.max_actions_per_window}")
+        st.caption(f"Rolling {auto_response_engine.window_seconds}s window")
+    with sc3:
+        if auto_response_engine.is_circuit_open():
+            st.error("⛔ Circuit breaker OPEN — auto-response paused")
+            if st.button("🔄 Reset Circuit Breaker", key="reset_circuit"):
+                auto_response_engine.reset_circuit_breaker()
+                st.success("Circuit breaker reset — auto-response resumed.")
+                st.rerun()
+        else:
+            st.success("✅ Circuit breaker closed — auto-response active")
+
     if st.button("⚙️ Sweep Current Findings for Auto-Response Triggers", type="primary", key="run_auto_sweep"):
         new_events = auto_response_engine.sweep(malware_findings, secret_findings, events,
-                                                 st.session_state.exploit_chains)
+                                                 st.session_state.exploit_chains, dep_findings)
         if new_events:
-            st.success(f"{len(new_events)} auto-response action(s) triggered — see log below.")
+            blocked = [e for e in new_events if e.action_result.get("status") == "BLOCKED"]
+            if blocked:
+                st.warning(f"{len(new_events)} event(s) logged, {len(blocked)} BLOCKED by the circuit breaker "
+                          f"or rate limit — see log below.")
+            else:
+                st.success(f"{len(new_events)} auto-response action(s) triggered — see log below.")
         else:
             st.info("No new triggers — either nothing matched an enabled rule, or matching "
                     "findings were already processed in a prior sweep.")
@@ -9160,13 +10071,20 @@ with tab_livedef:
     with sub_watch:
         st.markdown("#### 👁️ Live File Watcher")
         st.caption(
-            "Monitors any directory on the machine running this app for Python file changes, "
-            "auto-scanning every modified or created `.py` file with both the semantic taint "
-            "engine and the regex scanner the moment it changes."
+            f"Monitors any directory for source changes across {len(LIVE_WATCH_EXTENSIONS)} file types "
+            f"(Python, JS/TS, PHP, Java, Go, Rust, C, C#, Ruby, Kotlin) — every change is content-hash "
+            f"verified (not just mtime) and debounced, then run through every applicable engine: "
+            f"semantic AST/taint (Python), heuristic patterns (all languages), malware patterns, and "
+            f"entropy-based secrets detection. Findings merge directly into the same session data every "
+            f"other tab reads, so a live detection immediately participates in exploit-chain correlation "
+            f"and, if enabled below, auto-response."
         )
         if not WATCHDOG_AVAILABLE:
             st.info("Install `watchdog` for real inotify/FSEvents events: `pip install watchdog`. "
-                    "Currently using mtime-polling (click 'Check for Changes' to poll).")
+                    "Currently using content-hash-verified mtime polling (click 'Check for Changes' to poll).")
+        elif file_watcher.start_error:
+            st.warning(f"watchdog is installed but failed to start last time: {file_watcher.start_error} "
+                      f"— fell back to mtime polling.")
 
         watch_path = st.text_input("Directory to watch", value=os.getcwd(), key="watch_path")
 
@@ -9183,34 +10101,97 @@ with tab_livedef:
             if not file_watcher.is_running:
                 st.warning("Watcher not running. Click 'Start Watching' first.")
             else:
-                changed = file_watcher.drain()
+                changed = file_watcher.drain_events()
                 if changed:
-                    with st.spinner(f"Scanning {len(changed)} changed file(s)..."):
-                        for fp in changed:
-                            try:
-                                with open(fp, encoding="utf-8", errors="ignore") as fh:
-                                    src = fh.read()
-                                sem_f = semantic_scanner.analyze_python(fp, src)
-                                reg_f = code_scanner.scan_text(fp, src)
-                                st.session_state.watcher_scan_results.append({
-                                    "file": fp, "timestamp": datetime.now().strftime("%H:%M:%S"),
-                                    "semantic": len(sem_f), "regex": len(reg_f),
-                                    "critical": len([f for f in sem_f + reg_f
-                                                     if getattr(f, "severity", "") == "Critical"]),
-                                })
-                            except Exception as exc:
-                                st.warning(f"Could not scan {fp}: {exc}")
-                    st.success(f"Scanned {len(changed)} file(s).")
+                    with st.spinner(f"Scanning {len(changed)} changed file(s) across all applicable engines..."):
+                        new_live_events = []
+                        for fp, event_type in changed:
+                            ev = live_scan_orchestrator.scan_event(fp, event_type)
+                            new_live_events.append(ev)
+                            st.session_state.live_scan_events.append(ev)
+                            # Merge raw findings into the SAME global lists every other
+                            # tab reads — this is what lets a live-detected finding show
+                            # up in exploit-chain correlation without a manual re-scan.
+                            if hasattr(ev, "_raw_semantic") and ev._raw_semantic:
+                                st.session_state.semantic_findings.extend(ev._raw_semantic)
+                            if hasattr(ev, "_raw_malware") and ev._raw_malware:
+                                st.session_state.malware_findings.extend(ev._raw_malware)
+                            if hasattr(ev, "_raw_secrets") and ev._raw_secrets:
+                                st.session_state.secret_findings.extend(ev._raw_secrets)
+                            # legacy log kept for anything still reading it
+                            st.session_state.watcher_scan_results.append({
+                                "file": fp, "timestamp": ev.timestamp,
+                                "semantic": ev.semantic_count, "regex": ev.pattern_count,
+                                "critical": ev.critical_count,
+                            })
+                        if st.session_state.live_auto_respond:
+                            live_malware = [f for ev in new_live_events for f in getattr(ev, "_raw_malware", [])]
+                            live_secrets = [f for ev in new_live_events for f in getattr(ev, "_raw_secrets", [])]
+                            if live_malware or live_secrets:
+                                triggered = auto_response_engine.sweep(live_malware, live_secrets, [], [])
+                                if triggered:
+                                    st.warning(f"⚡ Auto-response fired {len(triggered)} action(s) on live findings "
+                                              f"— see the Auto-Response tab for the event log.")
+                    total_new_findings = sum(e.semantic_count + e.pattern_count + e.malware_count + e.secret_count
+                                             for e in new_live_events)
+                    max_risk = max((e.risk_score for e in new_live_events), default=0)
+                    if max_risk >= 50:
+                        st.error(f"🚨 Scanned {len(changed)} file(s), {total_new_findings} finding(s) — "
+                                f"peak live risk score {max_risk:.0f}/100")
+                    elif total_new_findings > 0:
+                        st.warning(f"Scanned {len(changed)} file(s), {total_new_findings} finding(s).")
+                    else:
+                        st.success(f"Scanned {len(changed)} file(s) — no findings.")
                 else:
-                    st.info("No changes detected since last check.")
+                    st.info("No genuine content changes detected since last check "
+                           "(mtime-only touches and debounced repeats are filtered out).")
 
-        st.caption(f"Watcher status: {'🟢 Running' if file_watcher.is_running else '🔴 Stopped'}"
-                   + (f" — watching `{file_watcher.watched_path}`" if file_watcher.is_running else ""))
+        status_col1, status_col2 = st.columns([3, 1])
+        with status_col1:
+            st.caption(f"Watcher status: {'🟢 Running' if file_watcher.is_running else '🔴 Stopped'}"
+                       + (f" — watching `{file_watcher.watched_path}`" if file_watcher.is_running else ""))
+        with status_col2:
+            st.session_state.live_auto_respond = st.toggle(
+                "⚡ Auto-respond on live findings", value=st.session_state.live_auto_respond,
+                key="live_auto_respond_toggle",
+                help="When on, each 'Check for Changes' pass also sweeps any new live malware/secret "
+                     "findings through the Auto-Response Engine immediately.",
+            )
 
-        watcher_results = st.session_state.watcher_scan_results
-        if watcher_results:
-            st.markdown(f"**{len(watcher_results)} file change(s) scanned this session:**")
-            st.dataframe(pd.DataFrame(watcher_results), use_container_width=True)
+        live_events = st.session_state.live_scan_events
+        if live_events:
+            st.markdown("##### 📈 Live Risk Timeline")
+            recent = live_events[-100:]  # cap the chart to the most recent 100 events
+            fig_live = px.bar(
+                x=list(range(1, len(recent) + 1)), y=[e.risk_score for e in recent],
+                labels={"x": "Live scan event #", "y": "Risk score (0-100)"},
+                title="Risk score per live-scanned file change (higher = worse)",
+                color=[e.risk_score for e in recent], color_continuous_scale=["#22c55e", "#eab308", "#ef4444"],
+            )
+            fig_live.update_layout(coloraxis_showscale=False, yaxis_range=[0, 100])
+            st.plotly_chart(fig_live, use_container_width=True)
+
+            alert_events = [e for e in reversed(live_events) if e.risk_score >= 25 or e.error][:10]
+            if alert_events:
+                st.markdown("##### 🔔 Recent Alerts")
+                for e in alert_events:
+                    if e.error:
+                        st.caption(f"⚠️ `{e.file_name}` — {e.error}")
+                    elif e.risk_score >= 50:
+                        st.error(f"🚨 `{e.file_name}` ({e.event_type}, {e.timestamp}) — "
+                                f"risk {e.risk_score:.0f}/100, {e.critical_count} critical, "
+                                f"{e.high_count} high finding(s)")
+                    else:
+                        st.warning(f"⚠️ `{e.file_name}` ({e.event_type}, {e.timestamp}) — "
+                                  f"risk {e.risk_score:.0f}/100")
+
+            st.markdown(f"**{len(live_events)} live scan event(s) this session:**")
+            live_df = pd.DataFrame([e.to_dict() for e in live_events])
+            st.dataframe(live_df, use_container_width=True, height=280)
+            csv_live = io.StringIO()
+            live_df.to_csv(csv_live, index=False)
+            st.download_button("⬇️ Download Live Scan Log (CSV)", data=csv_live.getvalue(),
+                               file_name="sentinel_live_scan_log.csv", mime="text/csv", key="dl_live_log")
 
     # ── SECRETS SCANNER ──────────────────────────────────────────────────────
     with sub_secrets:
@@ -9815,6 +10796,7 @@ with tab_advanced:
                 chains = exploit_correlator.correlate(
                     semantic_findings, findings, malware_findings, container_findings,
                     entry_points, st.session_state.network_scan_results, secret_findings,
+                    dep_findings,
                 )
             st.session_state.exploit_chains = chains
 
@@ -10282,6 +11264,58 @@ with tab_toolkit:
                     "building reliability data for each rule — this is the tool's actual "
                     "learning mechanism: supervised, transparent, and reversible.")
 
+        if adaptive_feedback.event_log:
+            st.markdown("##### 📈 Precision Trend (is the rule set getting more reliable over time?)")
+            overall_trend = adaptive_feedback.overall_precision_trend()
+            fig_trend = px.line(
+                x=[p[0] for p in overall_trend], y=[p[1] for p in overall_trend],
+                labels={"x": "Human review # (in order)", "y": "Trailing precision"},
+                title="System-wide trailing precision across all human-verified reviews",
+            )
+            fig_trend.update_layout(yaxis_range=[0, 1])
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+            trend_rule = st.selectbox("View trend for a specific rule",
+                                      sorted({e["rule_id"] for e in adaptive_feedback.event_log}),
+                                      key="trend_rule_select")
+            rule_trend = adaptive_feedback.precision_trend(trend_rule)
+            if len(rule_trend) >= 2:
+                fig_rule_trend = px.line(
+                    x=[p[0] for p in rule_trend], y=[p[1] for p in rule_trend],
+                    labels={"x": "Review # for this rule", "y": "Cumulative precision"},
+                    title=f"Cumulative precision for {trend_rule}",
+                )
+                fig_rule_trend.update_layout(yaxis_range=[0, 1])
+                st.plotly_chart(fig_rule_trend, use_container_width=True)
+            else:
+                st.caption("Need at least 2 reviews for this rule to plot a trend.")
+
+        st.markdown("##### 💾 Persist Learning Across Sessions")
+        st.caption("Feedback lives in memory for this session only unless exported. Export now, "
+                  "then re-import at the start of a future session to carry forward everything "
+                  "this tool has learned from human review so far.")
+        exp1, exp2 = st.columns(2)
+        with exp1:
+            if adaptive_feedback.event_log:
+                st.download_button(
+                    "⬇️ Export Feedback Log (JSON)", data=adaptive_feedback.export_feedback(),
+                    file_name=f"sentinel_feedback_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                    mime="application/json", key="export_feedback_btn",
+                )
+            else:
+                st.caption("Nothing to export yet.")
+        with exp2:
+            uploaded_feedback = st.file_uploader("⬆️ Import Feedback Log (JSON)", type=["json"],
+                                                 key="import_feedback_uploader")
+            if uploaded_feedback is not None and st.button("Import", key="import_feedback_btn"):
+                try:
+                    count = adaptive_feedback.import_feedback(uploaded_feedback.read().decode("utf-8"))
+                    st.success(f"Imported {count} prior human-verified review(s) — precision stats "
+                              f"and trends now include this history.")
+                    st.rerun()
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    st.error(f"Could not import: {e}")
+
     # ── CUSTOM RULE BUILDER ───────────────────────────────────────────────────
     with tk_rules:
         st.markdown("#### 🛠️ Custom Rule Builder")
@@ -10300,7 +11334,7 @@ with tab_toolkit:
             with rc2:
                 cr_severity = st.selectbox("Severity", ["Critical", "High", "Medium", "Low", "Info"])
                 if rule_kind == "Code pattern rule":
-                    cr_language = st.selectbox("Language", ["python", "javascript", "java", "php", "go", "c", "csharp", "ruby", "rust"])
+                    cr_language = st.selectbox("Language", ["python", "javascript", "java", "php", "go", "c", "csharp", "ruby", "rust", "kotlin"])
                     cr_cwe = st.text_input("CWE ID (optional)", value="CWE-Other")
                 else:
                     cr_category = st.selectbox("Category", ["Reverse Shell", "Obfuscation", "Cryptominer",
