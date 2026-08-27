@@ -8936,6 +8936,45 @@ DARK_CSS = """
         color: #22d3ee;
         font-weight: 700;
     }
+    .engine-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+        gap: 14px;
+        margin: 10px 0 18px 0;
+    }
+    .engine-category-card {
+        background: #121a2b;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 14px 16px;
+    }
+    .engine-category-title {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #1e293b;
+    }
+    .engine-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.76rem;
+        color: #94a3b8;
+        padding: 3px 0;
+    }
+    .engine-row .engine-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .engine-row .engine-count {
+        font-weight: 700;
+        flex-shrink: 0;
+    }
 </style>
 """
 st.markdown(DARK_CSS, unsafe_allow_html=True)
@@ -8967,6 +9006,112 @@ def fetch(url):
 
 DEBUG = True
 '''
+
+# ==============================================================================
+# ENGINE DIRECTORY — single source of truth for what's actually in this app
+# and where to find it. Built by walking every tab/sub-tab and confirming
+# which engine renders there (not guessed) — see the audit that produced
+# this session's fixes for how each mapping was verified. Drives three
+# things: the live hero-banner stats (replacing the hardcoded numbers that
+# had drifted out of date), the sidebar Engine Directory browser, and the
+# Command Center's status grid. One list, three consumers, so they can
+# never silently disagree with each other the way a hardcoded banner and
+# the actual tab layout eventually did.
+# ==============================================================================
+ENGINE_DIRECTORY: List[Dict[str, str]] = [
+    # ── Static Detection ─────────────────────────────────────────────────
+    {"name": "Code Vulnerability Scanner", "category": "🔍 Static Detection", "tab": "Code Scanner",
+     "desc": "CWE-mapped regex pattern rules, Python-focused."},
+    {"name": "Semantic Scanner (AST/Taint)", "category": "🔍 Static Detection", "tab": "Semantic Scanner",
+     "desc": "Interprocedural taint analysis — traces real source-to-sink data flow, not just syntax matches."},
+    {"name": "Pattern Scanner (multi-language)", "category": "🔍 Static Detection", "tab": "Semantic Scanner / Agent Swarm",
+     "desc": "Heuristic vulnerability patterns across 9 non-Python languages."},
+    {"name": "Malware Pattern Scanner", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Malware Detector",
+     "desc": "Reverse shells, backdoors, cryptominers, obfuscation patterns."},
+    {"name": "Entropy Secrets Scanner", "category": "🔍 Static Detection", "tab": "Live Defense → Secrets Scanner",
+     "desc": "Finds live-looking credentials and keys by entropy + context."},
+    {"name": "Container Security Analyzer", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Container Security",
+     "desc": "Dockerfile/compose misconfigurations: root user, curl|bash, latest tags, baked-in secrets."},
+    {"name": "Code Quality Engine", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Code Quality",
+     "desc": "Complexity, nesting depth, and maintainability signals."},
+
+    # ── Supply Chain & Compliance ────────────────────────────────────────
+    {"name": "Dependency Scanner", "category": "📦 Supply Chain & Compliance", "tab": "Dependency CVEs",
+     "desc": "Matches manifest packages against a tracked CVE database."},
+    {"name": "SBOM Generator", "category": "📦 Supply Chain & Compliance", "tab": "Live Defense → SBOM Generator",
+     "desc": "Software Bill of Materials export from manifests."},
+    {"name": "Compliance Mapper (OWASP)", "category": "📦 Supply Chain & Compliance", "tab": "Compliance Mapping",
+     "desc": "Rolls findings up into OWASP Top 10 (2021) categories."},
+    {"name": "Compliance Auditor (multi-framework)", "category": "📦 Supply Chain & Compliance",
+     "tab": "Advanced Threat Ops → Compliance Auditor",
+     "desc": "Maps findings onto PCI-DSS, HIPAA, SOC 2, GDPR, NIST CSF, and ISO 27001."},
+    {"name": "Vulnerability Knowledge Base", "category": "📦 Supply Chain & Compliance", "tab": "Developer Toolkit → Knowledge Base",
+     "desc": "Reference lookup by CWE ID or free-text search."},
+
+    # ── Network & Infrastructure ─────────────────────────────────────────
+    {"name": "Ingestion Engine (telemetry)", "category": "📡 Network & Infrastructure", "tab": "Network Telemetry",
+     "desc": "Scores inbound log events for anomaly risk."},
+    {"name": "Threat Intel Engine", "category": "📡 Network & Infrastructure", "tab": "Network Telemetry",
+     "desc": "Public/private IP reputation evaluation."},
+    {"name": "Advanced Network Scanner", "category": "📡 Network & Infrastructure", "tab": "Advanced Threat Ops → Port Scanner",
+     "desc": "Authorized-scope port scanning with service risk notes."},
+    {"name": "URL Security Scanner", "category": "📡 Network & Infrastructure", "tab": "Live Defense → URL Scanner",
+     "desc": "Security header grading for a live URL."},
+    {"name": "JWT Analyzer", "category": "📡 Network & Infrastructure", "tab": "Live Defense → JWT Analyzer",
+     "desc": "Flags alg=none, weak secrets, and other token issues."},
+    {"name": "SSL/TLS Certificate Analyzer", "category": "📡 Network & Infrastructure", "tab": "Live Defense → SSL/TLS Analyzer",
+     "desc": "Certificate chain, expiry, and protocol checks for a host."},
+
+    # ── Intelligence & Correlation ───────────────────────────────────────
+    {"name": "Exploit Chain Correlator", "category": "🧠 Intelligence & Correlation", "tab": "Advanced Threat Ops → Exploit Chains",
+     "desc": "Links findings across engines into multi-step attack chains."},
+    {"name": "Threat Hunter", "category": "🧠 Intelligence & Correlation", "tab": "Advanced Threat Ops → Threat Hunter",
+     "desc": "IoC matching across telemetry and malware findings."},
+    {"name": "Attack Surface Mapper", "category": "🧠 Intelligence & Correlation", "tab": "Advanced Threat Ops → Attack Surface",
+     "desc": "Extracts externally-reachable entry points from code."},
+    {"name": "Security Posture Scorer", "category": "🧠 Intelligence & Correlation", "tab": "Advanced Threat Ops → Posture Score",
+     "desc": "Rolls every engine's output into one tracked score over time."},
+    {"name": "LLM Triage Orchestrator", "category": "🧠 Intelligence & Correlation", "tab": "AI Deep Triage → Deep Triage",
+     "desc": "AI-assisted prioritization of existing findings (BYO model/key)."},
+    {"name": "AI Semantic Reviewer", "category": "🧠 Intelligence & Correlation", "tab": "AI Deep Triage → AI Semantic Reviewer",
+     "desc": "AI-assisted review of raw, unscanned code (BYO model/key)."},
+    {"name": "PDF Threat Analyzer", "category": "🧠 Intelligence & Correlation", "tab": "Agent Swarm → Launch Swarm (Uploaded PDFs)",
+     "desc": "Detects embedded JavaScript / suspicious PDF structure."},
+
+    # ── Response & Remediation ───────────────────────────────────────────
+    {"name": "Active Containment Engine", "category": "⚡ Response & Remediation", "tab": "Containment",
+     "desc": "Simulated containment actions (block IP, quarantine, isolate) with full audit log."},
+    {"name": "Auto-Response Engine", "category": "⚡ Response & Remediation", "tab": "Containment",
+     "desc": "Rule-based auto-triggering of containment, with a rate-limit circuit breaker and dry-run mode."},
+    {"name": "Auto-Remediation Engine", "category": "⚡ Response & Remediation", "tab": "Live Defense → Auto-Remediation",
+     "desc": "AST-based safe rewrites for common Python vulnerability patterns."},
+
+    # ── Live Monitoring ───────────────────────────────────────────────────
+    {"name": "Live File Watcher", "category": "👁️ Live Monitoring", "tab": "Live Defense → Live File Watcher",
+     "desc": "Real-time, content-verified, multi-engine scanning as files change on disk."},
+
+    # ── Orchestration & Authorization ────────────────────────────────────
+    {"name": "Swarm Orchestrator", "category": "🐝 Orchestration & Authorization", "tab": "Agent Swarm → Launch Swarm",
+     "desc": "Parallel multi-engine task execution with adaptive concurrency and retry."},
+    {"name": "Authorization Manager", "category": "🐝 Orchestration & Authorization", "tab": "Agent Swarm → Authorization Scope",
+     "desc": "Enforces scope: nothing scans a host/URL/directory that isn't explicitly authorized."},
+
+    # ── Learning, Rules & Reporting ───────────────────────────────────────
+    {"name": "Adaptive Feedback Engine", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
+     "desc": "Tracks per-rule precision over time from human-confirmed feedback."},
+    {"name": "Baseline Manager", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
+     "desc": "Suppresses confirmed false positives so they stop reappearing."},
+    {"name": "Custom Rule Builder", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Custom Rule Builder",
+     "desc": "Add your own regex/pattern rules without editing source."},
+    {"name": "Diff Scanner", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Diff Scanner",
+     "desc": "Compares two code versions, flags newly-introduced vulnerabilities."},
+    {"name": "Asset Inventory", "category": "📚 Learning, Rules & Reporting", "tab": "Asset Inventory",
+     "desc": "Lightweight CMDB giving findings organizational/ownership context."},
+    {"name": "Executive Summary Generator", "category": "📚 Learning, Rules & Reporting", "tab": "Executive Summary",
+     "desc": "Plain-language rollup of technical findings for non-technical stakeholders."},
+    {"name": "Report Generator", "category": "📚 Learning, Rules & Reporting", "tab": "Reports",
+     "desc": "Exports findings as CSV/JSON reports."},
+]
 
 # ---- Session state initialization ----
 if "ingestion_engine" not in st.session_state:
@@ -9188,8 +9333,10 @@ if st.session_state.diff_scanner is None:
 diff_scanner = st.session_state.diff_scanner
 
 # ---- Header ----
+_hero_detection_rules = len(VULNERABILITY_RULES) + len(TAINT_RULES) + len(PATTERN_RULES)
+_hero_frameworks = len({c.framework for c in COMPLIANCE_CONTROLS})
 st.markdown(
-    """
+    f"""
     <div class="bb-hero">
         <div class="bb-title-row">
             <span class="bb-cube">🔷</span>
@@ -9198,11 +9345,11 @@ st.markdown(
         <p class="bb-tagline">Autonomous Threat &amp; Vulnerability Intelligence Platform — semantic taint analysis,
         network defense, and multi-agent security orchestration in one console.</p>
         <div class="bb-stat-row">
-            <div class="bb-stat"><b>18</b> Engines</div>
-            <div class="bb-stat"><b>149</b> Detection Rules</div>
-            <div class="bb-stat"><b>30</b> Tracked CVEs</div>
-            <div class="bb-stat"><b>24</b> Compliance Controls</div>
-            <div class="bb-stat"><b>6</b> Standards Frameworks</div>
+            <div class="bb-stat"><b>{len(ENGINE_DIRECTORY)}</b> Engines</div>
+            <div class="bb-stat"><b>{_hero_detection_rules}</b> Detection Rules</div>
+            <div class="bb-stat"><b>{len(MOCK_CVE_DATABASE)}</b> Tracked CVEs</div>
+            <div class="bb-stat"><b>{len(COMPLIANCE_CONTROLS)}</b> Compliance Controls</div>
+            <div class="bb-stat"><b>{_hero_frameworks}</b> Standards Frameworks</div>
         </div>
     </div>
     """,
@@ -9211,6 +9358,18 @@ st.markdown(
 
 # ---- Sidebar ----
 st.sidebar.markdown("<h2 class='neon-cyan'>⚙️ System Control</h2>", unsafe_allow_html=True)
+
+with st.sidebar.expander(f"🗂️ Engine Directory ({len(ENGINE_DIRECTORY)} engines)", expanded=False):
+    st.caption("Every engine in this app and exactly which tab it lives under.")
+    _directory_by_category: Dict[str, List[Dict[str, str]]] = {}
+    for _eng in ENGINE_DIRECTORY:
+        _directory_by_category.setdefault(_eng["category"], []).append(_eng)
+    for _category, _engines_in_cat in _directory_by_category.items():
+        st.markdown(f"**{_category}**")
+        for _eng in _engines_in_cat:
+            st.markdown(f"- **{_eng['name']}** — *{_eng['tab']}*  \n  {_eng['desc']}")
+
+st.sidebar.markdown("---")
 
 llm_provider = st.sidebar.selectbox(
     "AI Triage Engine",
@@ -9269,18 +9428,124 @@ m12.metric("Posture Score", st.session_state.posture_history_scores[-1].overall
 
 st.markdown("---")
 
-tab_dash, tab_code, tab_semantic, tab_deps, tab_net, tab_ai, tab_contain, tab_compliance, tab_assets, tab_exec, tab_livedef, tab_advanced, tab_swarm, tab_toolkit, tab_report = st.tabs([
-    "📊 Dashboard", "🔍 Code Scanner", "🧬 Semantic Scanner (AST/Taint)", "📦 Dependency CVEs",
-    "📡 Network Telemetry", "🤖 AI Deep Triage", "⚡ Containment",
-    "📋 Compliance Mapping", "🗄️ Asset Inventory", "📈 Executive Summary",
-    "🛡️ Live Defense & Auto-Fix", "🎯 Advanced Threat Ops", "🐝 Agent Swarm",
-    "🧰 Developer Toolkit", "📄 Reports",
-])
+# Tab labels grouped into a logical flow (detection → network/compliance →
+# intelligence → response → orchestration → org/reporting) instead of the
+# order tabs happened to be added in over time. Built as (var_name, label)
+# pairs and looked up by NAME rather than position — reordering this list
+# can never silently mislabel a tab the way reordering two parallel lists
+# by hand could; a typo'd key raises immediately instead of quietly
+# pairing the wrong body with the wrong tab.
+_TAB_DEFS = [
+    ("tab_dash", "📊 Dashboard"),
+    ("tab_code", "🔍 Code Scanner"),
+    ("tab_semantic", "🧬 Semantic Scanner (AST/Taint)"),
+    ("tab_livedef", "🛡️ Live Defense & Auto-Fix"),
+    ("tab_deps", "📦 Dependency CVEs"),
+    ("tab_advanced", "🎯 Advanced Threat Ops"),
+    ("tab_net", "📡 Network Telemetry"),
+    ("tab_compliance", "📋 Compliance Mapping"),
+    ("tab_ai", "🤖 AI Deep Triage"),
+    ("tab_contain", "⚡ Containment"),
+    ("tab_swarm", "🐝 Agent Swarm"),
+    ("tab_assets", "🗄️ Asset Inventory"),
+    ("tab_exec", "📈 Executive Summary"),
+    ("tab_toolkit", "🧰 Developer Toolkit"),
+    ("tab_report", "📄 Reports"),
+]
+_tab_objs = dict(zip([_n for _n, _ in _TAB_DEFS], st.tabs([_l for _, _l in _TAB_DEFS])))
+tab_dash = _tab_objs["tab_dash"]
+tab_code = _tab_objs["tab_code"]
+tab_semantic = _tab_objs["tab_semantic"]
+tab_deps = _tab_objs["tab_deps"]
+tab_net = _tab_objs["tab_net"]
+tab_ai = _tab_objs["tab_ai"]
+tab_contain = _tab_objs["tab_contain"]
+tab_compliance = _tab_objs["tab_compliance"]
+tab_assets = _tab_objs["tab_assets"]
+tab_exec = _tab_objs["tab_exec"]
+tab_livedef = _tab_objs["tab_livedef"]
+tab_advanced = _tab_objs["tab_advanced"]
+tab_swarm = _tab_objs["tab_swarm"]
+tab_toolkit = _tab_objs["tab_toolkit"]
+tab_report = _tab_objs["tab_report"]
 
 # ------------------------------------------------------------------------
 # TAB: DASHBOARD
 # ------------------------------------------------------------------------
 with tab_dash:
+    st.markdown("### 🗺️ Command Center — Engine Status")
+    st.caption(
+        f"{len(ENGINE_DIRECTORY)} engines across {len({e['category'] for e in ENGINE_DIRECTORY})} categories. "
+        f"Each card names the exact tab it lives under — see the sidebar Engine Directory for descriptions."
+    )
+
+    # Live counts, computed from whatever's already in session state — "—"
+    # for engines whose results are inherently ephemeral (a one-off scan
+    # result shown inline, not accumulated into a list) rather than
+    # fabricating a number that isn't backed by anything.
+    _live_counts: Dict[str, Optional[int]] = {
+        "Code Vulnerability Scanner": len(findings) if findings else 0,
+        "Semantic Scanner (AST/Taint)": len(semantic_findings) if semantic_findings else 0,
+        "Pattern Scanner (multi-language)": None,  # folded into Semantic Scanner's count above
+        "Malware Pattern Scanner": len(malware_findings) if malware_findings else 0,
+        "Entropy Secrets Scanner": len(secret_findings) if secret_findings else 0,
+        "Container Security Analyzer": len(container_findings) if container_findings else 0,
+        "Code Quality Engine": None,
+        "Dependency Scanner": len(dep_findings) if dep_findings else 0,
+        "SBOM Generator": None,
+        "Compliance Mapper (OWASP)": None,
+        "Compliance Auditor (multi-framework)": len(st.session_state.compliance_reports),
+        "Vulnerability Knowledge Base": len(knowledge_base.kb),
+        "Ingestion Engine (telemetry)": len(events) if events else 0,
+        "Threat Intel Engine": None,
+        "Advanced Network Scanner": None,
+        "URL Security Scanner": None,
+        "JWT Analyzer": None,
+        "SSL/TLS Certificate Analyzer": None,
+        "Exploit Chain Correlator": len(st.session_state.exploit_chains),
+        "Threat Hunter": None,
+        "Attack Surface Mapper": len(entry_points) if entry_points else 0,
+        "Security Posture Scorer": len(posture_scorer.history()),
+        "LLM Triage Orchestrator": None,
+        "AI Semantic Reviewer": None,
+        "PDF Threat Analyzer": None,
+        "Active Containment Engine": len(containment.get_action_history()),
+        "Auto-Response Engine": len(auto_response_engine.get_event_log()),
+        "Auto-Remediation Engine": None,
+        "Live File Watcher": len(st.session_state.live_scan_events),
+        "Swarm Orchestrator": len(st.session_state.swarm_reports),
+        "Authorization Manager": len(auth_manager.list_scope()),
+        "Adaptive Feedback Engine": len(adaptive_feedback.event_log),
+        "Baseline Manager": len(baseline_manager.list_suppressions()),
+        "Custom Rule Builder": None,
+        "Diff Scanner": None,
+        "Asset Inventory": len(asset_inventory.all_assets()),
+        "Executive Summary Generator": None,
+        "Report Generator": None,
+    }
+
+    _directory_by_category: Dict[str, List[Dict[str, str]]] = {}
+    for _eng in ENGINE_DIRECTORY:
+        _directory_by_category.setdefault(_eng["category"], []).append(_eng)
+
+    _grid_html = ['<div class="engine-grid">']
+    for _category, _engines_in_cat in _directory_by_category.items():
+        _grid_html.append('<div class="engine-category-card">')
+        _grid_html.append(f'<div class="engine-category-title">{_category}</div>')
+        for _eng in _engines_in_cat:
+            _count = _live_counts.get(_eng["name"])
+            _count_display = str(_count) if _count is not None else "—"
+            _count_color = "#22d3ee" if _count else "#475569"
+            _grid_html.append(
+                f'<div class="engine-row"><span class="engine-name" title="{_eng["desc"]}">{_eng["name"]}</span>'
+                f'<span class="engine-count" style="color:{_count_color}">{_count_display}</span></div>'
+            )
+        _grid_html.append('</div>')
+    _grid_html.append('</div>')
+    st.markdown("".join(_grid_html), unsafe_allow_html=True)
+
+    st.markdown("---")
+
     col1, col2 = st.columns([1.4, 1])
 
     with col1:
