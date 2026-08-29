@@ -3899,6 +3899,7 @@ class LiveScanOrchestrator:
         pattern_findings: List[Any] = []
         malware_findings: List[Any] = []
         secret_findings: List[Any] = []
+        evasion_findings: List[Any] = []
 
         try:
             if language == "python":
@@ -3906,6 +3907,9 @@ class LiveScanOrchestrator:
                 engines_run.append("semantic (AST/taint)")
                 pattern_findings = self.code_scanner.scan_text(fp, content)
                 engines_run.append("regex")
+                evasion_findings = scan_for_evasion(fp, content)
+                if evasion_findings:
+                    engines_run.append("evasion")
             elif language != "unknown":
                 pattern_findings = self.pattern_scanner.scan(fp, content, language=language)
                 engines_run.append(f"heuristic ({language})")
@@ -3919,7 +3923,7 @@ class LiveScanOrchestrator:
                                  language=language, engines_run=engines_run,
                                  error=f"Scan error: {exc}")
 
-        all_findings = list(semantic_findings) + list(pattern_findings) + list(malware_findings)
+        all_findings = list(semantic_findings) + list(pattern_findings) + list(malware_findings) + list(evasion_findings)
         sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
         for f in all_findings:
             sev = getattr(f, "severity", "Low")
@@ -3934,7 +3938,7 @@ class LiveScanOrchestrator:
 
         event = LiveScanEvent(
             file_name=fp, event_type=event_type, timestamp=timestamp, language=language,
-            engines_run=engines_run, semantic_count=len(semantic_findings),
+            engines_run=engines_run, semantic_count=len(semantic_findings) + len(evasion_findings),
             pattern_count=len(pattern_findings), malware_count=len(malware_findings),
             secret_count=len(secret_findings), critical_count=sev_counts["Critical"],
             high_count=sev_counts["High"], risk_score=risk,
@@ -3943,7 +3947,7 @@ class LiveScanOrchestrator:
         # global session state (exploit-chain correlation, auto-response,
         # reporting) — this is what makes a live detection visible
         # everywhere else in the app instead of only in this one tab.
-        event._raw_semantic = semantic_findings      # type: ignore[attr-defined]
+        event._raw_semantic = semantic_findings + evasion_findings  # type: ignore[attr-defined]
         event._raw_pattern = pattern_findings         # type: ignore[attr-defined]
         event._raw_malware = malware_findings         # type: ignore[attr-defined]
         event._raw_secrets = secret_findings          # type: ignore[attr-defined]
@@ -7514,6 +7518,175 @@ class AdaptiveFeedbackEngine:
         self.event_log.sort(key=lambda e: e["timestamp"])
         return imported
 
+    # ── Feedback-integrity protection ───────────────────────────────────────
+    # The feedback loop above is itself an attack surface: anyone who can
+    # submit "confirmed" / "false_positive" votes can attempt to poison it —
+    # spamming false_positive on a rule that's actually catching something
+    # real, specifically to suppress it, is a known, well-studied class of
+    # attack on any learning system (label-flipping / feedback poisoning).
+    # This does NOT block or auto-reject anything — consistent with the
+    # supervised-only design above (see the July 2026 incident this class's
+    # docstring cites: acting autonomously on an inference, even a
+    # reasonable-looking one, is exactly the failure mode to avoid). It
+    # only SURFACES an advisory flag for a human to look at before trusting
+    # a sudden shift, and offers a dampened statistic as an alternative to
+    # (not a replacement for) the raw one.
+    def detect_feedback_anomaly(self, rule_id: str, window_minutes: int = 60,
+                                burst_threshold: int = 5) -> Optional[Dict[str, Any]]:
+        """Flags a suspicious pattern: a burst of same-outcome votes on
+        `rule_id` within a short window that REVERSES an established
+        precision trend. Returns None when nothing looks anomalous."""
+        rule_events = [e for e in self.event_log if e["rule_id"] == rule_id]
+        if len(rule_events) < burst_threshold + 2:
+            return None  # not enough history to call anything a "reversal"
+
+        try:
+            parsed = [(datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S"), e["outcome"])
+                     for e in rule_events]
+        except ValueError:
+            return None  # malformed/imported timestamps — don't guess, just skip
+        parsed.sort(key=lambda p: p[0])
+
+        established = parsed[:-burst_threshold]
+        recent_burst = parsed[-burst_threshold:]
+        if not established:
+            return None
+        established_precision = sum(1 for _, o in established if o == "confirmed") / len(established)
+
+        burst_span = (recent_burst[-1][0] - recent_burst[0][0]).total_seconds() / 60.0
+        if burst_span > window_minutes:
+            return None  # spread out naturally over time — not a burst
+
+        burst_outcomes = {o for _, o in recent_burst}
+        if len(burst_outcomes) != 1:
+            return None  # mixed outcomes in the window — not a one-sided burst
+
+        burst_outcome = burst_outcomes.pop()
+        burst_precision = 1.0 if burst_outcome == "confirmed" else 0.0
+        if abs(burst_precision - established_precision) < 0.5:
+            return None  # burst doesn't meaningfully contradict established history
+
+        return {
+            "rule_id": rule_id,
+            "established_precision": round(established_precision, 2),
+            "established_sample_size": len(established),
+            "burst_outcome": burst_outcome,
+            "burst_size": burst_threshold,
+            "burst_span_minutes": round(burst_span, 1),
+            "message": (
+                f"{burst_threshold} consecutive '{burst_outcome}' votes arrived within "
+                f"{burst_span:.1f} minutes, reversing a {established_precision:.0%} established "
+                f"precision built from {len(established)} prior review(s). This does not block "
+                f"anything automatically — it's a flag for a human to check who submitted these "
+                f"and whether they hold up under review before the trend is trusted."
+            ),
+        }
+
+    def robust_precision_estimate(self, rule_id: str, window_minutes: int = 60,
+                                  cap_per_window: int = 3) -> Optional[float]:
+        """A burst-dampened alternative to RuleFeedbackStats.precision_estimate:
+        events arriving within the same short window of each other count
+        toward the statistic up to `cap_per_window`, so a coordinated burst
+        (accidental or adversarial) can't swing trust as fast as the same
+        number of votes spread naturally over time would. The raw,
+        uncapped count remains available via .stats[rule_id] — this is an
+        additional, more attack-resistant view, not a replacement.
+
+        Honest trade-off: this dampens density, not intent — it can't tell
+        a coordinated poisoning burst apart from a human genuinely
+        reviewing a batch of findings back-to-back in one sitting, and
+        will under-count real confirmations that happen to land close
+        together in time the same way it under-counts an adversarial
+        burst. It's a general-purpose robustness technique (comparable to
+        a Winsorized/trimmed statistic), not an intent classifier — most
+        useful in combination with detect_feedback_anomaly() above, which
+        specifically looks for a burst that REVERSES an established
+        trend, rather than density alone.
+        """
+        rule_events = [e for e in self.event_log if e["rule_id"] == rule_id]
+        if not rule_events:
+            return None
+        try:
+            parsed = sorted(
+                (datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S"), e["outcome"])
+                for e in rule_events
+            )
+        except ValueError:
+            s = self.stats.get(rule_id)
+            return s.precision_estimate if s else None  # malformed timestamps — fall back to the raw stat
+
+        counted_confirmed = 0
+        counted_total = 0
+        window_start_idx = 0
+        for i, (ts, outcome) in enumerate(parsed):
+            while (ts - parsed[window_start_idx][0]).total_seconds() > window_minutes * 60:
+                window_start_idx += 1
+            events_in_window_so_far = i - window_start_idx
+            if events_in_window_so_far < cap_per_window:
+                counted_total += 1
+                if outcome == "confirmed":
+                    counted_confirmed += 1
+        if counted_total == 0:
+            return None
+        return counted_confirmed / counted_total
+
+    # ── Cross-signal contextual confidence ("learning across every
+    # vulnerability", not just per-rule counters) ──────────────────────────
+    # RuleFeedbackStats only ever learns "rule SEC-003 is right N% of the
+    # time" — a single number per rule ID. Real reviewer judgment uses more
+    # than that: WHERE the finding is (a test fixture is a different prior
+    # than production code), and whether MULTIPLE independent engines agree
+    # on the same location (semantic + pattern + malware all flagging the
+    # same few lines is a much stronger signal than any one of them alone —
+    # this generalizes the exploit-chain correlator's "clustered findings"
+    # idea into an ongoing, reusable confidence signal rather than a
+    # one-off chain). Every contributing signal is returned explicitly in
+    # `explanation` — this stays a transparent, auditable blend of named
+    # factors, not an opaque score a human has to just trust.
+    _TEST_PATH_MARKERS = {"test", "tests", "spec", "specs", "mock", "mocks",
+                          "fixture", "fixtures", "example", "examples", "sample", "samples", "demo"}
+
+    def contextual_confidence(self, rule_id: str, base_confidence: str, file_name: str,
+                              other_engines_same_location: int = 0) -> Dict[str, Any]:
+        """Blends the finding's own stated confidence with (a) this rule's
+        learned precision, if any, (b) a file-path context signal, and (c)
+        cross-engine agreement, into one explained adjustment. Returns a
+        dict — never mutates anything — so calling this is always safe to
+        do speculatively for display purposes."""
+        base_score = {"Critical": 0.9, "High": 0.8, "Medium": 0.55, "Low": 0.35, "Info": 0.2}.get(base_confidence, 0.5)
+        explanation: List[str] = [f"Base confidence from the finding itself ({base_confidence}): {base_score:.2f}"]
+        score = base_score
+
+        stats = self.stats.get(rule_id)
+        if stats and stats.total_feedback >= 3:
+            learned = self.robust_precision_estimate(rule_id) or stats.precision_estimate
+            score = (score + learned) / 2
+            explanation.append(
+                f"Rule {rule_id} has {stats.total_feedback} human-reviewed prior finding(s) with "
+                f"{learned:.0%} confirmed precision — blended in, moving score to {score:.2f}"
+            )
+
+        path_parts = re.split(r"[/\\._-]", file_name.lower())
+        if any(marker in path_parts for marker in self._TEST_PATH_MARKERS):
+            score *= 0.6
+            explanation.append(
+                f"File path contains a test/fixture/example marker — findings in non-production "
+                f"code are historically less actionable, score reduced to {score:.2f}"
+            )
+
+        if other_engines_same_location > 0:
+            boost = min(0.15 * other_engines_same_location, 0.3)
+            score = min(1.0, score + boost)
+            explanation.append(
+                f"{other_engines_same_location} other independent engine(s) also flagged this same "
+                f"location — cross-engine agreement, score increased to {score:.2f}"
+            )
+
+        return {
+            "rule_id": rule_id, "final_score": round(min(max(score, 0.0), 1.0), 2),
+            "explanation": explanation,
+        }
+
 
 class BaselineManager:
     """
@@ -8255,6 +8428,335 @@ class ExploitChainCorrelator:
                                      "isolated low-confidence findings.",
             ))
         return chains
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: EVASION DETECTOR — adversarial-robustness layer
+#
+#  Every detection engine built so far (semantic taint, regex, multi-language
+#  pattern rules) works by recognizing a KNOWN SHAPE: a literal dotted call
+#  name (`os.system`), a literal string pattern, a named sink. That is
+#  exactly what a sophisticated adversary — human or AI-assisted — routes
+#  around: `getattr(os, 'sys' + 'tem')(cmd)` reaches the identical dangerous
+#  function as `os.system(cmd)`, but there is no literal "os.system" or
+#  "system" token anywhere in the source for a name-matching engine to
+#  catch. This is the honest, grounded version of "defend against AI
+#  hacking": not fighting another AI in the abstract, but closing the
+#  specific, well-understood gap that automated code generation makes
+#  trivially cheap to exploit — churning out dozens of syntactically
+#  distinct obfuscation variants is exactly the kind of grunt work an LLM
+#  does well, so the defense has to target the TECHNIQUE class, not any
+#  one instance of it.
+#
+#  This engine does not try to resolve WHAT a dynamic call ultimately does
+#  (that would just be re-deriving the taint engine) — it looks for the
+#  STRUCTURAL SHAPE of evasion itself: attribute names that are computed
+#  instead of literal, sink arguments that pass through a decode call,
+#  strings assembled from fragments instead of written as one literal,
+#  namespace dictionaries used as a call target. Every technique here is a
+#  known, named category from real-world obfuscated-malware analysis, not
+#  a novel exploit primitive — detecting the presence of a lock-picking
+#  TECHNIQUE is not the same artifact as a set of working lockpicks.
+# ==============================================================================
+# ==============================================================================
+
+@dataclass
+class EvasionSignal:
+    """One structural evasion technique found in a Call expression — not
+    itself a proven vulnerability, which is why every finding built from
+    this stays at MEDIUM confidence or below unless the technique (like
+    decode-then-execute) is unambiguous enough to warrant HIGH."""
+    technique: str
+    line: int
+    detail: str
+
+
+class EvasionDetector(ast.NodeVisitor):
+    """
+    Detects code structured to evade static/pattern-based scanners:
+      - dynamic_attribute_dispatch: getattr(X, <computed>)(...) called
+        immediately — the real function name is never a literal anywhere
+        in the file, so a dotted-name sink registry can never match it.
+      - decode_then_execute: eval/exec/__import__/compile fed an argument
+        that itself runs through a decode call (base64/hex/etc.) —
+        classic payload-hiding; the dangerous string is never plaintext
+        in the source.
+      - string_reassembly_to_sink: a dangerous call's argument is built
+        from ''.join(...) or a long chain of + concatenations rather than
+        one literal — commonly done specifically so no single suspicious
+        substring exists anywhere in the file for a scanner to match.
+      - dynamic_namespace_dispatch: globals()/locals()/vars() indexed by a
+        computed key and called immediately.
+
+    Deliberately Python-AST-only (this needs real syntax tree inspection
+    to be precise — a regex equivalent would be far noisier); other
+    languages get lighter regex-heuristic coverage via the PatternScanner
+    rules added alongside this class.
+    """
+
+    DANGEROUS_MODULES = {"os", "subprocess", "sys", "importlib", "socket", "ctypes", "shutil"}
+    DANGEROUS_CALLABLES = {"eval", "exec", "compile", "__import__"}
+    DECODE_FUNCS = {"b64decode", "b32decode", "b16decode", "decode", "fromhex", "unhexlify", "urlsafe_b64decode"}
+
+    def __init__(self, file_name: str):
+        self.file_name = file_name
+        self.signals: List[EvasionSignal] = []
+        # Flow-insensitive variable taint from a pre-pass (see
+        # _prepass_variable_taint) — this is what catches the realistic,
+        # two-statement form `payload = base64.b64decode(x); exec(payload)`,
+        # not just the single-expression `exec(base64.b64decode(x))`. The
+        # split form is arguably the MORE likely one in practice: writing
+        # the decode call directly inside exec() is the visually obvious
+        # version; splitting it across a variable is the extra step
+        # someone takes specifically to look more like ordinary code.
+        self._tainted_vars: Dict[str, str] = {}
+
+    def _contains_decode_call(self, node: ast.AST) -> Optional[str]:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                fn = sub.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else None)
+                if name in self.DECODE_FUNCS:
+                    return name
+        return None
+
+    @staticmethod
+    def _plus_chain_depth(node: ast.AST) -> int:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return 1 + max(EvasionDetector._plus_chain_depth(node.left),
+                          EvasionDetector._plus_chain_depth(node.right))
+        return 0
+
+    def _contains_string_reassembly(self, node: ast.AST) -> bool:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) and sub.func.attr == "join":
+                return True
+            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add) and self._plus_chain_depth(sub) >= 4:
+                return True
+        return False
+
+    def _prepass_variable_taint(self, tree: ast.AST) -> None:
+        """Flow-insensitive (doesn't model scope, reassignment order, or
+        control flow precisely — a deliberate, transparent heuristic
+        consistent with the rest of this codebase's pattern-based engines,
+        not a full dataflow analysis): for every simple `name = <expr>`
+        assignment anywhere in the file, tag the name if its right-hand
+        side decodes bytes or reassembles a string from fragments."""
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)):
+                name = node.targets[0].id
+                decode_fn = self._contains_decode_call(node.value)
+                if decode_fn:
+                    self._tainted_vars[name] = f"decode:{decode_fn}"
+                elif self._contains_string_reassembly(node.value):
+                    self._tainted_vars[name] = "reassembly"
+
+    def _arg_taint(self, arg: ast.AST) -> Optional[str]:
+        """Checks the INLINE expression first, then falls back to whether
+        any variable referenced anywhere inside it was tagged by the
+        pre-pass — covers both `exec(base64.b64decode(x))` and
+        `p = base64.b64decode(x); exec(p)` (and `exec(p + '()')`, where the
+        tainted variable is buried inside a larger expression, not the
+        whole argument itself)."""
+        decode_fn = self._contains_decode_call(arg)
+        if decode_fn:
+            return f"decode:{decode_fn}"
+        if self._contains_string_reassembly(arg):
+            return "reassembly"
+        for sub in ast.walk(arg):
+            if isinstance(sub, ast.Name) and sub.id in self._tainted_vars:
+                return self._tainted_vars[sub.id]
+        return None
+
+    @staticmethod
+    def _name_of(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if hasattr(ast, "unparse"):
+            try:
+                return ast.unparse(node)
+            except Exception:
+                pass
+        return "<expr>"
+
+    def visit_Call(self, node: ast.Call) -> None:
+        # 1. getattr(X, computed_name)(...) called immediately as a function
+        if (isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name)
+                and node.func.func.id == "getattr"):
+            g_args = node.func.args
+            if len(g_args) >= 2 and not isinstance(g_args[1], ast.Constant):
+                target = self._name_of(g_args[0])
+                dangerous_target = target in self.DANGEROUS_MODULES
+                self.signals.append(EvasionSignal(
+                    technique="dynamic_attribute_dispatch", line=node.lineno,
+                    detail=f"getattr({target}, <computed name>)() called immediately"
+                          + (f" — {target} is a module this codebase treats as dangerous when reached "
+                             f"directly" if dangerous_target else "")
+                          + " — the real function name is never a literal string anywhere in this file.",
+                ))
+
+        # 2. eval/exec/__import__/compile fed a decoded or reassembled argument
+        #    (inline OR traced back through a prior variable assignment)
+        if isinstance(node.func, ast.Name) and node.func.id in self.DANGEROUS_CALLABLES:
+            for arg in node.args:
+                taint = self._arg_taint(arg)
+                if taint and taint.startswith("decode:"):
+                    decode_fn = taint.split(":", 1)[1]
+                    self.signals.append(EvasionSignal(
+                        technique="decode_then_execute", line=node.lineno,
+                        detail=f"{node.func.id}() argument traces back to a value decoded via "
+                              f"{decode_fn}() — the actual payload is not visible as plaintext "
+                              f"anywhere in this file.",
+                    ))
+                elif taint == "reassembly":
+                    self.signals.append(EvasionSignal(
+                        technique="string_reassembly_to_sink", line=node.lineno,
+                        detail=f"{node.func.id}() argument traces back to a string assembled from "
+                              f"multiple fragments rather than written as one literal.",
+                    ))
+
+        # 3. globals()/locals()/vars()[computed_key](...) called immediately
+        if isinstance(node.func, ast.Subscript):
+            base = node.func.value
+            if (isinstance(base, ast.Call) and isinstance(base.func, ast.Name)
+                    and base.func.id in ("globals", "locals", "vars")):
+                self.signals.append(EvasionSignal(
+                    technique="dynamic_namespace_dispatch", line=node.lineno,
+                    detail=f"{base.func.id}()[...] indexed by a computed key and called immediately — "
+                          f"a way to invoke a function without its name appearing as a normal call.",
+                ))
+
+        self.generic_visit(node)
+
+    def analyze(self, tree: ast.AST) -> List[EvasionSignal]:
+        self.signals = []
+        self._tainted_vars = {}
+        self._prepass_variable_taint(tree)
+        self.visit(tree)
+        return self.signals
+
+
+_EVASION_SEVERITY: Dict[str, Severity] = {
+    "dynamic_attribute_dispatch": Severity.HIGH,
+    "decode_then_execute": Severity.CRITICAL,
+    "string_reassembly_to_sink": Severity.HIGH,
+    "dynamic_namespace_dispatch": Severity.HIGH,
+}
+_EVASION_CONFIDENCE: Dict[str, Confidence] = {
+    "dynamic_attribute_dispatch": Confidence.MEDIUM,
+    "decode_then_execute": Confidence.HIGH,
+    "string_reassembly_to_sink": Confidence.MEDIUM,
+    "dynamic_namespace_dispatch": Confidence.MEDIUM,
+}
+_EVASION_TITLE: Dict[str, str] = {
+    "dynamic_attribute_dispatch": "Dynamic Attribute Dispatch to a Potentially Dangerous Call",
+    "decode_then_execute": "Decode-Then-Execute Pattern (classic scanner-evasion technique)",
+    "string_reassembly_to_sink": "String-Reassembled Argument to a Dangerous Call",
+    "dynamic_namespace_dispatch": "Dynamic Namespace Lookup Used to Invoke a Function",
+}
+
+
+def scan_for_evasion(file_name: str, content: str) -> List[Finding]:
+    """Parses `content` and converts any structural evasion signals into
+    standard Finding objects (engine="evasion") so they flow through the
+    exact same downstream pipeline — exploit-chain correlation,
+    auto-response, live-watch, swarm — as every other detection engine,
+    with no separate display path to fall out of sync."""
+    try:
+        tree = ast.parse(content, filename=file_name)
+    except (SyntaxError, ValueError):
+        return []
+
+    signals = EvasionDetector(file_name).analyze(tree)
+    findings: List[Finding] = []
+    for i, sig in enumerate(signals):
+        findings.append(Finding(
+            finding_id=f"EVA-{abs(hash((file_name, sig.line, sig.technique, i))) % 100000:05d}",
+            rule_id=f"EVASION-{sig.technique.upper()}",
+            title=_EVASION_TITLE[sig.technique],
+            vuln_class="code_execution",
+            severity=_EVASION_SEVERITY[sig.technique].value,
+            confidence=_EVASION_CONFIDENCE[sig.technique].value,
+            standards=_std("CWE-506", "A03:2021-Injection", "ASVS 5.2.4", "CAPEC-267", "PW.5.1"),
+            file_name=file_name, function_name="<module>", sink_line=sig.line,
+            evidence=sig.detail, propagation_path=[], impacted_functions=[],
+            remediation="Replace dynamic dispatch/decoding with explicit, literal calls wherever "
+                       "possible. If genuinely required (plugin systems, config-driven dispatch), "
+                       "add a strict allowlist of resolvable targets and log every invocation.",
+            suggested_fix="", engine="evasion",
+        ))
+    return findings
+
+
+# Additional PatternRule entries: lighter, regex-level evasion coverage for
+# the non-Python languages the heuristic PatternScanner already handles —
+# not as precise as the AST detector above, but the same technique class
+# (dynamic dispatch, decode-then-execute) shows up in every language.
+PATTERN_RULES += [
+    PatternRule(id="JS-EVA-001", title="Dynamic property access used as an immediate call (evasion pattern)",
+                language="javascript", pattern=r"\w+\[[^\]'\"]+\]\s*\(",
+                severity=Severity.MEDIUM, standards=_std("CWE-506", "A03:2021-Injection", "ASVS 5.2.4",
+                                                          "CAPEC-267", "PW.5.1"),
+                confidence=Confidence.LOW,
+                remediation="Avoid computed property names as call targets; if required, allowlist "
+                           "resolvable values explicitly."),
+    PatternRule(id="PH-EVA-001", title="Decode-then-execute pattern (base64_decode feeding eval/system)",
+                language="php", pattern=r"(eval|system|exec|shell_exec)\s*\(\s*base64_decode\s*\(",
+                severity=Severity.CRITICAL, standards=_std("CWE-506", "A03:2021-Injection", "ASVS 5.2.4",
+                                                            "CAPEC-267", "PW.5.1"),
+                confidence=Confidence.HIGH,
+                remediation="Never execute decoded/deserialized content; the decoded payload is not "
+                           "visible anywhere in the source for review."),
+    PatternRule(id="RB-EVA-001", title="Dynamic method dispatch via send/public_send (evasion pattern)",
+                language="ruby", pattern=r"\.(send|public_send|__send__)\s*\(\s*\w+\s*[,)]",
+                severity=Severity.MEDIUM, standards=_std("CWE-506", "A03:2021-Injection", "ASVS 5.2.4",
+                                                          "CAPEC-267", "PW.5.1"),
+                confidence=Confidence.LOW,
+                remediation="Avoid calling methods by a computed/variable name; allowlist explicitly "
+                           "if metaprogramming is required."),
+]
+
+
+# Curated, illustrative evasion TECHNIQUES (not live exploit payloads — each
+# is a minimal, self-contained demonstration of a named obfuscation
+# category already documented in malware-analysis literature) used only to
+# self-check detector coverage. This is what keeps "learning" honest: a
+# tool that only ever reports its own success would be worthless as a
+# coverage signal. Every case here is deliberately harmless in isolation —
+# printing a number, returning a constant — the point is the STRUCTURAL
+# shape, not the payload.
+EVASION_SELF_TEST_CASES: List[Dict[str, str]] = [
+    {"technique": "dynamic_attribute_dispatch",
+     "label": "getattr() dynamic dispatch to a dangerous module",
+     "code": "import os\n_x = 'get' + 'env'\ngetattr(os, _x)('PATH')\n"},
+    {"technique": "decode_then_execute",
+     "label": "base64-decoded payload passed to exec()",
+     "code": "import base64\n_payload = base64.b64decode('cHJpbnQoMSk=')\nexec(_payload)\n"},
+    {"technique": "string_reassembly_to_sink",
+     "label": "Command string reassembled from fragments before exec()",
+     "code": "_cmd = 'p' + 'r' + 'i' + 'n' + 't'\nexec(_cmd + '(1)')\n"},
+    {"technique": "dynamic_namespace_dispatch",
+     "label": "globals() indexed by a computed key and called immediately",
+     "code": "def helper():\n    return 1\n_key = 'help' + 'er'\nglobals()[_key]()\n"},
+]
+
+
+def run_evasion_self_test() -> Dict[str, Any]:
+    """Runs scan_for_evasion() against EVASION_SELF_TEST_CASES and reports
+    which technique categories are currently caught vs missed — an honest
+    coverage self-check, not a claim that every possible evasion technique
+    is covered. New cases should be added here whenever a real missed
+    technique is found, the same way a test suite grows over time."""
+    results = []
+    for case in EVASION_SELF_TEST_CASES:
+        findings = scan_for_evasion("self_test.py", case["code"])
+        expected_rule = f"EVASION-{case['technique'].upper()}"
+        caught = any(f.rule_id == expected_rule for f in findings)
+        results.append({"technique": case["technique"], "label": case["label"], "caught": caught})
+    caught_count = sum(1 for r in results if r["caught"])
+    return {"total": len(results), "caught": caught_count, "results": results}
 
 
 # ==============================================================================
@@ -9028,6 +9530,9 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
      "desc": "Heuristic vulnerability patterns across 9 non-Python languages."},
     {"name": "Malware Pattern Scanner", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Malware Detector",
      "desc": "Reverse shells, backdoors, cryptominers, obfuscation patterns."},
+    {"name": "Evasion Detector", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Evasion Detector",
+     "desc": "Finds code structured to dodge scanners: dynamic dispatch, decode-then-execute, "
+             "string-reassembled sinks. Also runs inline on Code Scanner and Live File Watcher."},
     {"name": "Entropy Secrets Scanner", "category": "🔍 Static Detection", "tab": "Live Defense → Secrets Scanner",
      "desc": "Finds live-looking credentials and keys by entropy + context."},
     {"name": "Container Security Analyzer", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Container Security",
@@ -9098,7 +9603,9 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
 
     # ── Learning, Rules & Reporting ───────────────────────────────────────
     {"name": "Adaptive Feedback Engine", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
-     "desc": "Tracks per-rule precision over time from human-confirmed feedback."},
+     "desc": "Tracks per-rule precision from human-confirmed feedback; also flags suspicious "
+             "feedback bursts (poisoning defense) and blends contextual signals — file path, "
+             "cross-engine agreement — into an explained confidence score."},
     {"name": "Baseline Manager", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
      "desc": "Suppresses confirmed false positives so they stop reappearing."},
     {"name": "Custom Rule Builder", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Custom Rule Builder",
@@ -9226,6 +9733,9 @@ if "network_scan_results" not in st.session_state:
 if "malware_findings" not in st.session_state:
     st.session_state.malware_findings = []
 
+if "evasion_findings" not in st.session_state:
+    st.session_state.evasion_findings = []
+
 if "container_findings" not in st.session_state:
     st.session_state.container_findings = []
 
@@ -9319,6 +9829,7 @@ attack_surface_mapper = st.session_state.attack_surface_mapper
 posture_scorer = st.session_state.posture_scorer
 threat_hunter = st.session_state.threat_hunter
 malware_findings = st.session_state.malware_findings
+evasion_findings = st.session_state.evasion_findings
 container_findings = st.session_state.container_findings
 entry_points = st.session_state.entry_points
 exploit_correlator = st.session_state.exploit_correlator
@@ -9488,6 +9999,7 @@ with tab_dash:
         "Semantic Scanner (AST/Taint)": len(semantic_findings) if semantic_findings else 0,
         "Pattern Scanner (multi-language)": None,  # folded into Semantic Scanner's count above
         "Malware Pattern Scanner": len(malware_findings) if malware_findings else 0,
+        "Evasion Detector": len(evasion_findings) if evasion_findings else 0,
         "Entropy Secrets Scanner": len(secret_findings) if secret_findings else 0,
         "Container Security Analyzer": len(container_findings) if container_findings else 0,
         "Code Quality Engine": None,
@@ -9651,6 +10163,17 @@ with tab_code:
                 "risk_score": code_scanner.risk_score(new_findings),
                 "critical": len([f for f in new_findings if f.severity == "Critical"]),
             })
+            # Evasion detection runs alongside the regular scan on every
+            # Python file — a separate detection surface (see the module
+            # docstring above EvasionDetector) that looks for code
+            # structured to dodge scanners like this one, not for the
+            # underlying vulnerability itself.
+            new_evasion: List[Any] = []
+            for fname, content in files_to_scan.items():
+                if fname.endswith(".py"):
+                    new_evasion.extend(scan_for_evasion(fname, content))
+            st.session_state.evasion_findings = new_evasion
+            evasion_findings = new_evasion
 
     if findings:
         st.markdown(f"#### Results — {len(findings)} finding(s)")
@@ -9679,6 +10202,27 @@ with tab_code:
             st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.info("No findings yet — run a scan above.")
+
+    if evasion_findings:
+        st.markdown("---")
+        st.markdown(f"#### 🧬 Evasion & Obfuscation Signals — {len(evasion_findings)} detected")
+        st.caption(
+            "A separate detection surface from the table above: these don't match a known "
+            "vulnerability pattern directly — they match the STRUCTURAL SHAPE of code written to "
+            "dodge scanners (dynamic dispatch, decode-then-execute, string-reassembled sinks). "
+            "See the 🧬 Evasion Detector panel under Advanced Threat Ops for a standalone checker "
+            "and an honest self-test of current coverage."
+        )
+        for ev_f in evasion_findings:
+            sev_class = f"severity-{ev_f.severity}"
+            st.markdown(
+                f"<div class='sentinel-card'><span class='{sev_class}'>{ev_f.severity}</span> "
+                f"— <b>{ev_f.title}</b><br><code>{ev_f.file_name}:{ev_f.sink_line}</code><br>"
+                f"{ev_f.evidence}</div>",
+                unsafe_allow_html=True,
+            )
+    elif files_to_scan and any(f.endswith(".py") for f in files_to_scan):
+        st.caption("🧬 Evasion check: no structural dodge-the-scanner patterns detected in the scanned Python file(s).")
 
 # ------------------------------------------------------------------------
 # TAB: SEMANTIC SCANNER (AST/Taint) — real interprocedural analysis, Python only
@@ -10664,10 +11208,10 @@ with tab_advanced:
         "Security Posture Scorer, and Threat Hunter."
     )
 
-    adv_net, adv_mal, adv_cont, adv_comp, adv_qual, adv_surf, adv_posture, adv_hunt, adv_chains = st.tabs([
+    adv_net, adv_mal, adv_cont, adv_comp, adv_qual, adv_surf, adv_posture, adv_hunt, adv_chains, adv_evasion = st.tabs([
         "🔌 Port Scanner", "🦠 Malware Detector", "🐳 Container Security",
         "📜 Compliance Auditor", "📐 Code Quality", "🗺️ Attack Surface",
-        "🎯 Posture Score", "🕵️ Threat Hunter", "🔗 Exploit Chains",
+        "🎯 Posture Score", "🕵️ Threat Hunter", "🔗 Exploit Chains", "🧬 Evasion Detector",
     ])
 
     # ── PORT SCANNER ──────────────────────────────────────────────────────────
@@ -11092,6 +11636,61 @@ with tab_advanced:
                     "Run the Semantic Scanner, Network Port Scanner, Malware Detector, Attack Surface "
                     "Mapper, and Secrets Scanner tabs first for the richest correlation — this tool "
                     "only connects dots that already exist, it doesn't generate new findings itself.")
+
+    # ── EVASION DETECTOR ─────────────────────────────────────────────────────
+    with adv_evasion:
+        st.markdown("#### 🧬 Evasion Detector — Adversarial-Robustness Layer")
+        st.caption(
+            "Every other engine in this app recognizes a KNOWN SHAPE — a literal call name, a "
+            "literal string pattern. This engine looks for the opposite: code STRUCTURED to dodge "
+            "that kind of matching — dynamic dispatch, decode-then-execute chains, string-reassembled "
+            "sink arguments. Python-only (needs a real syntax tree to be precise); other languages get "
+            "lighter regex-level coverage via the same pattern rules used elsewhere in this app."
+        )
+
+        ev_mode = st.radio("Check", ["Paste code", "Run self-test (known technique coverage)"],
+                           horizontal=True, key="evasion_mode")
+
+        if ev_mode == "Paste code":
+            ev_code = st.text_area(
+                "Paste Python code to check for evasion techniques", height=220,
+                value="import base64\npayload = base64.b64decode(user_supplied)\nexec(payload)\n",
+                key="evasion_paste",
+            )
+            if st.button("🧬 Check for Evasion Techniques", type="primary", key="run_evasion_check"):
+                results = scan_for_evasion("pasted_snippet.py", ev_code)
+                if results:
+                    st.warning(f"{len(results)} evasion technique(s) detected:")
+                    for r in results:
+                        st.markdown(
+                            f"<div class='sentinel-card'><span class='severity-{r.severity}'>{r.severity}</span> "
+                            f"— <b>{r.title}</b> (line {r.sink_line})<br>{r.evidence}<br>"
+                            f"<i>{r.remediation}</i></div>",
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.success("No structural evasion techniques detected in this snippet.")
+
+        else:
+            st.caption(
+                "Runs the detector against a small, curated set of NAMED, illustrative evasion "
+                "techniques (each one harmless in isolation — printing a number, returning a "
+                "constant) and honestly reports which are currently caught. This is what keeps "
+                "'learning' honest: a tool that only ever reports its own success is worthless as "
+                "a coverage signal — new cases get added here whenever a real missed technique "
+                "is found, the same way any test suite grows."
+            )
+            if st.button("🧪 Run Coverage Self-Test", type="primary", key="run_evasion_selftest"):
+                report = run_evasion_self_test()
+                pct = report["caught"] / report["total"] if report["total"] else 0
+                if pct == 1.0:
+                    st.success(f"✅ {report['caught']}/{report['total']} known technique(s) currently caught.")
+                else:
+                    st.warning(f"⚠️ {report['caught']}/{report['total']} known technique(s) currently caught "
+                              f"— the rest are documented gaps, not silent ones.")
+                for r in report["results"]:
+                    icon = "✅" if r["caught"] else "❌"
+                    st.markdown(f"{icon} **{r['technique']}** — {r['label']}")
 
 
 # ------------------------------------------------------------------------
@@ -11580,6 +12179,63 @@ with tab_toolkit:
                     st.rerun()
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     st.error(f"Could not import: {e}")
+
+        st.markdown("---")
+        st.markdown("##### 🛡️ Feedback-Integrity Guard (advisory only)")
+        st.caption(
+            "The feedback loop above is itself an attack surface — anyone able to submit votes "
+            "could attempt to poison it (spamming 'false positive' on a rule that's genuinely "
+            "catching something real, specifically to suppress it). This never blocks or "
+            "auto-corrects anything on its own — it only flags a burst worth a human looking at, "
+            "consistent with keeping every automated judgment in this app reviewable rather than "
+            "self-acting."
+        )
+        rule_ids_with_history = sorted({e["rule_id"] for e in adaptive_feedback.event_log})
+        if rule_ids_with_history:
+            any_anomaly = False
+            for rid in rule_ids_with_history:
+                anomaly = adaptive_feedback.detect_feedback_anomaly(rid)
+                if anomaly:
+                    any_anomaly = True
+                    st.warning(f"⚠️ **{rid}**: {anomaly['message']}")
+            if not any_anomaly:
+                st.success("✅ No suspicious feedback bursts detected across any rule with history.")
+
+            st.caption("Robust (burst-dampened) precision vs. the raw statistic, per rule:")
+            robust_rows = []
+            for rid in rule_ids_with_history:
+                raw = adaptive_feedback.stats[rid].precision_estimate
+                robust = adaptive_feedback.robust_precision_estimate(rid)
+                robust_rows.append({"rule_id": rid, "raw_precision": round(raw, 2),
+                                    "robust_precision": round(robust, 2) if robust is not None else None})
+            st.dataframe(pd.DataFrame(robust_rows), use_container_width=True)
+        else:
+            st.caption("No feedback history yet — nothing to check for anomalies.")
+
+        st.markdown("---")
+        st.markdown("##### 🧩 Contextual Confidence (cross-signal learning)")
+        st.caption(
+            "Learns across every reviewed vulnerability, not just per-rule counters: blends a "
+            "finding's stated confidence with this rule's learned precision, a file-path context "
+            "signal (test/fixture code scores lower), and cross-engine agreement (multiple "
+            "independent engines flagging the same location is a stronger signal than any one "
+            "alone). Every contributing factor is shown explicitly — never a black-box score."
+        )
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1:
+            cc_rule = st.selectbox("Rule ID", rule_ids_with_history or ["SEC-001"], key="cc_rule")
+        with cc2:
+            cc_conf = st.selectbox("Base confidence", ["Critical", "High", "Medium", "Low", "Info"],
+                                   index=2, key="cc_conf")
+        with cc3:
+            cc_file = st.text_input("File path", value="src/app.py", key="cc_file")
+        with cc4:
+            cc_agree = st.number_input("Other engines agreeing", min_value=0, max_value=5, value=0, key="cc_agree")
+        if st.button("Compute Contextual Confidence", key="cc_compute"):
+            result = adaptive_feedback.contextual_confidence(cc_rule, cc_conf, cc_file, int(cc_agree))
+            st.metric("Final Score", f"{result['final_score']:.2f}")
+            for line in result["explanation"]:
+                st.markdown(f"- {line}")
 
     # ── CUSTOM RULE BUILDER ───────────────────────────────────────────────────
     with tk_rules:
