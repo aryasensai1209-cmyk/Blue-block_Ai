@@ -1198,6 +1198,151 @@ class LLMTriageOrchestrator:
 # SECTION 7: ACTIVE CONTAINMENT PLAYBOOKS (SIMULATED)
 # ==============================================================================
 
+@dataclass
+class EnvironmentDeclaration:
+    """A human's explicit statement of what kind of environment `target`
+    is. This is the ONLY way a target's risk context becomes known to
+    AutonomyBoundaryGuard — nothing in that class ever infers, guesses, or
+    defaults this from the target's name, format, or any other signal."""
+    target: str
+    is_production: bool
+    declared_by: str
+    declared_at: str
+
+    def is_stale(self, max_age_minutes: int = 480) -> bool:
+        """A declaration doesn't stay valid forever — environments change
+        (a test box today can become production tomorrow). Past
+        `max_age_minutes` (default 8 hours), the guard treats it as if it
+        were never declared, forcing a fresh confirmation rather than
+        silently trusting an old assumption indefinitely."""
+        try:
+            declared_dt = datetime.strptime(self.declared_at, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return True
+        return (datetime.now() - declared_dt).total_seconds() > max_age_minutes * 60
+
+
+@dataclass
+class GovernorDecision:
+    allowed: bool
+    target: str
+    action_tier: str
+    reason: str
+    required_human_action: str
+    timestamp: str
+
+
+class AutonomyBoundaryGuard:
+    """
+    Operationalizes one specific, narrow lesson from a real, disclosed
+    incident (Anthropic, July 2026: Claude models operating during
+    authorized security-testing engagements reasoned past ambiguous
+    evidence about their environment and acted on their own conclusion
+    without a human confirming first — see
+    https://www.anthropic.com/news/investigating-incidents-cybersecurity-evals).
+    The failure wasn't malice or a capability gap — it was ambiguity
+    getting resolved toward "proceed" instead of toward "stop and ask."
+    This class makes that resolution direction structural rather than
+    aspirational: for anything above pure read-only analysis, the default
+    for "not yet explicitly declared" is ALWAYS the more restrictive
+    interpretation. Nothing here infers permission from a target's name,
+    a prior scan, or an LLM's own assessment of "this looks like a test
+    box" — only an explicit, timestamped, attributed human declaration
+    counts.
+
+    This wraps AROUND — does not replace — the existing safeguards
+    elsewhere in this app: AuthorizationManager answers "is this target
+    in scope at all," AutoResponseEngine's circuit breaker answers "are
+    we executing too fast." This answers a third, different question:
+    "has a human explicitly confirmed the risk context of THIS class of
+    action against THIS target, recently enough to still trust it." An
+    authorized, rate-limited action against a target whose production
+    status was never confirmed is exactly the gap those two don't cover.
+
+    Every action in this entire app is already simulated — nothing here
+    reaches real infrastructure. This guard is deliberately built anyway,
+    because the discipline of stopping to confirm environment context
+    before acting is the thing worth having in place BEFORE the day
+    someone wires a simulated action to something real, not after.
+    """
+
+    ACTION_TIERS: Tuple[str, ...] = ("advisory", "simulated", "scoped_action")
+
+    def __init__(self) -> None:
+        self._declarations: Dict[str, EnvironmentDeclaration] = {}
+        self._decision_log: List[GovernorDecision] = []
+
+    def declare_environment(self, target: str, is_production: bool, declared_by: str) -> EnvironmentDeclaration:
+        decl = EnvironmentDeclaration(
+            target=target, is_production=is_production, declared_by=declared_by,
+            declared_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self._declarations[target] = decl
+        return decl
+
+    def _log(self, decision: GovernorDecision) -> GovernorDecision:
+        self._decision_log.append(decision)
+        return decision
+
+    def check(self, action_tier: str, target: str, action_description: str = "") -> GovernorDecision:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if action_tier not in self.ACTION_TIERS:
+            return self._log(GovernorDecision(
+                allowed=False, target=target, action_tier=action_tier,
+                reason=f"Unknown action tier '{action_tier}' — unrecognized tiers are refused, not "
+                      f"passed through with a default.",
+                required_human_action=f"Use one of: {', '.join(self.ACTION_TIERS)}.", timestamp=now,
+            ))
+
+        if action_tier == "advisory":
+            return self._log(GovernorDecision(
+                allowed=True, target=target, action_tier=action_tier,
+                reason="Advisory/read-only analysis is always allowed — no environment declaration needed.",
+                required_human_action="", timestamp=now,
+            ))
+
+        decl = self._declarations.get(target)
+        if decl is None or decl.is_stale():
+            reason = (f"No environment declaration exists for '{target}'." if decl is None else
+                     f"The declaration for '{target}' is stale (made {decl.declared_at}) and needs "
+                     f"reconfirming.")
+            return self._log(GovernorDecision(
+                allowed=False, target=target, action_tier=action_tier,
+                reason=f"{reason} Ambiguity resolves to BLOCKED, never to 'assume safe' — this is the "
+                      f"specific asymmetry the incident this class references showed matters.",
+                required_human_action=f"Call declare_environment() for '{target}' before this action can proceed.",
+                timestamp=now,
+            ))
+
+        if decl.is_production and action_tier == "scoped_action":
+            return self._log(GovernorDecision(
+                allowed=False, target=target, action_tier=action_tier,
+                reason=f"'{target}' is explicitly declared PRODUCTION by {decl.declared_by}. "
+                      f"Scoped (non-simulated) actions against declared production are never "
+                      f"auto-approved by this guard, regardless of any other authorization in place.",
+                required_human_action="A human must take this specific action manually — this guard "
+                                      "does not grant autonomous execution against declared production.",
+                timestamp=now,
+            ))
+
+        return self._log(GovernorDecision(
+            allowed=True, target=target, action_tier=action_tier,
+            reason=f"'{target}' is declared {'production' if decl.is_production else 'non-production'} "
+                  f"by {decl.declared_by} at {decl.declared_at}; {action_tier} actions are permitted "
+                  f"once environment context is explicitly confirmed.",
+            required_human_action="", timestamp=now,
+        ))
+
+    def get_decision_log(self) -> List[GovernorDecision]:
+        return list(self._decision_log)
+
+    def get_declarations(self) -> List[EnvironmentDeclaration]:
+        return list(self._declarations.values())
+
+    def blocked_count(self) -> int:
+        return sum(1 for d in self._decision_log if not d.allowed)
+
+
 class ActiveContainmentEngine:
     def __init__(self, webhook_url: Optional[str] = None):
         self.webhook_url = webhook_url
@@ -9361,102 +9506,41 @@ DARK_CSS = """
     .severity-Low { color: #34d399; font-weight: 600; }
     .severity-Info { color: #94a3b8; font-weight: 500; }
 
-    .bb-hero {
-        position: relative;
-        background: linear-gradient(135deg, #0d1420 0%, #111a2e 55%, #0d1420 100%);
-        border: 1px solid #1e293b;
-        border-radius: 14px;
-        padding: 28px 32px;
-        margin-bottom: 18px;
-        overflow: hidden;
+    .bb-header-minimal {
+        padding: 18px 4px 14px 4px;
+        margin-bottom: 6px;
+        border-bottom: 1px solid #1e293b;
     }
-    .bb-hero::before {
-        content: "";
-        position: absolute;
-        top: -40%; left: -10%;
-        width: 55%; height: 220%;
-        background: radial-gradient(circle, rgba(34,211,238,0.10) 0%, rgba(34,211,238,0) 70%);
-        pointer-events: none;
+    .bb-header-brand {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.6rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: #e5edf7;
     }
-    .bb-hero::after {
-        content: "";
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 3px;
-        background: linear-gradient(90deg, #22d3ee 0%, #3b82f6 35%, #a78bfa 65%, #22d3ee 100%);
-        background-size: 200% 100%;
+    .bb-header-underscore {
+        color: #22d3ee;
+        text-shadow: 0 0 14px rgba(34,211,238,0.6);
     }
-    .bb-title-row {
+
+    .gauge-wrap {
         display: flex;
         align-items: center;
-        gap: 14px;
-        position: relative;
-        z-index: 1;
+        justify-content: center;
     }
-    .bb-cube {
-        font-size: 2.1rem;
-        filter: drop-shadow(0 0 10px rgba(34,211,238,0.55));
-        line-height: 1;
-    }
-    .bb-title {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 2.0rem;
-        font-weight: 800;
-        letter-spacing: 0.06em;
-        margin: 0;
-        color: #e5edf7;
-        text-shadow: 0 0 18px rgba(34,211,238,0.35);
-    }
-    .bb-title .bb-accent {
-        color: #22d3ee;
-        text-shadow: 0 0 14px rgba(34,211,238,0.75);
-    }
-    .bb-tagline {
-        margin: 6px 0 0 0;
-        color: #8b98ab;
-        font-size: 0.95rem;
-        letter-spacing: 0.02em;
-        position: relative;
-        z-index: 1;
-    }
-    .bb-stat-row {
+    .category-summary-row {
         display: flex;
-        gap: 22px;
-        margin-top: 16px;
-        flex-wrap: wrap;
-        position: relative;
-        z-index: 1;
-    }
-    .bb-stat {
+        justify-content: space-between;
+        align-items: center;
         font-family: 'JetBrains Mono', monospace;
         font-size: 0.82rem;
-        color: #64748b;
-        border-left: 2px solid #22d3ee44;
-        padding-left: 10px;
+        color: #cbd5e1;
     }
-    .bb-stat b {
-        color: #22d3ee;
+    .category-summary-badge {
         font-weight: 700;
-    }
-    .engine-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-        gap: 14px;
-        margin: 10px 0 18px 0;
-    }
-    .engine-category-card {
-        background: #121a2b;
-        border: 1px solid #1e293b;
-        border-radius: 10px;
-        padding: 14px 16px;
-    }
-    .engine-category-title {
-        font-size: 0.9rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin-bottom: 10px;
-        padding-bottom: 8px;
-        border-bottom: 1px solid #1e293b;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.75rem;
     }
     .engine-row {
         display: flex;
@@ -9464,9 +9548,10 @@ DARK_CSS = """
         align-items: baseline;
         gap: 10px;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.76rem;
+        font-size: 0.78rem;
         color: #94a3b8;
-        padding: 3px 0;
+        padding: 4px 0;
+        border-bottom: 1px solid #1a2333;
     }
     .engine-row .engine-name {
         overflow: hidden;
@@ -9586,6 +9671,9 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
     # ── Response & Remediation ───────────────────────────────────────────
     {"name": "Active Containment Engine", "category": "⚡ Response & Remediation", "tab": "Containment",
      "desc": "Simulated containment actions (block IP, quarantine, isolate) with full audit log."},
+    {"name": "Autonomy Boundary Guard", "category": "⚡ Response & Remediation", "tab": "Containment",
+     "desc": "Blocks any non-advisory action against a target with no explicit human environment "
+             "declaration — undeclared or stale always resolves to blocked, never assumed safe."},
     {"name": "Auto-Response Engine", "category": "⚡ Response & Remediation", "tab": "Containment",
      "desc": "Rule-based auto-triggering of containment, with a rate-limit circuit breaker and dry-run mode."},
     {"name": "Auto-Remediation Engine", "category": "⚡ Response & Remediation", "tab": "Live Defense → Auto-Remediation",
@@ -9628,6 +9716,9 @@ if "ingestion_engine" not in st.session_state:
 
 if "containment_engine" not in st.session_state:
     st.session_state.containment_engine = ActiveContainmentEngine()
+
+if "autonomy_guard" not in st.session_state:
+    st.session_state.autonomy_guard = AutonomyBoundaryGuard()
 
 if "code_scanner" not in st.session_state:
     st.session_state.code_scanner = CodeVulnerabilityScanner()
@@ -9801,6 +9892,7 @@ if "semantic_findings" not in st.session_state:
 
 engine = st.session_state.ingestion_engine
 containment = st.session_state.containment_engine
+autonomy_guard = st.session_state.autonomy_guard
 auto_response_engine = st.session_state.auto_response_engine
 code_scanner = st.session_state.code_scanner
 dep_scanner = st.session_state.dep_scanner
@@ -9844,24 +9936,10 @@ if st.session_state.diff_scanner is None:
 diff_scanner = st.session_state.diff_scanner
 
 # ---- Header ----
-_hero_detection_rules = len(VULNERABILITY_RULES) + len(TAINT_RULES) + len(PATTERN_RULES)
-_hero_frameworks = len({c.framework for c in COMPLIANCE_CONTROLS})
 st.markdown(
-    f"""
-    <div class="bb-hero">
-        <div class="bb-title-row">
-            <span class="bb-cube">🔷</span>
-            <h1 class="bb-title">BLUE<span class="bb-accent">BLOCK</span> AI</h1>
-        </div>
-        <p class="bb-tagline">Autonomous Threat &amp; Vulnerability Intelligence Platform — semantic taint analysis,
-        network defense, and multi-agent security orchestration in one console.</p>
-        <div class="bb-stat-row">
-            <div class="bb-stat"><b>{len(ENGINE_DIRECTORY)}</b> Engines</div>
-            <div class="bb-stat"><b>{_hero_detection_rules}</b> Detection Rules</div>
-            <div class="bb-stat"><b>{len(MOCK_CVE_DATABASE)}</b> Tracked CVEs</div>
-            <div class="bb-stat"><b>{len(COMPLIANCE_CONTROLS)}</b> Compliance Controls</div>
-            <div class="bb-stat"><b>{_hero_frameworks}</b> Standards Frameworks</div>
-        </div>
+    """
+    <div class="bb-header-minimal">
+        <span class="bb-header-brand">Blue Block<span class="bb-header-underscore">_</span>Ai</span>
     </div>
     """,
     unsafe_allow_html=True,
@@ -9980,24 +10058,119 @@ tab_swarm = _tab_objs["tab_swarm"]
 tab_toolkit = _tab_objs["tab_toolkit"]
 tab_report = _tab_objs["tab_report"]
 
+def _risk_gauge_svg(score: float, label: str = "SECURITY SCORE") -> str:
+    """A single calm circular gauge — deliberately not a bar/line chart,
+    just one visual focal point for 'how are things overall' at a glance."""
+    score = max(0.0, min(100.0, score))
+    radius = 70
+    circumference = 2 * math.pi * radius
+    offset = circumference * (1 - score / 100)
+    color = "#34d399" if score >= 70 else ("#fbbf24" if score >= 40 else "#f87171")
+    return f'''<svg width="180" height="180" viewBox="0 0 180 180">
+        <circle cx="90" cy="90" r="{radius}" fill="none" stroke="#1e293b" stroke-width="14"/>
+        <circle cx="90" cy="90" r="{radius}" fill="none" stroke="{color}" stroke-width="14"
+                stroke-dasharray="{circumference:.2f}" stroke-dashoffset="{offset:.2f}"
+                stroke-linecap="round" transform="rotate(-90 90 90)"/>
+        <text x="90" y="86" text-anchor="middle" font-family="JetBrains Mono, monospace"
+              font-size="34" font-weight="800" fill="{color}">{score:.0f}</text>
+        <text x="90" y="108" text-anchor="middle" font-family="JetBrains Mono, monospace"
+              font-size="10" fill="#94a3b8" letter-spacing="1">{label}</text>
+    </svg>'''
+
+
 # ------------------------------------------------------------------------
 # TAB: DASHBOARD
 # ------------------------------------------------------------------------
 with tab_dash:
-    st.markdown("### 🗺️ Command Center — Engine Status")
-    st.caption(
-        f"{len(ENGINE_DIRECTORY)} engines across {len({e['category'] for e in ENGINE_DIRECTORY})} categories. "
-        f"Each card names the exact tab it lives under — see the sidebar Engine Directory for descriptions."
+    # One unified severity tally across every finding-producing engine —
+    # this single pass replaces what used to be a separate bar chart.
+    _all_dash_findings = (
+        list(findings) + list(semantic_findings) + list(malware_findings)
+        + list(secret_findings) + list(container_findings) + list(evasion_findings)
     )
+    _sev_tally: Dict[str, int] = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+    for _f in _all_dash_findings:
+        _s = getattr(_f, "severity", "Low")
+        if _s in _sev_tally:
+            _sev_tally[_s] += 1
+    for _d in dep_findings:
+        if getattr(_d, "severity", "") in ("Critical", "High"):
+            _sev_tally[_d.severity] += 1
 
-    # Live counts, computed from whatever's already in session state — "—"
-    # for engines whose results are inherently ephemeral (a one-off scan
-    # result shown inline, not accumulated into a list) rather than
-    # fabricating a number that isn't backed by anything.
+    _security_score = max(0.0, 100.0 - min(100.0,
+        _sev_tally["Critical"] * 9 + _sev_tally["High"] * 4
+        + _sev_tally["Medium"] * 1.5 + _sev_tally["Low"] * 0.5))
+
+    _engines_with_data = sum(1 for v in {
+        "code": len(findings), "semantic": len(semantic_findings), "malware": len(malware_findings),
+        "secrets": len(secret_findings), "container": len(container_findings),
+        "evasion": len(evasion_findings), "dep": len(dep_findings), "telemetry": len(events),
+    }.values() if v > 0)
+
+    g_col, m_col = st.columns([1, 2.2])
+    with g_col:
+        st.markdown(f'<div class="gauge-wrap">{_risk_gauge_svg(_security_score)}</div>', unsafe_allow_html=True)
+    with m_col:
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Active Findings", len(_all_dash_findings) + len(dep_findings))
+        mc2.metric("Critical Issues", _sev_tally["Critical"])
+        mc3.metric("Engines Reporting", f"{_engines_with_data}/8")
+        mc4.metric("Autonomy Guard", f"{len(autonomy_guard.get_declarations())} declared",
+                  f"{autonomy_guard.blocked_count()} blocked" if autonomy_guard.blocked_count() else None,
+                  delta_color="inverse")
+        st.caption(
+            f"{len(ENGINE_DIRECTORY)} engines total across "
+            f"{len({e['category'] for e in ENGINE_DIRECTORY})} categories — full directory below."
+        )
+
+    if _sev_tally["Critical"] or _sev_tally["High"]:
+        st.markdown("---")
+        st.markdown("##### ⚠️ Needs Attention")
+        _urgent = sorted(
+            [f for f in _all_dash_findings if getattr(f, "severity", "") in ("Critical", "High")],
+            key=lambda f: 0 if getattr(f, "severity", "") == "Critical" else 1,
+        )[:5]
+        for _f in _urgent:
+            _title = getattr(_f, "title", "Finding")
+            _fname = getattr(_f, "file_name", "?")
+            _line = getattr(_f, "sink_line", None) or getattr(_f, "line_number", "?")
+            st.markdown(
+                f"<div class='engine-row'><span class='engine-name'>"
+                f"<span class='severity-{getattr(_f,'severity','Low')}'>{getattr(_f,'severity','')}</span>"
+                f" — {_title} <code>({_fname}:{_line})</code></span></div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("---")
+    st.markdown("##### 🗂️ Engine Directory")
+    st.caption("Collapsed by default — expand a category to see individual engines and where to find them.")
+
+    _directory_by_category: Dict[str, List[Dict[str, str]]] = {}
+    for _eng in ENGINE_DIRECTORY:
+        _directory_by_category.setdefault(_eng["category"], []).append(_eng)
+
+    _cat_items = list(_directory_by_category.items())
+    _left_cats, _right_cats = _cat_items[0::2], _cat_items[1::2]
+
+    def _render_category(category: str, engines_in_cat: List[Dict[str, str]]) -> None:
+        _cat_active = sum(1 for _e in engines_in_cat if (_live_counts.get(_e["name"]) or 0) > 0)
+        with st.expander(f"{category}  ·  {len(engines_in_cat)} engines, {_cat_active} active", expanded=False):
+            for _e in engines_in_cat:
+                _count = _live_counts.get(_e["name"])
+                _count_display = str(_count) if _count is not None else "—"
+                _count_color = "#22d3ee" if _count else "#475569"
+                _e_name, _e_tab, _e_desc = _e["name"], _e["tab"], _e["desc"]
+                st.markdown(
+                    f"<div class='engine-row'><span class='engine-name' title='{_e_desc}'>"
+                    f"<b>{_e_name}</b> — <i>{_e_tab}</i></span>"
+                    f"<span class='engine-count' style='color:{_count_color}'>{_count_display}</span></div>",
+                    unsafe_allow_html=True,
+                )
+
     _live_counts: Dict[str, Optional[int]] = {
         "Code Vulnerability Scanner": len(findings) if findings else 0,
         "Semantic Scanner (AST/Taint)": len(semantic_findings) if semantic_findings else 0,
-        "Pattern Scanner (multi-language)": None,  # folded into Semantic Scanner's count above
+        "Pattern Scanner (multi-language)": None,
         "Malware Pattern Scanner": len(malware_findings) if malware_findings else 0,
         "Evasion Detector": len(evasion_findings) if evasion_findings else 0,
         "Entropy Secrets Scanner": len(secret_findings) if secret_findings else 0,
@@ -10022,6 +10195,7 @@ with tab_dash:
         "AI Semantic Reviewer": None,
         "PDF Threat Analyzer": None,
         "Active Containment Engine": len(containment.get_action_history()),
+        "Autonomy Boundary Guard": len(autonomy_guard.get_decision_log()),
         "Auto-Response Engine": len(auto_response_engine.get_event_log()),
         "Auto-Remediation Engine": None,
         "Live File Watcher": len(st.session_state.live_scan_events),
@@ -10036,85 +10210,13 @@ with tab_dash:
         "Report Generator": None,
     }
 
-    _directory_by_category: Dict[str, List[Dict[str, str]]] = {}
-    for _eng in ENGINE_DIRECTORY:
-        _directory_by_category.setdefault(_eng["category"], []).append(_eng)
-
-    _grid_html = ['<div class="engine-grid">']
-    for _category, _engines_in_cat in _directory_by_category.items():
-        _grid_html.append('<div class="engine-category-card">')
-        _grid_html.append(f'<div class="engine-category-title">{_category}</div>')
-        for _eng in _engines_in_cat:
-            _count = _live_counts.get(_eng["name"])
-            _count_display = str(_count) if _count is not None else "—"
-            _count_color = "#22d3ee" if _count else "#475569"
-            _grid_html.append(
-                f'<div class="engine-row"><span class="engine-name" title="{_eng["desc"]}">{_eng["name"]}</span>'
-                f'<span class="engine-count" style="color:{_count_color}">{_count_display}</span></div>'
-            )
-        _grid_html.append('</div>')
-    _grid_html.append('</div>')
-    st.markdown("".join(_grid_html), unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    col1, col2 = st.columns([1.4, 1])
-
-    with col1:
-        st.markdown("### 🧭 Code Risk Overview")
-        if findings:
-            sev_counts = pd.Series([f.severity for f in findings]).value_counts().reindex(
-                ["Critical", "High", "Medium", "Low", "Info"]
-            ).fillna(0)
-            fig = px.bar(
-                x=sev_counts.index, y=sev_counts.values,
-                color=sev_counts.index,
-                color_discrete_map={
-                    "Critical": "#f87171", "High": "#fb923c", "Medium": "#fbbf24",
-                    "Low": "#34d399", "Info": "#94a3b8",
-                },
-                labels={"x": "Severity", "y": "Findings"},
-                height=320,
-            )
-            fig.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#111827",
-                font_color="#c9d1d9", showlegend=False,
-                xaxis=dict(gridcolor="#1f2937"), yaxis=dict(gridcolor="#1f2937"),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            overall_risk = code_scanner.risk_score(findings)
-            st.metric("Aggregate Code Risk Score", f"{overall_risk}/100")
-        else:
-            st.info("Run a scan in the Code Scanner tab to populate this view.")
-
-    with col2:
-        st.markdown("### 📡 Network Anomaly Trend")
-        if not df_events.empty:
-            fig2 = px.line(
-                df_events.sort_values("timestamp"),
-                x="timestamp", y="anomaly_score", markers=True, height=320,
-                color_discrete_sequence=["#22d3ee"],
-            )
-            fig2.update_layout(
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#111827",
-                font_color="#c9d1d9",
-                xaxis=dict(gridcolor="#1f2937"), yaxis=dict(gridcolor="#1f2937"),
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No telemetry events yet — inject one from the sidebar.")
-
-    st.markdown("### 🗂️ Top Findings Snapshot")
-    if findings:
-        top_df = reporter.findings_to_dataframe(sorted(
-            findings, key=lambda f: code_scanner.severity_weight(f.severity), reverse=True
-        )[:8])
-        st.dataframe(
-            top_df[["rule_id", "title", "severity", "cwe", "file_name", "line_number"]],
-            use_container_width=True,
-        )
-    else:
-        st.caption("No findings to display yet.")
+    dcol1, dcol2 = st.columns(2)
+    with dcol1:
+        for _cat, _engs in _left_cats:
+            _render_category(_cat, _engs)
+    with dcol2:
+        for _cat, _engs in _right_cats:
+            _render_category(_cat, _engs)
 
 # ------------------------------------------------------------------------
 # TAB: CODE SCANNER
@@ -10536,6 +10638,34 @@ with tab_contain:
     st.markdown("### ⚡ Simulated Active Containment Playbooks")
     st.caption("These actions are simulated for demo/training purposes — wire `_notify_webhook` to real infra APIs for production use.")
 
+    st.markdown("<div class='sentinel-card'>", unsafe_allow_html=True)
+    st.markdown("#### 🛡️ Autonomy Boundary Guard")
+    st.caption(
+        "Every action below requires an explicit environment declaration first — undeclared targets "
+        "are blocked, never assumed safe. This is what closes the specific gap a real, disclosed "
+        "incident exposed: an AI agent inferring 'this is probably a test box' and acting on that "
+        "inference instead of stopping to confirm. Nothing here is inferred from a target's name."
+    )
+    gd1, gd2, gd3 = st.columns([2, 1, 1])
+    with gd1:
+        decl_target = st.text_input("Target to declare", value="", key="decl_target",
+                                    placeholder="e.g. 10.0.0.5 or prod-payments-db")
+    with gd2:
+        decl_is_prod = st.selectbox("Environment", ["Non-production", "Production"], key="decl_is_prod")
+    with gd3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Declare", key="decl_submit") and decl_target.strip():
+            autonomy_guard.declare_environment(decl_target.strip(), decl_is_prod == "Production", "operator")
+            st.success(f"Declared '{decl_target.strip()}' as {decl_is_prod}.")
+
+    declared = autonomy_guard.get_declarations()
+    if declared:
+        decl_df = pd.DataFrame([{"target": d.target, "environment": "Production" if d.is_production else "Non-production",
+                                 "declared_by": d.declared_by, "declared_at": d.declared_at,
+                                 "stale": d.is_stale()} for d in declared])
+        st.dataframe(decl_df, use_container_width=True, height=140)
+    st.markdown("</div>", unsafe_allow_html=True)
+
     c1, c2 = st.columns(2)
 
     with c1:
@@ -10547,24 +10677,37 @@ with tab_contain:
         target_asset = st.text_input("Target Workload / Asset", value=default_asset)
         target_file = st.text_input("Target File (for quarantine)", value="suspicious_upload.exe")
 
+        def _guarded_action(target: str, run_action):
+            decision = autonomy_guard.check("simulated", target, "containment action")
+            if not decision.allowed:
+                st.error(f"🛑 Blocked by Autonomy Boundary Guard: {decision.reason}")
+                st.caption(f"Required: {decision.required_human_action}")
+                return None
+            return run_action()
+
         b1, b2, b3 = st.columns(3)
         if b1.button("Block IP"):
-            res = containment.block_ip_firewall(target_ip)
-            st.success(res["details"])
+            res = _guarded_action(target_ip, lambda: containment.block_ip_firewall(target_ip))
+            if res:
+                st.success(res["details"])
         if b2.button("Isolate Pod"):
-            res = containment.isolate_k8s_pod(target_asset)
-            st.warning(res["details"])
+            res = _guarded_action(target_asset, lambda: containment.isolate_k8s_pod(target_asset))
+            if res:
+                st.warning(res["details"])
         if b3.button("Revoke Tokens"):
-            res = containment.revoke_api_tokens(target_asset)
-            st.error(res["details"])
+            res = _guarded_action(target_asset, lambda: containment.revoke_api_tokens(target_asset))
+            if res:
+                st.error(res["details"])
 
         b4, b5 = st.columns(2)
         if b4.button("Quarantine File"):
-            res = containment.quarantine_file(target_file)
-            st.info(res["details"])
+            res = _guarded_action(target_file, lambda: containment.quarantine_file(target_file))
+            if res:
+                st.info(res["details"])
         if b5.button("Force Password Reset"):
-            res = containment.force_password_reset(target_asset)
-            st.warning(res["details"])
+            res = _guarded_action(target_asset, lambda: containment.force_password_reset(target_asset))
+            if res:
+                st.warning(res["details"])
         st.markdown("</div>", unsafe_allow_html=True)
 
     with c2:
@@ -10574,6 +10717,15 @@ with tab_contain:
             st.dataframe(pd.DataFrame(history), use_container_width=True)
         else:
             st.info("No containment actions triggered yet.")
+
+        if autonomy_guard.get_decision_log():
+            st.markdown("##### 🛡️ Guard Decision Log")
+            guard_log_df = pd.DataFrame([
+                {"target": d.target, "tier": d.action_tier, "allowed": "✅" if d.allowed else "🛑",
+                 "reason": d.reason, "timestamp": d.timestamp}
+                for d in autonomy_guard.get_decision_log()
+            ])
+            st.dataframe(guard_log_df, use_container_width=True, height=140)
 
     st.markdown("---")
     st.markdown("### ⚙️ Auto-Response Engine")
