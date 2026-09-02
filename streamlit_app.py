@@ -19,6 +19,7 @@ attack payloads, or perform unauthorized scanning of third-party systems.
 """
 
 import ast
+import argparse
 import base64 as _base64
 import concurrent.futures
 import difflib
@@ -26,12 +27,14 @@ import hashlib
 import io
 import json
 import math
+import signal
 import os
 import queue as _queue_module
 import random
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -6835,6 +6838,11 @@ class SwarmIntelligenceBriefing:
     posture_score: "PostureScore"
     executive_summary: str
     generated_at: str
+    # Optional: populated only when synthesize() is given an
+    # AutoResponseEngine — see synthesize()'s docstring for why this is
+    # still bounded by that engine's existing circuit breaker rather than
+    # a new, less-supervised path.
+    auto_response_events: List[Any] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -6842,6 +6850,7 @@ class SwarmIntelligenceBriefing:
             "posture_score": self.posture_score.to_dict(),
             "executive_summary": self.executive_summary,
             "generated_at": self.generated_at,
+            "auto_response_events": [e.to_dict() for e in self.auto_response_events],
         }
 
 
@@ -7108,6 +7117,7 @@ class SwarmOrchestrator:
                 findings: List[Any] = []
                 if task.target.endswith(".py"):
                     findings += engines["semantic"].analyze_python(task.target, content)
+                    findings += scan_for_evasion(task.target, content)
                     if "surface" in engines:
                         self._collected_entry_points.extend(engines["surface"].analyze(task.target, content))
                 findings += engines["code"].scan_text(task.target, content)
@@ -7123,6 +7133,7 @@ class SwarmOrchestrator:
                 findings = []
                 if task.target.endswith(".py"):
                     findings += engines["semantic"].analyze_python(task.target, content)
+                    findings += scan_for_evasion(task.target, content)
                     if "surface" in engines:
                         self._collected_entry_points.extend(engines["surface"].analyze(task.target, content))
                 findings += engines["code"].scan_text(task.target, content)
@@ -7225,7 +7236,8 @@ class SwarmOrchestrator:
                   progress_cb: Optional[Any] = None, incremental: bool = False,
                   auto_synthesize: bool = True, correlator: Optional["ExploitChainCorrelator"] = None,
                   posture_scorer: Optional["SecurityPostureScorer"] = None,
-                  exec_summary_gen: Optional["ExecutiveSummaryGenerator"] = None) -> SwarmReport:
+                  exec_summary_gen: Optional["ExecutiveSummaryGenerator"] = None,
+                  auto_response: Optional["AutoResponseEngine"] = None) -> SwarmReport:
         """
         Adaptive concurrency: processes tasks in batches. If a batch's
         failure rate exceeds FAILURE_RATE_BACKOFF_THRESHOLD, effective
@@ -7291,13 +7303,15 @@ class SwarmOrchestrator:
         report.duration_seconds = time.time() - start_time
 
         if auto_synthesize and correlator and posture_scorer and exec_summary_gen:
-            report.briefing = self.synthesize(report, correlator, posture_scorer, exec_summary_gen)
+            report.briefing = self.synthesize(report, correlator, posture_scorer, exec_summary_gen,
+                                              auto_response=auto_response)
 
         return report
 
     def synthesize(self, report: SwarmReport, correlator: "ExploitChainCorrelator",
                    posture_scorer: "SecurityPostureScorer",
-                   exec_summary_gen: "ExecutiveSummaryGenerator") -> SwarmIntelligenceBriefing:
+                   exec_summary_gen: "ExecutiveSummaryGenerator",
+                   auto_response: Optional["AutoResponseEngine"] = None) -> SwarmIntelligenceBriefing:
         """
         The automatic post-run synthesis: pulls every task's raw results back
         out, sorts them by which engine produced them, and feeds the combined
@@ -7305,6 +7319,13 @@ class SwarmOrchestrator:
         Summary generator — so a swarm run produces ONE consolidated picture
         instead of a pile of disconnected per-task results the user has to
         manually cross-reference themselves.
+
+        If `auto_response` is given, this ALSO sweeps the run's malware and
+        secret findings through it — the equivalent of clicking "sweep" on
+        the Containment tab automatically after a scan, not a new or less
+        supervised path: still bounded by that engine's own rate-limit
+        circuit breaker, still every action logged, still dry-run-capable.
+        Omit the argument (the default) to get exactly the old behavior.
         """
         all_semantic: List[Any] = []
         all_code: List[Any] = []
@@ -7342,9 +7363,14 @@ class SwarmOrchestrator:
                                        self._collected_entry_points)
         summary_text = exec_summary_gen.summarize(all_code + all_semantic, [], [], [])
 
+        response_events: List[Any] = []
+        if auto_response is not None:
+            response_events = auto_response.sweep(all_malware, all_secrets, [], chains, all_deps)
+
         return SwarmIntelligenceBriefing(
             exploit_chains=chains, posture_score=posture, executive_summary=summary_text,
             generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            auto_response_events=response_events,
         )
 
     def build_report(self) -> SwarmReport:
@@ -9687,6 +9713,158 @@ class AutoResponseEngine:
 
 
 # ==============================================================================
+# ==============================================================================
+#  MODULE: HEADLESS DAEMON MODE
+#
+#  Honest scope: a Streamlit app only runs while its process is alive. It
+#  cannot watch anything while your computer is off or the process is
+#  killed — nothing can, without separate always-on infrastructure (a
+#  server, a scheduled task), and claiming otherwise here would just be
+#  dishonest. What THIS delivers, precisely: continuous monitoring that
+#  does NOT depend on a browser tab being open. Start this in a terminal,
+#  a tmux/screen session, `nohup ... &`, or a systemd unit on a machine
+#  that stays running, and it keeps watching, scanning, and writing
+#  reports to disk for as long as that process is alive — independent of
+#  whether anyone has the dashboard open. Same engines, same detection
+#  logic as the live dashboard; this is a different way to run them, not
+#  a different (weaker) copy of them.
+# ==============================================================================
+# ==============================================================================
+
+def _write_daemon_report(report_dir: str, events: List["LiveScanEvent"]) -> str:
+    """Writes a timestamped JSON snapshot plus a rolling latest.json
+    pointer, so a report exists on disk independent of anyone opening the
+    dashboard to look at session state. Caps history to the most recent
+    500 events per file so this can't grow unbounded over a long-running
+    watch session."""
+    os.makedirs(report_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    capped = events[-500:]
+    summary = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "total_events_this_session": len(events),
+        "events_in_this_report": len(capped),
+        "critical_events": [e.to_dict() for e in capped if e.risk_score >= 50],
+        "all_events": [e.to_dict() for e in capped],
+    }
+    path = os.path.join(report_dir, f"report_{timestamp}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    with open(os.path.join(report_dir, "latest.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    return path
+
+
+def _daemon_tick(watcher: "LiveFileWatcher", orchestrator: "LiveScanOrchestrator",
+                 all_events: List["LiveScanEvent"], report_dir: str, last_report_time: float,
+                 interval_seconds: int, log_fn: Any = print) -> Tuple[float, List["LiveScanEvent"], bool]:
+    """One iteration of the daemon loop's actual work — pulled out of
+    run_daemon_mode() specifically so it's unit-testable without needing
+    a real infinite loop, OS signals, or wall-clock sleeps in a test."""
+    changes = watcher.drain_events()
+    new_events: List["LiveScanEvent"] = []
+    for fp, event_type in changes:
+        ev = orchestrator.scan_event(fp, event_type)
+        all_events.append(ev)
+        new_events.append(ev)
+        if ev.risk_score >= 50:
+            log_fn(f"[daemon] 🚨 HIGH RISK: {ev.file_name} — {ev.risk_score:.0f}/100 "
+                  f"({ev.critical_count} critical, {ev.high_count} high)")
+        elif ev.error:
+            log_fn(f"[daemon] ⚠️  {ev.file_name}: {ev.error}")
+        elif ev.risk_score > 0:
+            log_fn(f"[daemon] {ev.file_name} — risk {ev.risk_score:.0f}/100")
+
+    wrote_report = False
+    if time.time() - last_report_time >= interval_seconds:
+        _write_daemon_report(report_dir, all_events)
+        last_report_time = time.time()
+        wrote_report = True
+
+    return last_report_time, new_events, wrote_report
+
+
+def run_daemon_mode(watch_dir: str, report_dir: str = "./sentinel_reports",
+                    interval_seconds: int = 300, poll_seconds: float = 2.0) -> None:
+    """Runs continuous multi-engine monitoring of `watch_dir`, independent
+    of any browser session, until interrupted (Ctrl+C / SIGTERM). Writes a
+    JSON report to `report_dir` every `interval_seconds`, plus immediately
+    logs any high-risk (>=50) detection to stdout as it happens.
+
+    Reuses LiveFileWatcher and LiveScanOrchestrator directly — the exact
+    same classes and detection logic the dashboard's Live File Watcher
+    tab uses, so what this catches running headless is identical to what
+    it would catch with the dashboard open."""
+    print("=" * 60)
+    print("BlueBlock_Ai — Headless Watch Mode")
+    print("=" * 60)
+    print(f"Watching:      {watch_dir}")
+    print(f"Reports every: {interval_seconds}s -> {os.path.abspath(report_dir)}")
+    print(f"PID:           {os.getpid()}  (stop with Ctrl+C or `kill {os.getpid()}`)")
+    print("-" * 60)
+
+    auth = AuthorizationManager()
+    auth.add_scope("directory", watch_dir, True)
+    watcher = LiveFileWatcher()
+    print(f"[daemon] {watcher.start(watch_dir)}")
+
+    orchestrator = LiveScanOrchestrator(
+        semantic_scanner=SemanticVulnerabilityScanner(), code_scanner=CodeVulnerabilityScanner(),
+        pattern_scanner=PatternScanner(), malware_scanner=MalwarePatternScanner(),
+        entropy_scanner=EntropySecretsScanner(),
+    )
+
+    all_events: List["LiveScanEvent"] = []
+    last_report_time = time.time()
+    running = True
+
+    def _handle_shutdown(signum: int, frame: Any) -> None:
+        nonlocal running
+        print("\n[daemon] Shutdown signal received — writing final report and exiting.")
+        running = False
+
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+
+    try:
+        while running:
+            last_report_time, _, _ = _daemon_tick(watcher, orchestrator, all_events, report_dir,
+                                                   last_report_time, interval_seconds)
+            time.sleep(poll_seconds)
+    finally:
+        watcher.stop()
+        final_path = _write_daemon_report(report_dir, all_events)
+        print(f"[daemon] Stopped. {len(all_events)} event(s) this session. Final report: {final_path}")
+
+
+# ==============================================================================
+# CLI ENTRY POINT — must run BEFORE any Streamlit call below, and must
+# exit before them too. Streamlit does execute a script with __name__ ==
+# "__main__", so the actual safety here is the SECOND condition: a normal
+# `streamlit run streamlit_app.py` never puts "--daemon" into this
+# script's sys.argv (only an explicit `streamlit run streamlit_app.py --
+# --daemon` would, which is a deliberate, unusual invocation) — so normal
+# dashboard usage always falls through to Section 9 unaffected. Verified
+# by actually running this exact block as a real subprocess (not just a
+# lib-extract test) end-to-end, including a real graceful SIGTERM
+# shutdown, before shipping it.
+# ==============================================================================
+if __name__ == "__main__" and "--daemon" in sys.argv:
+    _parser = argparse.ArgumentParser(
+        description="BlueBlock_Ai headless watch mode — continuous monitoring independent of the dashboard."
+    )
+    _parser.add_argument("--daemon", action="store_true", help="Run in headless daemon mode (no UI).")
+    _parser.add_argument("--watch-dir", type=str, default=".", help="Directory to watch. Default: current directory.")
+    _parser.add_argument("--report-dir", type=str, default="./sentinel_reports",
+                         help="Where to write JSON reports. Default: ./sentinel_reports")
+    _parser.add_argument("--interval", type=int, default=300,
+                         help="Seconds between written reports. Default: 300 (5 minutes).")
+    _args = _parser.parse_args()
+    run_daemon_mode(watch_dir=_args.watch_dir, report_dir=_args.report_dir, interval_seconds=_args.interval)
+    sys.exit(0)
+
+
+# ==============================================================================
 # SECTION 9: STREAMLIT DARK "SOC COMMAND CENTER" UI
 # ==============================================================================
 
@@ -11447,6 +11625,25 @@ with tab_livedef:
             st.warning(f"watchdog is installed but failed to start last time: {file_watcher.start_error} "
                       f"— fell back to mtime polling.")
 
+        with st.expander("🖥️ Run this headless — independent of the dashboard being open"):
+            st.caption(
+                "This tab watches only while the dashboard's Python process is alive — closing the "
+                "browser tab doesn't stop it, but it can't run while the process itself is killed or "
+                "the machine is off; nothing can do that without separate always-on infrastructure. "
+                "What this DOES give you: start it in a terminal, tmux/screen, `nohup ... &`, or a "
+                "systemd unit on a machine that stays running, and it keeps watching, scanning, and "
+                "writing JSON reports to disk independent of anyone having this dashboard open."
+            )
+            st.code(
+                "python3 streamlit_app.py --daemon \\\n"
+                "    --watch-dir /path/to/your/project \\\n"
+                "    --report-dir ./sentinel_reports \\\n"
+                "    --interval 300",
+                language="bash",
+            )
+            st.caption("Same detection engines, same logic as this tab — just a different way to run them. "
+                      "Stop with Ctrl+C or `kill <pid>`; the PID is printed on startup.")
+
         watch_path = st.text_input("Directory to watch", value=os.getcwd(), key="watch_path")
 
         w1, w2, w3 = st.columns(3)
@@ -12344,6 +12541,12 @@ with tab_swarm:
                 help="After the swarm completes, automatically feed all results into the Exploit Chain "
                      "Correlator, Posture Scorer, and Executive Summary generator for one consolidated view.",
             )
+            auto_response_mode = st.checkbox(
+                "Also auto-sweep through Auto-Response", value=False, key="auto_response_mode",
+                help="After synthesis, also sweep malware/secret findings through the Auto-Response "
+                     "Engine — same circuit breaker, dry-run mode, and audit log as clicking 'sweep' "
+                     "manually on the Containment tab. Off by default: opt in explicitly.",
+            )
 
         launch_disabled = False
         swarm_file_contents: Dict[str, Any] = {}
@@ -12445,6 +12648,7 @@ with tab_swarm:
                             incremental=incremental_mode, auto_synthesize=auto_synthesize_mode,
                             correlator=exploit_correlator, posture_scorer=posture_scorer,
                             exec_summary_gen=exec_summary_gen,
+                            auto_response=auto_response_engine if auto_response_mode else None,
                         )
                     st.session_state.swarm_reports.append(report)
                     st.success(f"Swarm complete in {report.duration_seconds:.1f}s: {report.completed}/{report.total_tasks} "
@@ -12520,6 +12724,13 @@ with tab_swarm:
 
                 with st.expander("📄 Executive Summary"):
                     st.markdown(report.briefing.executive_summary.replace("\n", "  \n"))
+
+                if report.briefing.auto_response_events:
+                    st.markdown(f"**⚡ Auto-Response: {len(report.briefing.auto_response_events)} action(s) "
+                              f"triggered automatically** (same circuit breaker and audit log as the "
+                              f"Containment tab):")
+                    ar_df = pd.DataFrame([e.to_dict() for e in report.briefing.auto_response_events])
+                    st.dataframe(ar_df, use_container_width=True, height=140)
 
             swarm_json = json.dumps(report.to_dict(), indent=2, default=str)
             st.download_button("⬇️ Download Swarm Report (JSON)", data=swarm_json,
