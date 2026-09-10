@@ -33,6 +33,7 @@ import queue as _queue_module
 import random
 import re
 import socket
+import sqlite3
 import ssl
 import sys
 import threading
@@ -1271,9 +1272,10 @@ class AutonomyBoundaryGuard:
 
     ACTION_TIERS: Tuple[str, ...] = ("advisory", "simulated", "scoped_action")
 
-    def __init__(self) -> None:
+    def __init__(self, persistence: Optional["SentinelPersistence"] = None) -> None:
         self._declarations: Dict[str, EnvironmentDeclaration] = {}
         self._decision_log: List[GovernorDecision] = []
+        self.persistence = persistence
 
     def declare_environment(self, target: str, is_production: bool, declared_by: str) -> EnvironmentDeclaration:
         decl = EnvironmentDeclaration(
@@ -1281,7 +1283,38 @@ class AutonomyBoundaryGuard:
             declared_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
         self._declarations[target] = decl
+        if self.persistence is not None:
+            self.persistence.save_declaration(target, is_production, declared_by, decl.declared_at)
         return decl
+
+    def restore_declaration(self, target: str, is_production: bool, declared_by: str,
+                            declared_at: str) -> EnvironmentDeclaration:
+        """Reconstructs a declaration with its ORIGINAL timestamp — for
+        loading persisted declarations back in after a restart. Deliberately
+        NOT the same as declare_environment(), which always stamps 'now':
+        if restoring used declare_environment(), every declaration would
+        look freshly-made after every app restart, silently defeating
+        is_stale()'s whole purpose. A declaration made 10 hours ago must
+        still read as 10 hours old after a restart, not reset to zero.
+        Never writes back to persistence — it's restoring FROM there."""
+        decl = EnvironmentDeclaration(
+            target=target, is_production=is_production, declared_by=declared_by, declared_at=declared_at,
+        )
+        self._declarations[target] = decl
+        return decl
+
+    def load_from_persistence(self) -> int:
+        """Restores every previously-declared environment from disk with
+        original timestamps intact (via restore_declaration, never
+        declare_environment) — so a declaration's staleness is judged
+        against when a human ACTUALLY made it, not against when the app
+        most recently restarted. Safe no-op when no persistence is set."""
+        if self.persistence is None:
+            return 0
+        rows = self.persistence.load_declarations()
+        for row in rows:
+            self.restore_declaration(row["target"], row["is_production"], row["declared_by"], row["declared_at"])
+        return len(rows)
 
     def _log(self, decision: GovernorDecision) -> GovernorDecision:
         self._decision_log.append(decision)
@@ -1481,6 +1514,23 @@ class PropagationStep:
     code: str
     kind: str  # "function_entry" | "source" | "assignment" | "call" | "sink"
     function: str = ""
+
+
+@dataclass
+class CrossFileCandidate:
+    """Recorded when the taint walker hits a call it can't resolve WITHIN
+    the current file, but the call's arguments carry real taint — exactly
+    the situation where a genuine vulnerability could be hiding behind a
+    file boundary (`from utils import run_it; run_it(tainted_cmd)`, where
+    utils.py is a separate file). Purely additive: this never changes
+    single-file findings, it just remembers what got left on the table so
+    a project-wide pass can optionally follow up on it."""
+    resolved_name: str
+    call_line: int
+    caller_file: str
+    caller_function: str
+    per_arg_taint: List[Set[str]]  # index-aligned with the call's positional args
+    path_so_far: List[PropagationStep]
 
 
 @dataclass
@@ -2191,6 +2241,11 @@ class TaintWalker:
         self._seen: Set[Tuple[str, int, str]] = set()
         self._cfg_cache: Dict[str, int] = {}  # function name -> cyclomatic complexity
         self._unresolved_calls_in_current_path = 0
+        # Purely additive — see CrossFileCandidate's docstring. Recording
+        # here never changes anything about single-file findings; it's
+        # read by SemanticVulnerabilityScanner.analyze_project()'s optional
+        # cross-file follow-up pass, and ignored entirely by analyze_python().
+        self.cross_file_candidates: List[CrossFileCandidate] = []
 
         # Cross-method / cross-function taint persistence (item: found missing
         # via adversarial testing — self.attribute state set in one method and
@@ -2614,6 +2669,16 @@ class TaintWalker:
                                                                                 "range", "print", "repr", "sorted",
                                                                                 "min", "max", "sum", "isinstance"}:
             self._unresolved_calls_in_current_path += 1
+            if arg_taint:
+                # Same per-argument evaluation the resolved-function branch
+                # above does — just recorded instead of recursed into,
+                # since we can't recurse across a file boundary from here.
+                per_arg: List[Set[str]] = [self._eval_expr(a, taint_state, path, func_name)
+                                           for a in node.args]
+                self.cross_file_candidates.append(CrossFileCandidate(
+                    resolved_name=resolved, call_line=node.lineno, caller_file=self.file_name,
+                    caller_function=func_name, per_arg_taint=per_arg, path_so_far=list(path),
+                ))
 
         return arg_taint
 
@@ -2984,10 +3049,18 @@ class SemanticVulnerabilityScanner:
 
         return self_attr_by_class, global_taint
 
-    def analyze_python(self, file_name: str, content: str) -> List[Finding]:
+    def _analyze_python_internal(self, file_name: str, content: str
+                                 ) -> Tuple[List[Finding], List[CrossFileCandidate],
+                                           Dict[str, ast.FunctionDef], Dict[str, str]]:
+        """The real single-file analysis — factored out so analyze_python()
+        keeps its exact existing public contract (List[Finding], nothing
+        else, zero behavior change) while analyze_project() can also get
+        at the walker's cross_file_candidates and this file's own
+        functions/aliases dicts, which it needs to resolve calls that
+        cross a file boundary."""
         tree = self._parse_cached(content)
         if tree is None:
-            return []
+            return [], [], {}, {}
 
         import_resolver = ImportResolver()
         import_resolver.visit(tree)
@@ -3016,7 +3089,91 @@ class SemanticVulnerabilityScanner:
             walker._unresolved_calls_in_current_path = 0
             walker.analyze_entry_function(functions[name], class_name=key_to_class.get(name))
 
-        return walker.findings
+        return walker.findings, walker.cross_file_candidates, functions, aliases
+
+    def analyze_python(self, file_name: str, content: str) -> List[Finding]:
+        findings, _, _, _ = self._analyze_python_internal(file_name, content)
+        return findings
+
+    def analyze_project(self, files: Dict[str, str]) -> List[Finding]:
+        """
+        Cross-file taint analysis: runs single-file analysis on every file
+        exactly as analyze_python() always has (same findings, same
+        engine, zero change), then makes ONE additional pass that follows
+        calls which couldn't be resolved within their own file across the
+        file boundary — the `from utils import run_it; run_it(tainted)`
+        case, where utils.py's run_it() passes straight to a sink.
+
+        Scope, stated honestly: this is single-hop file-boundary crossing
+        (once you're in the target file, normal full recursive analysis
+        applies — so a chain like A -> B -> C where B->C is in the SAME
+        file as B resolves fully; a chain that crosses A->B->C where all
+        three are DIFFERENT files needs another hop this doesn't attempt).
+        Import matching is a heuristic (module name == filename minus
+        .py), not real Python import-system resolution (no sys.path, no
+        packages, no relative-import dot-counting) — good enough for the
+        common single-directory-of-modules case a swarm/directory scan
+        actually sees, not a general-purpose import resolver.
+        """
+        all_findings: List[Finding] = []
+        all_candidates: List[CrossFileCandidate] = []
+        # module_name.func_name -> (file, FunctionDef, that file's own
+        # functions dict, that file's own aliases dict) — the last two are
+        # what let a fresh walker recurse correctly once inside the target
+        # file, using that file's own (already-correct) local resolution.
+        project_functions: Dict[str, Tuple[str, ast.FunctionDef, Dict[str, ast.FunctionDef], Dict[str, str]]] = {}
+        per_file_functions: Dict[str, Dict[str, ast.FunctionDef]] = {}
+        per_file_aliases: Dict[str, Dict[str, str]] = {}
+
+        for file_name, content in files.items():
+            if not file_name.endswith(".py"):
+                continue
+            findings, candidates, functions, aliases = self._analyze_python_internal(file_name, content)
+            all_findings.extend(findings)
+            all_candidates.extend(candidates)
+            per_file_functions[file_name] = functions
+            per_file_aliases[file_name] = aliases
+            module_name = os.path.splitext(os.path.basename(file_name))[0]
+            for bare_name, func_node in functions.items():
+                project_functions[f"{module_name}.{bare_name}"] = (file_name, func_node, functions, aliases)
+
+        cross_file_findings: List[Finding] = []
+        resolved_candidate_keys: Set[Tuple[str, int, str]] = set()  # dedupe: (caller_file, call_line, resolved_name)
+        for cand in all_candidates:
+            if cand.resolved_name not in project_functions:
+                continue
+            target_file, target_func, target_functions, target_aliases = project_functions[cand.resolved_name]
+            if target_file == cand.caller_file:
+                continue  # would already have resolved as a same-file call — not a real cross-file case
+            dedupe_key = (cand.caller_file, cand.call_line, cand.resolved_name)
+            if dedupe_key in resolved_candidate_keys:
+                continue
+            resolved_candidate_keys.add(dedupe_key)
+
+            regular_params = target_func.args.args
+            tainted_params: Dict[str, Set[str]] = {}
+            for i, param in enumerate(regular_params):
+                if i < len(cand.per_arg_taint) and cand.per_arg_taint[i]:
+                    tainted_params[param.arg] = cand.per_arg_taint[i]
+            if not tainted_params:
+                continue
+
+            hop_step = PropagationStep(
+                line=cand.call_line, function=cand.caller_function, kind="call",
+                code=f"{cand.resolved_name}(...) [CROSS-FILE: {cand.caller_file} -> {target_file}]",
+            )
+            target_walker = TaintWalker(target_functions, target_aliases, target_file)
+            target_walker.walk_function(target_func, tainted_params, path=list(cand.path_so_far) + [hop_step])
+
+            for f in target_walker.findings:
+                f.finding_id = f"XFILE:{f.finding_id}"
+                f.propagation_path = list(cand.path_so_far) + [hop_step] + list(f.propagation_path)
+                f.evidence = (f"[Cross-file: reached from {cand.caller_file}:{cand.call_line} via "
+                             f"{cand.resolved_name}()] {f.evidence}")
+                f.engine = "semantic_cross_file"
+                cross_file_findings.append(f)
+
+        return all_findings + cross_file_findings
 
     def analyze_generic(self, file_name: str, content: str, language: str) -> List[Finding]:
         return self.pattern_scanner.scan(file_name, content, language=language)
@@ -6867,6 +7024,11 @@ class SwarmReport:
     generated_at: str
     duration_seconds: float = 0.0
     briefing: Optional[SwarmIntelligenceBriefing] = None
+    # Findings from SemanticVulnerabilityScanner.analyze_project() — real
+    # vulnerabilities that only appear when tracing taint ACROSS files
+    # (see analyze_project's docstring), which don't belong to any single
+    # task's raw_results the way per-file findings do.
+    cross_file_findings: List[Any] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -6875,6 +7037,7 @@ class SwarmReport:
             "total_findings": self.total_findings, "total_critical": self.total_critical,
             "generated_at": self.generated_at, "duration_seconds": round(self.duration_seconds, 2),
             "tasks": [t.to_dict() for t in self.tasks],
+            "cross_file_findings_count": len(self.cross_file_findings),
         }
         if self.briefing:
             d["intelligence_briefing"] = self.briefing.to_dict()
@@ -7302,6 +7465,20 @@ class SwarmOrchestrator:
         report = self.build_report()
         report.duration_seconds = time.time() - start_time
 
+        # Cross-file taint pass: real vulnerabilities that only appear
+        # when tracing across files a swarm run just scanned as separate
+        # tasks — see SemanticVulnerabilityScanner.analyze_project()'s
+        # docstring for exact scope (single-hop file-boundary crossing).
+        # Only runs when there's more than one Python file, since a
+        # single file has no file boundary to cross in the first place.
+        if "semantic" in engines and hasattr(engines["semantic"], "analyze_project"):
+            py_files = {k: v for k, v in effective_file_contents.items()
+                       if isinstance(k, str) and k.endswith(".py") and isinstance(v, str)}
+            if len(py_files) > 1:
+                project_findings = engines["semantic"].analyze_project(py_files)
+                report.cross_file_findings = [f for f in project_findings
+                                              if getattr(f, "engine", "") == "semantic_cross_file"]
+
         if auto_synthesize and correlator and posture_scorer and exec_summary_gen:
             report.briefing = self.synthesize(report, correlator, posture_scorer, exec_summary_gen,
                                               auto_response=auto_response)
@@ -7354,6 +7531,12 @@ class SwarmOrchestrator:
                 network_reports.append(t.raw_results)
             elif t.task_type == "dependency_scan":
                 all_deps.extend(t.raw_results)
+
+        # Cross-file findings don't belong to any single task, so they're
+        # not in report.tasks[i].raw_results — fold them in here so they
+        # participate in exploit-chain correlation, posture scoring, and
+        # the executive summary exactly like any other semantic finding.
+        all_semantic.extend(report.cross_file_findings)
 
         combined_network = network_reports[0] if network_reports else None
         chains = correlator.correlate(all_semantic, all_code, all_malware, all_container,
@@ -7550,6 +7733,121 @@ class RuleFeedbackStats:
         }
 
 
+class SentinelPersistence:
+    """
+    Local SQLite-backed persistence — standard library only, no new
+    dependency. This is what closes the specific, honestly-scoped gap
+    from "production readiness: 2/10": today, everything (learned rule
+    precision, scan history) lives in Streamlit's in-memory session_state
+    and vanishes the moment the process restarts, unless a human manually
+    remembers to click Export. This makes the durable parts durable by
+    default — a genuine, bounded improvement, not a claim of parity with
+    a real production database (no migrations, no multi-tenant access
+    control, no backups — one local file, one process at a time).
+
+    A fresh connection is opened per call rather than held open across
+    the app's lifetime — SQLite connections aren't safe to share across
+    threads without extra care, and this app already uses a
+    ThreadPoolExecutor elsewhere (SwarmOrchestrator); opening per-call
+    avoids that entire class of bug for the cost of a cheap local file
+    open.
+    """
+
+    def __init__(self, db_path: str = "sentinel_state.db") -> None:
+        self.db_path = db_path
+        self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.db_path)
+
+    def _init_schema(self) -> None:
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    timestamp TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scan_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    total_findings INTEGER NOT NULL,
+                    risk_score REAL NOT NULL,
+                    critical_count INTEGER NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS environment_declarations (
+                    target TEXT PRIMARY KEY,
+                    is_production INTEGER NOT NULL,
+                    declared_by TEXT NOT NULL,
+                    declared_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+
+    # ── Feedback events (AdaptiveFeedbackEngine) ────────────────────────
+    def save_feedback_event(self, rule_id: str, outcome: str, timestamp: str) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO feedback_events (rule_id, outcome, timestamp) VALUES (?, ?, ?)",
+                        (rule_id, outcome, timestamp))
+            conn.commit()
+
+    def load_feedback_events(self) -> List[Dict[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT rule_id, outcome, timestamp FROM feedback_events ORDER BY id"
+            ).fetchall()
+        return [{"rule_id": r[0], "outcome": r[1], "timestamp": r[2]} for r in rows]
+
+    def feedback_event_count(self) -> int:
+        with self._connect() as conn:
+            return conn.execute("SELECT COUNT(*) FROM feedback_events").fetchone()[0]
+
+    # ── Scan history ─────────────────────────────────────────────────────
+    def save_scan_record(self, timestamp: str, total_findings: int, risk_score: float,
+                         critical_count: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO scan_history (timestamp, total_findings, risk_score, critical_count) "
+                "VALUES (?, ?, ?, ?)",
+                (timestamp, total_findings, risk_score, critical_count),
+            )
+            conn.commit()
+
+    def load_scan_history(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT timestamp, total_findings, risk_score, critical_count "
+                "FROM scan_history ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [{"timestamp": r[0], "total_findings": r[1], "risk_score": r[2], "critical": r[3]}
+               for r in reversed(rows)]
+
+    # ── Environment declarations (AutonomyBoundaryGuard) ────────────────
+    def save_declaration(self, target: str, is_production: bool, declared_by: str, declared_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO environment_declarations (target, is_production, declared_by, declared_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(target) DO UPDATE SET is_production=excluded.is_production, "
+                "declared_by=excluded.declared_by, declared_at=excluded.declared_at",
+                (target, int(is_production), declared_by, declared_at),
+            )
+            conn.commit()
+
+    def load_declarations(self) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT target, is_production, declared_by, declared_at FROM environment_declarations"
+            ).fetchall()
+        return [{"target": r[0], "is_production": bool(r[1]), "declared_by": r[2], "declared_at": r[3]}
+               for r in rows]
+
+
 class AdaptiveFeedbackEngine:
     """
     A SUPERVISED, bounded feedback loop — deliberately not autonomous
@@ -7572,30 +7870,60 @@ class AdaptiveFeedbackEngine:
     advisory, never self-executing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persistence: Optional["SentinelPersistence"] = None) -> None:
         self.stats: Dict[str, RuleFeedbackStats] = {}
         # Every event, timestamped and in order — this is what turns
         # "current precision" into an actual TREND a human can see develop
         # over time, and is also what export_feedback()/import_feedback()
-        # persist, so the tool's learning survives beyond a single session
-        # instead of resetting every time the process restarts.
+        # persist manually, and (if `persistence` is given) what
+        # load_from_persistence() rebuilds automatically at startup — so
+        # the tool's learning survives a process restart by default, not
+        # only when a human remembers to export/import a JSON file.
         self.event_log: List[Dict[str, Any]] = []
+        self.persistence = persistence
+
+    def _apply_event(self, rule_id: str, outcome: str, timestamp: str) -> None:
+        """Shared bookkeeping for one feedback event — updates stats and
+        event_log only. Split out so replaying already-persisted events
+        (load_from_persistence, import_feedback) and recording a brand
+        new one (record_confirmation/record_false_positive) share the
+        exact same accounting logic without replaying persistence writes
+        for events that are already in the database."""
+        s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
+        if outcome == "confirmed":
+            s.confirmed_true_positive += 1
+        else:
+            s.marked_false_positive += 1
+        self.event_log.append({"rule_id": rule_id, "outcome": outcome, "timestamp": timestamp})
+
+    def load_from_persistence(self) -> int:
+        """Rebuilds stats/event_log from every event ever persisted to
+        this engine's SentinelPersistence — call once at startup so
+        learning survives a process restart, not just a browser refresh
+        within the same running process. Safe no-op (returns 0) when no
+        persistence was configured. Returns the number of events loaded."""
+        if self.persistence is None:
+            return 0
+        events = self.persistence.load_feedback_events()
+        for ev in events:
+            self._apply_event(ev["rule_id"], ev["outcome"], ev["timestamp"])
+        return len(events)
 
     def record_confirmation(self, rule_id: str) -> None:
         if not rule_id:
             return
-        s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
-        s.confirmed_true_positive += 1
-        self.event_log.append({"rule_id": rule_id, "outcome": "confirmed",
-                               "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._apply_event(rule_id, "confirmed", timestamp)
+        if self.persistence is not None:
+            self.persistence.save_feedback_event(rule_id, "confirmed", timestamp)
 
     def record_false_positive(self, rule_id: str) -> None:
         if not rule_id:
             return
-        s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
-        s.marked_false_positive += 1
-        self.event_log.append({"rule_id": rule_id, "outcome": "false_positive",
-                               "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._apply_event(rule_id, "false_positive", timestamp)
+        if self.persistence is not None:
+            self.persistence.save_feedback_event(rule_id, "false_positive", timestamp)
 
     def confidence_adjustment(self, rule_id: str, min_samples: int = 5) -> str:
         """Returns 'boost' | 'reduce' | 'neutral' — ADVISORY ONLY, based on
@@ -7670,9 +7998,13 @@ class AdaptiveFeedbackEngine:
 
     def import_feedback(self, json_str: str) -> int:
         """Additively merges a previously exported feedback log back in —
-        replays each event through record_confirmation/record_false_positive
-        so stats and the trend log both stay consistent. Returns the
-        number of events imported."""
+        replays each event through the same accounting _apply_event() uses
+        so stats and the trend log both stay consistent. If persistence is
+        configured, imported events are ALSO saved to it, so a JSON import
+        (e.g. migrating history from another instance) becomes part of
+        the durable record going forward too, not just transiently in
+        memory until the next restart. Returns the number of events
+        imported."""
         data = json.loads(json_str)
         events = data.get("event_log", [])
         imported = 0
@@ -7682,12 +8014,9 @@ class AdaptiveFeedbackEngine:
             timestamp = ev.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if not rule_id or outcome not in ("confirmed", "false_positive"):
                 continue
-            s = self.stats.setdefault(rule_id, RuleFeedbackStats(rule_id))
-            if outcome == "confirmed":
-                s.confirmed_true_positive += 1
-            else:
-                s.marked_false_positive += 1
-            self.event_log.append({"rule_id": rule_id, "outcome": outcome, "timestamp": timestamp})
+            self._apply_event(rule_id, outcome, timestamp)
+            if self.persistence is not None:
+                self.persistence.save_feedback_event(rule_id, outcome, timestamp)
             imported += 1
         self.event_log.sort(key=lambda e: e["timestamp"])
         return imported
@@ -10154,7 +10483,9 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
     {"name": "Code Vulnerability Scanner", "category": "🔍 Static Detection", "tab": "Code Scanner",
      "desc": "CWE-mapped regex pattern rules, Python-focused."},
     {"name": "Semantic Scanner (AST/Taint)", "category": "🔍 Static Detection", "tab": "Semantic Scanner",
-     "desc": "Interprocedural taint analysis — traces real source-to-sink data flow, not just syntax matches."},
+     "desc": "Interprocedural taint analysis — real source-to-sink data flow, not just syntax matches. "
+             "Single-file by default; also runs single-hop cross-file resolution via Agent Swarm on "
+             "directory/multi-file scans (a taint source in one file reaching a sink defined in another)."},
     {"name": "Pattern Scanner (multi-language)", "category": "🔍 Static Detection", "tab": "Semantic Scanner / Agent Swarm",
      "desc": "Heuristic vulnerability patterns across 9 non-Python languages."},
     {"name": "Malware Pattern Scanner", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Malware Detector",
@@ -10234,6 +10565,9 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
      "desc": "Enforces scope: nothing scans a host/URL/directory that isn't explicitly authorized."},
 
     # ── Learning, Rules & Reporting ───────────────────────────────────────
+    {"name": "SentinelPersistence", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
+     "desc": "Local SQLite-backed durability for learned feedback, scan history, and environment "
+             "declarations — survives an app restart automatically, no manual export/import needed."},
     {"name": "Adaptive Feedback Engine", "category": "📚 Learning, Rules & Reporting", "tab": "Developer Toolkit → Baseline Manager",
      "desc": "Tracks per-rule precision from human-confirmed feedback; also flags suspicious "
              "feedback bursts (poisoning defense) and blends contextual signals — file path, "
@@ -10261,8 +10595,17 @@ if "ingestion_engine" not in st.session_state:
 if "containment_engine" not in st.session_state:
     st.session_state.containment_engine = ActiveContainmentEngine()
 
+if "sentinel_persistence" not in st.session_state:
+    # One shared local SQLite file behind everything durable in this app —
+    # see SentinelPersistence's docstring for exact scope (one process,
+    # one local file, no migrations/multi-tenancy — a real, bounded
+    # improvement over pure in-memory state, not a claim of parity with
+    # production database infrastructure).
+    st.session_state.sentinel_persistence = SentinelPersistence()
+
 if "autonomy_guard" not in st.session_state:
-    st.session_state.autonomy_guard = AutonomyBoundaryGuard()
+    st.session_state.autonomy_guard = AutonomyBoundaryGuard(persistence=st.session_state.sentinel_persistence)
+    _restored_decls = st.session_state.autonomy_guard.load_from_persistence()
 
 if "code_scanner" not in st.session_state:
     st.session_state.code_scanner = CodeVulnerabilityScanner()
@@ -10414,7 +10757,8 @@ if "diff_scanner" not in st.session_state:
     st.session_state.diff_scanner = None  # built after semantic_scanner/code_scanner exist below
 
 if "adaptive_feedback" not in st.session_state:
-    st.session_state.adaptive_feedback = AdaptiveFeedbackEngine()
+    st.session_state.adaptive_feedback = AdaptiveFeedbackEngine(persistence=st.session_state.sentinel_persistence)
+    _restored_events = st.session_state.adaptive_feedback.load_from_persistence()
 
 if "baseline_manager" not in st.session_state:
     st.session_state.baseline_manager = BaselineManager(feedback_engine=st.session_state.adaptive_feedback)
@@ -10779,6 +11123,7 @@ with tab_dash:
         "Live File Watcher": len(st.session_state.live_scan_events),
         "Swarm Orchestrator": len(st.session_state.swarm_reports),
         "Authorization Manager": len(auth_manager.list_scope()),
+        "SentinelPersistence": st.session_state.sentinel_persistence.feedback_event_count(),
         "Adaptive Feedback Engine": len(adaptive_feedback.event_log),
         "Baseline Manager": len(baseline_manager.list_suppressions()),
         "Custom Rule Builder": None,
@@ -12697,6 +13042,22 @@ with tab_swarm:
                 st.caption(f"↻ {len(retried_tasks)} task(s) required a retry due to a transient error "
                           f"(automatically recovered).")
 
+            if report.cross_file_findings:
+                st.markdown("---")
+                st.markdown(f"##### 🔗 Cross-File Findings — {len(report.cross_file_findings)} detected")
+                st.caption(
+                    "Real vulnerabilities that only appear when tracing taint ACROSS files — invisible "
+                    "to any single per-file scan above, including this file's own row in the task table. "
+                    "Single-hop file-boundary crossing (see the Semantic Scanner engine's directory "
+                    "entry for exact scope)."
+                )
+                for f in report.cross_file_findings:
+                    st.markdown(
+                        f"<div class='sentinel-card'><span class='severity-{f.severity}'>{f.severity}</span> "
+                        f"— <b>{f.title}</b><br><code>{f.file_name}:{f.sink_line}</code><br>{f.evidence}</div>",
+                        unsafe_allow_html=True,
+                    )
+
             rejected_tasks = [t for t in report.tasks if t.status == AgentTaskStatus.REJECTED]
             if rejected_tasks:
                 with st.expander(f"⛔ {len(rejected_tasks)} task(s) rejected — out of authorized scope"):
@@ -12814,6 +13175,10 @@ with tab_toolkit:
             "explicit, logged human decision, and every output is advisory for a human to act on, "
             "never self-applied."
         )
+        if adaptive_feedback.persistence is not None:
+            st.caption(f"💾 Persisted to `{adaptive_feedback.persistence.db_path}` — "
+                      f"{adaptive_feedback.persistence.feedback_event_count()} event(s) on disk, "
+                      f"survives an app restart automatically (no export/import needed).")
 
         all_findings_pool = list(findings) + list(semantic_findings)
         if all_findings_pool:
