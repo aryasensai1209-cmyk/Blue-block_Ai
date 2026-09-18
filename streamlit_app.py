@@ -1041,6 +1041,2025 @@ VULNERABILITY_RULES += [
     },
 ]
 
+
+# ---- batch 5 (session 5): additional cross-language rules ----
+VULNERABILITY_RULES += [
+    {
+        "id": 'SEC-130', "title": 'Weak bcrypt work factor',
+        "pattern": 'bcrypt\\.gensalt\\(\\s*(?:rounds\\s*=\\s*)?[0-4]\\s*\\)',
+        "severity": 'Medium', "cwe": 'CWE-916', "cvss": 5.9,
+        "description": 'A bcrypt cost factor of 4 or lower is fast enough that modern hardware can brute-force it at high speed, defeating the purpose of a slow hash.',
+        "remediation": 'Use a cost factor of at least 10-12 (bcrypt.gensalt(rounds=12)), tuned to what your server can afford per login.',
+    },
+    {
+        "id": 'SEC-131', "title": 'XML parsed via xml.dom.minidom (XXE risk)',
+        "pattern": 'minidom\\.parse(?:String)?\\s*\\(',
+        "severity": 'High', "cwe": 'CWE-611', "cvss": 8.2,
+        "description": 'xml.dom.minidom has no built-in protection against external entity expansion, the same XXE risk class as unprotected etree.parse().',
+        "remediation": 'Use defusedxml.minidom instead, or otherwise disable DTD/external-entity processing before parsing untrusted XML.',
+    },
+    {
+        "id": 'SEC-132', "title": 'Weak hash algorithm via hashlib.new()',
+        "pattern": 'hashlib\\.new\\(\\s*[\\"\'](?:md5|sha1)[\\"\']',
+        "severity": 'Medium', "cwe": 'CWE-327', "cvss": 5.3,
+        "description": 'hashlib.new("md5")/hashlib.new("sha1") reach the same broken algorithms as hashlib.md5()/hashlib.sha1() through the generic constructor API, which a narrower pattern would miss.',
+        "remediation": 'Use hashlib.new("sha256") or better, or call hashlib.sha256() directly.',
+    },
+    {
+        "id": 'SEC-133', "title": 'subprocess.getoutput() runs its argument through the shell',
+        "pattern": 'subprocess\\.getoutput\\s*\\(',
+        "severity": 'High', "cwe": 'CWE-78', "cvss": 8.1,
+        "description": 'subprocess.getoutput() always executes through /bin/sh, the same risk class as os.system() or subprocess.run(..., shell=True), regardless of how the command string was built.',
+        "remediation": 'Use subprocess.run([...], shell=False) with an argument list instead.',
+    },
+    {
+        "id": 'SEC-134', "title": 'Django QuerySet.extra() with raw SQL fragments',
+        "pattern": '\\.extra\\s*\\(\\s*(?:where|select)\\s*=',
+        "severity": 'Critical', "cwe": 'CWE-89', "cvss": 9.1,
+        "description": "QuerySet.extra() injects raw SQL fragments into the generated query; if any part of where=/select= is built from request data, it's a direct SQL injection vector, and Django has deprecated extra() in favor of safer alternatives specifically because of this risk.",
+        "remediation": 'Use QuerySet.filter()/annotate() with ORM expressions, or RawSQL()/raw() with proper parameter binding, instead of extra().',
+    },
+]
+
+
+# ---- batch 6 (session 6): large expansion toward 600+ rules ----
+VULNERABILITY_RULES += [
+    {
+        "id": 'SEC-135', "title": 'Hardcoded Azure Storage connection string',
+        "pattern": 'AccountKey=[A-Za-z0-9+/=]{80,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Azure Storage account key is hardcoded in a connection string.',
+        "remediation": 'Rotate the storage key in the Azure portal and load the connection string from Key Vault or environment configuration.',
+    },
+    {
+        "id": 'SEC-136', "title": 'Hardcoded DigitalOcean personal access token',
+        "pattern": '\\bdop_v1_[a-f0-9]{64}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A DigitalOcean API token is hardcoded in source.',
+        "remediation": 'Revoke the token in the DigitalOcean control panel and load it from environment configuration.',
+    },
+    {
+        "id": 'SEC-137', "title": 'Hardcoded Shopify access token',
+        "pattern": '\\bshpat_[a-fA-F0-9]{32}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Shopify admin API access token is hardcoded in source.',
+        "remediation": 'Revoke the token in the Shopify admin and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-138', "title": 'Hardcoded Cloudflare API token',
+        "pattern": '\\b[A-Za-z0-9_-]{40}\\b(?=.{0,20}cloudflare)',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Cloudflare's API token length/format appears near a Cloudflare reference.",
+        "remediation": 'Confirm and, if live, rotate the token in the Cloudflare dashboard; load it from environment configuration.',
+    },
+    {
+        "id": 'SEC-139', "title": 'Hardcoded Discord bot token',
+        "pattern": '\\b[MN][A-Za-z0-9_-]{23}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Discord bot token is hardcoded in source.',
+        "remediation": 'Regenerate the token in the Discord developer portal and load it from environment configuration.',
+    },
+    {
+        "id": 'SEC-140', "title": 'Hardcoded Telegram bot token',
+        "pattern": '\\b\\d{8,10}:[A-Za-z0-9_-]{35}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Telegram bot token is hardcoded in source.',
+        "remediation": 'Regenerate the token via BotFather and load it from environment configuration.',
+    },
+    {
+        "id": 'SEC-141', "title": 'Hardcoded Dropbox access token',
+        "pattern": '\\bsl\\.[A-Za-z0-9_-]{130,140}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Dropbox OAuth access token is hardcoded in source.',
+        "remediation": 'Revoke the token in the Dropbox app console and load it from environment configuration.',
+    },
+    {
+        "id": 'SEC-142', "title": 'Hardcoded Square access token',
+        "pattern": '\\bsq0atp-[A-Za-z0-9_-]{22}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Square API access token is hardcoded in source.',
+        "remediation": 'Revoke the token in the Square developer dashboard and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-143', "title": 'PBKDF2 iteration count too low',
+        "pattern": 'PBKDF2.{0,80}iterations\\s*=\\s*(?:[1-9]\\d{0,2})\\b',
+        "severity": 'Medium', "cwe": 'CWE-916', "cvss": 5.9,
+        "description": 'A PBKDF2 iteration count under 1,000 is far below current guidance (OWASP recommends 600,000+ for PBKDF2-HMAC-SHA256 as of 2023) and can be brute-forced quickly.',
+        "remediation": 'Use at least the current OWASP-recommended iteration count for your hash function, and re-evaluate periodically as hardware improves.',
+    },
+    {
+        "id": 'SEC-144', "title": 'AES used in ECB mode',
+        "pattern": 'AES[/_-]?ECB|MODE_ECB',
+        "severity": 'High', "cwe": 'CWE-327', "cvss": 7.5,
+        "description": "ECB mode encrypts identical plaintext blocks to identical ciphertext blocks, leaking structural information about the plaintext (the classic 'ECB penguin' problem).",
+        "remediation": 'Use an authenticated mode like AES-GCM instead of ECB.',
+    },
+    {
+        "id": 'SEC-145', "title": 'Redis connection without authentication configured',
+        "pattern": 'redis\\.(?:StrictRedis|Redis)\\(\\s*host=[^,)]+\\)(?!.*password)',
+        "severity": 'Medium', "cwe": 'CWE-306', "cvss": 6.5,
+        "description": 'A Redis client is constructed with a host but no password, and Redis has no authentication by default.',
+        "remediation": 'Set requirepass on the Redis server and pass password= when connecting, or bind Redis to a private network with no public exposure.',
+    },
+    {
+        "id": 'SEC-146', "title": 'SMTP connection sends credentials without STARTTLS',
+        "pattern": 'smtplib\\.SMTP\\([^)]*\\)(?![\\s\\S]{0,150}starttls)[\\s\\S]{0,150}\\.login\\(',
+        "severity": 'High', "cwe": 'CWE-319', "cvss": 7.4,
+        "description": 'Login credentials are sent over an SMTP connection with no starttls() call beforehand, exposing them to network eavesdroppers.',
+        "remediation": 'Call starttls() (or use smtplib.SMTP_SSL) before login() to encrypt the connection.',
+    },
+    {
+        "id": 'SEC-147', "title": 'Insecure file permission set to world-writable',
+        "pattern": 'os\\.chmod\\([^,]+,\\s*0o?7[0-7][0-7]\\)',
+        "severity": 'Medium', "cwe": 'CWE-732', "cvss": 6.5,
+        "description": 'Setting a file to mode 777 (or similarly permissive) allows any local user to modify or replace it.',
+        "remediation": 'Grant only the minimum permissions actually needed (e.g. 0o640 or 0o600 for files containing sensitive data).',
+    },
+    {
+        "id": 'SEC-148', "title": 'Default/example admin credentials referenced',
+        "pattern": '(?:username|user)\\s*=\\s*[\\"\']admin[\\"\']\\s*[,;]\\s*(?:password|pass)\\s*=\\s*[\\"\'](?:admin|password|changeme|123456)[\\"\']',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A well-known default admin/password pair is present in code or configuration.',
+        "remediation": 'Remove hardcoded default credentials entirely and force a mandatory credential change on first boot.',
+    },
+    {
+        "id": 'SEC-149', "title": 'XPath query built with string concatenation',
+        "pattern": '(?:xpath|selectNodes|evaluate)\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*\\+',
+        "severity": 'Critical', "cwe": 'CWE-643', "cvss": 8.6,
+        "description": 'An XPath expression is built by concatenating request data directly into the query string, the XML analogue of SQL injection.',
+        "remediation": 'Use parameterized XPath (XPathExpression with variable resolvers) instead of string concatenation.',
+    },
+    {
+        "id": 'SEC-150', "title": 'Server-side request forgery via HTTP client with no scheme/host allow-list',
+        "pattern": '(?:urlopen|requests\\.get)\\(\\s*(?:request|req)\\.(?:args|GET|query)\\.get\\([^)]*\\)\\s*\\)',
+        "severity": 'High', "cwe": 'CWE-918', "cvss": 8.6,
+        "description": 'An HTTP request is made directly to a URL taken from request data with no validation.',
+        "remediation": 'Validate the destination against an allow-list of hosts/schemes, and block requests to internal/link-local address ranges.',
+    },
+    {
+        "id": 'SEC-151', "title": 'Insecure temp directory used for sensitive data (/tmp with predictable name)',
+        "pattern": 'open\\s*\\(\\s*[\\"\']/tmp/[a-zA-Z_]+[\\"\']\\s*,\\s*[\\"\']w',
+        "severity": 'Low', "cwe": 'CWE-377', "cvss": 4.3,
+        "description": 'Writing to a fixed, predictable path under /tmp is subject to race conditions and symlink attacks from other local users.',
+        "remediation": 'Use tempfile.NamedTemporaryFile()/mkstemp() to get a securely-created, unpredictable path.',
+    },
+    {
+        "id": 'SEC-152', "title": 'GraphQL introspection left enabled with no environment guard',
+        "pattern": 'introspection\\s*:\\s*true(?!.*(?:NODE_ENV|DEBUG|is_production))',
+        "severity": 'Medium', "cwe": 'CWE-200', "cvss": 5.3,
+        "description": "Leaving GraphQL introspection enabled unconditionally exposes your full schema (including any fields you didn't mean to document) to anyone who queries it.",
+        "remediation": 'Disable introspection in production, or gate it behind an explicit environment/debug check.',
+    },
+    {
+        "id": 'SEC-153', "title": 'Insecure cross-process pickle-based IPC (multiprocessing with untrusted data)',
+        "pattern": 'multiprocessing\\.connection\\.Client\\(',
+        "severity": 'Medium', "cwe": 'CWE-502', "cvss": 6.1,
+        "description": "multiprocessing's default Connection objects use pickle for serialization; if the other end of the connection isn't fully trusted, this is the same risk as any other pickle.loads() on untrusted data.",
+        "remediation": 'Only use multiprocessing connections between processes you fully control, or switch to a data-only serialization format if a network-facing boundary is ever possible.',
+    },
+    {
+        "id": 'SEC-154', "title": 'Insecure random used to generate a discount/coupon code',
+        "pattern": '(?:coupon|discount|promo)_?code\\s*=.*\\brandom\\.(?:choice|randint)\\(',
+        "severity": 'Low', "cwe": 'CWE-330', "cvss": 3.7,
+        "description": "Using Python's non-cryptographic random module for coupon/discount codes makes them predictable/brute-forceable, which can lead to business-logic abuse (mass free-discount claiming).",
+        "remediation": "Use the secrets module (e.g. secrets.token_urlsafe()) for anything with real monetary value, even if it isn't a traditional 'security' token.",
+    },
+    {
+        "id": 'SEC-155', "title": 'Insecure deserialization via yaml.load with an unpinned Loader variable',
+        "pattern": 'yaml\\.load\\(\\s*\\w+\\s*,\\s*Loader\\s*=\\s*\\w+\\s*\\)',
+        "severity": 'Medium', "cwe": 'CWE-502', "cvss": 6.1,
+        "description": "yaml.load() is called with a Loader that's a variable rather than a literal SafeLoader/CSafeLoader reference -- confirm it can never resolve to the unsafe full Loader at runtime.",
+        "remediation": 'Pin Loader=yaml.SafeLoader (or CSafeLoader) as a literal, not a variable that could be reassigned.',
+    },
+    {
+        "id": 'SEC-156', "title": 'Hardcoded Heroku API key',
+        "pattern": '[Hh]eroku[\\s\\S]{0,40}\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A UUID-format value near a Heroku reference matches Heroku's API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-157', "title": 'Hardcoded Mailchimp API key',
+        "pattern": '\\b[0-9a-f]{32}-us\\d{1,2}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Mailchimp API key (32 hex chars + datacenter suffix) is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-158', "title": 'Hardcoded PagerDuty API key',
+        "pattern": '\\b[A-Za-z0-9+_-]{20}\\b(?=.{0,30}pagerduty)',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching PagerDuty's API key format appears near a PagerDuty reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-159', "title": 'Hardcoded Datadog API key',
+        "pattern": '\\b[a-f0-9]{32}\\b(?=.{0,30}datadog)',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Datadog's API key format appears near a Datadog reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-160', "title": 'Hardcoded New Relic license key',
+        "pattern": '\\b[a-f0-9]{40}\\b(?=.{0,30}(?:new.?relic|NEW_RELIC))',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching New Relic's license key format appears near a New Relic reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-161', "title": 'Hardcoded Sentry DSN with embedded secret',
+        "pattern": 'https://[a-f0-9]{32}@[a-z0-9.]+\\.ingest\\.sentry\\.io/\\d+',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 3.7,
+        "description": "A Sentry DSN is hardcoded; DSNs are semi-public (they're distributed to client code) but a leaked one can be used to flood a project with fake events.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-162', "title": 'Hardcoded Algolia Admin API key',
+        "pattern": '[Aa]lgolia[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Algolia Admin API key (as opposed to the public search-only key) grants full read/write access to the search index.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-163', "title": 'Hardcoded Airtable API key',
+        "pattern": '\\bkey[A-Za-z0-9]{14}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'An Airtable API key (key + 14 alphanumeric chars) is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-164', "title": 'Hardcoded Atlassian/Jira API token',
+        "pattern": '[Aa]tlassian[\\s\\S]{0,40}\\bATATT[A-Za-z0-9_=-]{100,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'An Atlassian API token (ATATT prefix) is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-165', "title": 'Hardcoded Bitbucket app password',
+        "pattern": 'Bitbucket[\\s\\S]{0,40}\\b[A-Za-z0-9]{20}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Bitbucket's app-password format appears near a Bitbucket reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-166', "title": 'Hardcoded CircleCI API token',
+        "pattern": 'circleci[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A CircleCI API token (40 hex chars) is hardcoded near a CircleCI reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-167', "title": 'Hardcoded Docker Hub personal access token',
+        "pattern": '\\bdckr_pat_[A-Za-z0-9_-]{27}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Docker Hub personal access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-168', "title": 'Hardcoded npm automation token',
+        "pattern": '\\bnpm_[A-Za-z0-9]{36}\\b(?=.{0,10}(?:automation|publish))',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'An npm automation token (able to publish without 2FA) is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-169', "title": 'Hardcoded Okta API token',
+        "pattern": '[Oo]kta[\\s\\S]{0,40}\\b00[A-Za-z0-9_-]{40}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Okta API token is hardcoded near an Okta reference -- this can grant broad administrative access to your identity provider.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-170', "title": 'Hardcoded PlanetScale database password',
+        "pattern": 'pscale_pw_[A-Za-z0-9_-]{43}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A PlanetScale database password is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-171', "title": 'Hardcoded Postman API key',
+        "pattern": '\\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Postman API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-172', "title": 'Hardcoded Pusher app secret',
+        "pattern": '[Pp]usher[\\s\\S]{0,40}\\b[a-f0-9]{20}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Pusher's app-secret format appears near a Pusher reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-173', "title": 'Hardcoded Vercel API token',
+        "pattern": '\\b[A-Za-z0-9]{24}\\b(?=.{0,20}vercel)',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Vercel's token format appears near a Vercel reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-174', "title": 'Hardcoded Netlify personal access token',
+        "pattern": '[Nn]etlify[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,64}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Netlify's token format appears near a Netlify reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-175', "title": 'Hardcoded Contentful CMA token',
+        "pattern": 'CFPAT-[A-Za-z0-9_-]{43}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Contentful Content Management API token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-176', "title": 'Hardcoded Auth0 client secret',
+        "pattern": '[Aa]uth0[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{64}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Auth0's client-secret length appears near an Auth0 reference -- this can allow impersonating your application to your identity provider.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-177', "title": 'Hardcoded Firebase service account private key',
+        "pattern": '\\"private_key\\":\\s*\\"-----BEGIN PRIVATE KEY-----',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.8,
+        "description": 'A Firebase/GCP service account private key is embedded directly in a JSON credentials block within source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-178', "title": 'Hardcoded Supabase service role key',
+        "pattern": '[Ss]upabase[\\s\\S]{0,40}eyJhbGciOiJIUzI1NiIs[A-Za-z0-9_-]{20,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Supabase service-role JWT (which bypasses row-level security) is hardcoded near a Supabase reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-179', "title": 'Insecure comparison of an API key with in-language equality',
+        "pattern": 'if\\s+api_key\\s*==\\s*[\\"\'][A-Za-z0-9]{16,}[\\"\']',
+        "severity": 'Medium', "cwe": 'CWE-208', "cvss": 5.9,
+        "description": 'Comparing an API key with == is subject to a timing side-channel; use a constant-time comparison for any credential check.',
+        "remediation": 'Use hmac.compare_digest() (Python) or the equivalent constant-time comparison for your language instead of ==.',
+    },
+    {
+        "id": 'SEC-180', "title": 'Insecure default CORS configuration allowing all methods and headers',
+        "pattern": 'Access-Control-Allow-Methods[\\"\']?\\s*[:,]\\s*[\\"\']\\*[\\"\']',
+        "severity": 'Medium', "cwe": 'CWE-942', "cvss": 5.3,
+        "description": 'Allowing every HTTP method via CORS is broader than almost any application actually needs.',
+        "remediation": 'List only the specific methods (GET, POST, ...) the endpoint actually supports.',
+    },
+    {
+        "id": 'SEC-181', "title": 'Insecure random used to generate a password reset token',
+        "pattern": 'reset_token\\s*=.*\\brandom\\.(?:choice|randint|random)\\(',
+        "severity": 'High', "cwe": 'CWE-330', "cvss": 7.5,
+        "description": "Password reset tokens must be unguessable; Python's random module is not cryptographically secure.",
+        "remediation": 'Use the secrets module (secrets.token_urlsafe()) for password reset tokens.',
+    },
+    {
+        "id": 'SEC-182', "title": 'Mass assignment via Django Model(**request.POST)',
+        "pattern": '\\w+\\.objects\\.create\\s*\\(\\s*\\*\\*(?:request\\.POST|request\\.data)\\s*\\)',
+        "severity": 'High', "cwe": 'CWE-915', "cvss": 7.5,
+        "description": 'Passing the entire POST body into a model constructor lets an attacker set any field, including ones like is_admin or role that were never meant to be user-editable.',
+        "remediation": 'Explicitly list the allowed fields, or use a DRF serializer with an explicit fields declaration.',
+    },
+    {
+        "id": 'SEC-183', "title": 'Insecure eval of a Redis-stored value',
+        "pattern": 'eval\\s*\\(\\s*redis(?:_client)?\\.get\\(',
+        "severity": 'Critical', "cwe": 'CWE-95', "cvss": 9.1,
+        "description": "Evaluating a value read from Redis as code is dangerous if anything with write access to that Redis key isn't fully trusted (including via a separate injection bug elsewhere in the stack).",
+        "remediation": 'Never eval() data read from any shared/external store; deserialize with a safe, data-only format.',
+    },
+    {
+        "id": 'SEC-184', "title": "Insecure use of yaml.load on a subprocess's output",
+        "pattern": 'yaml\\.load\\s*\\(\\s*subprocess\\.',
+        "severity": 'High', "cwe": 'CWE-502', "cvss": 7.5,
+        "description": "Piping subprocess output directly into yaml.load (rather than safe_load) combines two risky patterns; if the subprocess's output can ever be influenced by untrusted input, this is the same unsafe-deserialization risk as any other yaml.load.",
+        "remediation": "Use yaml.safe_load(), and separately validate that the subprocess itself can't be influenced by untrusted input.",
+    },
+    {
+        "id": 'SEC-185', "title": 'Insecure direct object reference via unchecked ID in ORM query',
+        "pattern": '\\.objects\\.get\\s*\\(\\s*id\\s*=\\s*request\\.(?:GET|POST)\\.get\\([^)]*\\)\\s*\\)(?![\\s\\S]{0,150}(?:owner|user)\\s*=)',
+        "severity": 'Medium', "cwe": 'CWE-639', "cvss": 5.3,
+        "description": "Fetching an object by a request-supplied ID with no ownership/permission check lets any authenticated user access any other user's record by guessing/incrementing the ID.",
+        "remediation": 'Add an explicit ownership filter (e.g. .get(id=..., owner=request.user)) or a permission check after fetching.',
+    },
+    {
+        "id": 'SEC-186', "title": 'Insecure use of subprocess with a user-controlled environment',
+        "pattern": 'subprocess\\.\\w+\\([^)]*env\\s*=\\s*(?:request|os\\.environ)\\b',
+        "severity": 'Medium', "cwe": 'CWE-78', "cvss": 6.1,
+        "description": "Passing a request-influenced or unfiltered environment to a subprocess can allow injecting variables like LD_PRELOAD or PATH that change the subprocess's behavior.",
+        "remediation": 'Build an explicit, minimal environment dict for the subprocess rather than passing request data or the full parent environment through.',
+    },
+    {
+        "id": 'SEC-187', "title": 'Insecure use of pickle for cache serialization',
+        "pattern": 'cache\\.set\\s*\\([^,]+,\\s*pickle\\.dumps\\(',
+        "severity": 'Medium', "cwe": 'CWE-502', "cvss": 5.9,
+        "description": "If the cache backend (Redis/Memcached) is ever reachable by another tenant or process you don't fully trust, pickle-serialized cache values reintroduce the same deserialization risk as any other pickle.loads() on external data.",
+        "remediation": 'Use JSON for cache values unless you specifically need to cache non-JSON-serializable Python objects and fully control everything with write access to the cache.',
+    },
+    {
+        "id": 'SEC-188', "title": 'Hardcoded Facebook/Meta app secret',
+        "pattern": '[Ff]acebook[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Facebook's app-secret format appears near a Facebook reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-189', "title": 'Hardcoded LinkedIn client secret',
+        "pattern": '[Ll]inked[Ii]n[\\s\\S]{0,40}\\b[A-Za-z0-9]{16}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching LinkedIn's client-secret format appears near a LinkedIn reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-190', "title": 'Hardcoded Twitch client secret',
+        "pattern": '[Tt]witch[\\s\\S]{0,40}\\b[a-z0-9]{30}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Twitch's client-secret format appears near a Twitch reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-191', "title": 'Hardcoded Spotify client secret',
+        "pattern": '[Ss]potify[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Spotify's client-secret format appears near a Spotify reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-192', "title": 'Hardcoded Zoom JWT API secret',
+        "pattern": '[Zz]oom[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Zoom's API secret format appears near a Zoom reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-193', "title": 'Hardcoded Asana personal access token',
+        "pattern": '\\b[0-9]{16,19}:[a-f0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'An Asana personal access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-194', "title": 'Hardcoded Trello API key and token pair',
+        "pattern": '[Tt]rello[\\s\\S]{0,60}key=[a-f0-9]{32}&token=[a-f0-9]{64}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Trello API key and token pair is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-195', "title": 'Hardcoded Segment write key',
+        "pattern": '[Ss]egment[\\s\\S]{0,40}\\b[A-Za-z0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Segment's write-key format appears near a Segment reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-196', "title": 'Hardcoded Intercom access token',
+        "pattern": '[Ii]ntercom[\\s\\S]{0,40}\\bdG9r[A-Za-z0-9+/=]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Intercom's base64-encoded token format appears near an Intercom reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-197', "title": 'Hardcoded Clearbit API key',
+        "pattern": '\\bsk_[a-f0-9]{32}\\b(?=.{0,20}clearbit)',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Clearbit's secret-key format appears near a Clearbit reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-198', "title": 'Hardcoded Terraform Cloud API token',
+        "pattern": '\\b[A-Za-z0-9]{14}\\.atlasv1\\.[A-Za-z0-9_-]{60,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Terraform Cloud API token is hardcoded in source -- this can grant control over infrastructure state and provisioning.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-199', "title": 'Hardcoded 1Password Connect token',
+        "pattern": '[Oo]nePassword[\\s\\S]{0,40}eyJhbGciOiJFUzI1NiIs[A-Za-z0-9_.-]{20,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A 1Password Connect API token (JWT) is hardcoded near a 1Password reference -- this can grant access to an entire vault of secrets.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-200', "title": 'Hardcoded HashiCorp Vault token',
+        "pattern": '\\bhvs\\.[A-Za-z0-9_-]{24,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A HashiCorp Vault service token is hardcoded in source -- this can grant access to every secret the token is scoped to.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-201', "title": 'Insecure default binding to all network interfaces',
+        "pattern": '\\.run\\s*\\(\\s*host\\s*=\\s*[\\"\']0\\.0\\.0\\.0[\\"\']',
+        "severity": 'Medium', "cwe": 'CWE-284', "cvss": 5.3,
+        "description": 'Binding to 0.0.0.0 exposes the service on every network interface, including any public one, which is rarely the intent for a development server.',
+        "remediation": "Bind to 127.0.0.1 for local development, and rely on your production deployment's own network/firewall configuration rather than the app binding to all interfaces.",
+    },
+    {
+        "id": 'SEC-202', "title": 'Insecure use of eval() to parse a configuration string',
+        "pattern": 'eval\\s*\\(\\s*open\\s*\\([^)]*\\)\\.read\\(\\)\\s*\\)',
+        "severity": 'Critical', "cwe": 'CWE-95', "cvss": 8.6,
+        "description": "Using eval() to parse a config file executes it as arbitrary Python code -- if the file's location or content can ever be influenced by an untrusted source, this is code execution.",
+        "remediation": 'Use json.load()/configparser/yaml.safe_load() for configuration files instead of eval().',
+    },
+    {
+        "id": 'SEC-203', "title": 'Insecure use of input() result passed to a filesystem operation with no validation',
+        "pattern": 'os\\.remove\\s*\\(\\s*input\\s*\\(',
+        "severity": 'High', "cwe": 'CWE-22', "cvss": 7.1,
+        "description": 'Passing unvalidated interactive input directly to a destructive filesystem operation risks arbitrary file deletion if the input source is ever less trusted than assumed (e.g. piped from an untrusted script).',
+        "remediation": 'Validate the resolved path stays within an expected directory before deleting anything based on external input.',
+    },
+    {
+        "id": 'SEC-204', "title": 'Hardcoded Coinbase API secret',
+        "pattern": '[Cc]oinbase[\\s\\S]{0,40}\\b[A-Za-z0-9+/=]{64}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A string matching Coinbase API secret format appears near a Coinbase reference -- this can grant control over cryptocurrency funds.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-205', "title": 'Hardcoded Plaid client secret',
+        "pattern": '[Pp]laid[\\s\\S]{0,40}\\b[a-f0-9]{30}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A string matching Plaid client-secret format appears near a Plaid reference -- this can grant access to linked bank account data.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-206', "title": 'Hardcoded Twilio auth token',
+        "pattern": '\\b[a-f0-9]{32}\\b(?=.{0,20}(?:twilio|TWILIO))',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching Twilio's auth token format appears near a Twilio reference.",
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-207', "title": 'Insecure use of Werkzeug debugger PIN disabled',
+        "pattern": 'WERKZEUG_DEBUG_PIN\\s*=\\s*["\\\']off["\\\']',
+        "severity": 'Critical', "cwe": 'CWE-306', "cvss": 9.8,
+        "description": 'Disabling the Werkzeug debugger PIN removes the one protection standing between an exposed Flask debug endpoint and full remote code execution.',
+        "remediation": 'Never disable the debugger PIN; better yet, never enable debug mode in any environment reachable by untrusted networks.',
+    },
+    {
+        "id": 'SEC-208', "title": 'Insecure use of os.system with a Django management command built from request data',
+        "pattern": 'call_command\\s*\\(\\s*request\\.',
+        "severity": 'Critical', "cwe": 'CWE-78', "cvss": 8.6,
+        "description": 'Passing request data as a Django management command name/argument can execute unintended administrative commands.',
+        "remediation": 'Never pass request data to call_command(); use an explicit allow-list of permitted commands and arguments.',
+    },
+    {
+        "id": 'SEC-209', "title": 'Hardcoded Notion integration token',
+        "pattern": '\\bsecret_[A-Za-z0-9]{43}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Notion integration token is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-210', "title": 'Hardcoded Linear API key',
+        "pattern": '\\blin_api_[A-Za-z0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A Linear API key is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-211', "title": 'Hardcoded OpenAI API key',
+        "pattern": '\\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An OpenAI API key is hardcoded in source -- this can be used to run up usage charges on the associated account.',
+        "remediation": 'Revoke/rotate the credential immediately in the OpenAI dashboard and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-212', "title": 'Hardcoded Anthropic API key',
+        "pattern": '\\bsk-ant-api03-[A-Za-z0-9_-]{90,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Anthropic API key is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately in the Anthropic console and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-213', "title": 'Hardcoded Hugging Face access token',
+        "pattern": '\\bhf_[A-Za-z0-9]{34}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Hugging Face access token is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-214', "title": 'Hardcoded Replicate API token',
+        "pattern": '\\br8_[A-Za-z0-9]{37}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Replicate API token is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-215', "title": 'Insecure use of exec() on a YAML-parsed value',
+        "pattern": 'exec\\s*\\(\\s*yaml\\.safe_load\\(',
+        "severity": 'High', "cwe": 'CWE-95', "cvss": 7.5,
+        "description": 'Even safely-parsed YAML data can contain attacker-influenced strings; executing any parsed configuration value as code reintroduces an injection risk regardless of how the data was deserialized.',
+        "remediation": 'Never exec() a value that originated from parsed configuration data, no matter how it was deserialized.',
+    },
+    {
+        "id": 'SEC-216', "title": 'Hardcoded Cohere API key',
+        "pattern": '[Cc]ohere[\\s\\S]{0,40}\\b[A-Za-z0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching Cohere API key format appears near a Cohere reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-217', "title": 'Hardcoded ElevenLabs API key',
+        "pattern": '[Ee]leven[Ll]abs[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching ElevenLabs API key format appears near an ElevenLabs reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-218', "title": 'Hardcoded LangSmith API key',
+        "pattern": '\\bls__[a-f0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A LangSmith API key is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-219', "title": 'Insecure use of subprocess with untrusted PYTHONPATH',
+        "pattern": 'env\\s*=\\s*\\{[^}]*PYTHONPATH[^}]*request\\.',
+        "severity": 'High', "cwe": 'CWE-427', "cvss": 7.5,
+        "description": 'Setting PYTHONPATH from request data for a subprocess lets an attacker cause arbitrary modules to be imported, potentially achieving code execution via a planted malicious module.',
+        "remediation": 'Never build a subprocess environment from request data; use a fixed, explicit environment.',
+    },
+    {
+        "id": 'SEC-220', "title": 'Insecure use of Django DEBUG combined with ALLOWED_HOSTS wildcard',
+        "pattern": 'DEBUG\\s*=\\s*True[\\s\\S]{0,300}ALLOWED_HOSTS\\s*=\\s*\\[\\s*["\\\']\\*',
+        "severity": 'Critical', "cwe": 'CWE-16', "cvss": 8.6,
+        "description": 'DEBUG=True combined with a wildcard ALLOWED_HOSTS is a particularly dangerous combination -- it exposes detailed stack traces (including settings and source snippets) to any Host header value.',
+        "remediation": 'Never combine DEBUG=True with a wildcard ALLOWED_HOSTS; set DEBUG=False and an explicit host list in any environment reachable by untrusted traffic.',
+    },
+]
+
+
+# ---- batch 7 (session 7): push toward 1000+ ----
+VULNERABILITY_RULES += [
+    {
+        "id": 'SEC-221', "title": 'Hardcoded Braintree private key',
+        "pattern": '[Bb]raintree[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Braintree private key is hardcoded near a Braintree reference -- this can grant control over payment processing.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-222', "title": 'Hardcoded Razorpay key secret',
+        "pattern": '[Rr]azorpay[\\s\\S]{0,40}\\b[A-Za-z0-9]{20,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Razorpay's key-secret format appears near a Razorpay reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-223', "title": 'Hardcoded Adyen API key',
+        "pattern": 'AQE[a-zA-Z0-9_-]{50,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Adyen API key is hardcoded in source -- this can grant control over payment processing.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-224', "title": 'Hardcoded Chargebee API key',
+        "pattern": '[Cc]hargebee[\\s\\S]{0,40}\\b[a-zA-Z0-9]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching Chargebee's API key format appears near a Chargebee reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-225', "title": 'Hardcoded Zendesk API token',
+        "pattern": '[Zz]endesk[\\s\\S]{0,40}\\b[A-Za-z0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Zendesk's API token format appears near a Zendesk reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-226', "title": 'Hardcoded Freshdesk API key',
+        "pattern": '[Ff]reshdesk[\\s\\S]{0,40}\\b[A-Za-z0-9]{20}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Freshdesk's API key format appears near a Freshdesk reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-227', "title": 'Hardcoded Front API token',
+        "pattern": '[Ff]ront[\\s\\S]{0,40}\\beyJhbGciOiJIUzI1NiJ9[A-Za-z0-9_.-]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Front API JWT token is hardcoded near a Front reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-228', "title": 'Hardcoded Drift API token',
+        "pattern": '[Dd]rift[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Drift's API token format appears near a Drift reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-229', "title": 'Hardcoded Google Maps API key',
+        "pattern": '\\bAIzaSy[A-Za-z0-9_-]{33}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Google Maps/Cloud API key is hardcoded in source -- if unrestricted, this can be abused to run up billing charges.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-230', "title": 'Hardcoded npm scoped registry auth token',
+        "pattern": '//registry\\.npmjs\\.org/:_authToken=[A-Za-z0-9_-]{30,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'An npm registry auth token is hardcoded in an .npmrc-style line within source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-231', "title": 'Hardcoded RubyGems API key',
+        "pattern": '[Rr]ubygems[\\s\\S]{0,40}\\brubygems_[a-f0-9]{48}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": 'A RubyGems API key is hardcoded in source -- this can allow publishing gems under the associated account.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-232', "title": 'Hardcoded NuGet API key',
+        "pattern": '\\boy2[a-z0-9]{43}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching NuGet's API key format is hardcoded in source.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-233', "title": 'Hardcoded Packagist/Composer API token',
+        "pattern": '[Pp]ackagist[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Packagist's API token format appears near a Packagist reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-234', "title": 'Hardcoded Kubernetes service account token (JWT)',
+        "pattern": 'eyJhbGciOiJSUzI1NiIsImtpZCI6[A-Za-z0-9_-]{20,}\\.eyJ[A-Za-z0-9_-]{20,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Kubernetes service account JWT is hardcoded in source -- this can grant API access scoped to whatever RBAC role the service account holds.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-235', "title": 'Hardcoded Grafana API key',
+        "pattern": 'eyJrIjoi[A-Za-z0-9_-]{40,}',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Grafana API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-236', "title": 'Hardcoded Figma personal access token',
+        "pattern": '\\bfigd_[A-Za-z0-9_-]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": 'A Figma personal access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-237', "title": 'Hardcoded Miro API token',
+        "pattern": '[Mm]iro[\\s\\S]{0,40}\\bkeys/[A-Za-z0-9=]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Miro's API token format appears near a Miro reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-238', "title": 'Hardcoded Snyk API token',
+        "pattern": '[Ss]nyk[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A UUID-format token near a Snyk reference matches Snyk's API token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-239', "title": 'Hardcoded CodeClimate reporter ID',
+        "pattern": 'CC_TEST_REPORTER_ID\\s*=\\s*[a-f0-9]{64}',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A Code Climate test reporter ID is hardcoded -- low individual risk, but still shouldn't be committed.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-240', "title": 'Hardcoded Sentry auth token',
+        "pattern": '[Ss]entry[\\s\\S]{0,40}\\bsntrys_[A-Za-z0-9_=-]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Sentry auth token is hardcoded near a Sentry reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-241', "title": 'Insecure use of subprocess with shell metacharacters unescaped in an f-string',
+        "pattern": 'subprocess\\.\\w+\\(\\s*f[\\"\'][^\\"\']*\\{[^}]+\\}[^\\"\']*[\\"\']\\s*,\\s*shell\\s*=\\s*True',
+        "severity": 'Critical', "cwe": 'CWE-78', "cvss": 9.1,
+        "description": 'An f-string interpolates a variable directly into a shell=True command, the same injection risk as string concatenation.',
+        "remediation": 'Use shell=False with an argument list, or shlex.quote() every interpolated value if a shell is genuinely required.',
+    },
+    {
+        "id": 'SEC-242', "title": "Insecure use of Django's mark_safe on a format string with variables",
+        "pattern": 'mark_safe\\s*\\(\\s*[\\"\'][^\\"\']*%s[^\\"\']*[\\"\']\\s*%',
+        "severity": 'Critical', "cwe": 'CWE-79', "cvss": 8.8,
+        "description": 'mark_safe() combined with %-formatting reintroduces XSS even when the surrounding code looks like normal string formatting.',
+        "remediation": 'Never combine mark_safe() with unescaped interpolation; sanitize the interpolated value first if HTML must be preserved.',
+    },
+    {
+        "id": 'SEC-243', "title": "Insecure use of Flask's send_file with a request-controlled path",
+        "pattern": 'send_file\\s*\\(\\s*(?:request\\.args|request\\.form)',
+        "severity": 'High', "cwe": 'CWE-22', "cvss": 7.5,
+        "description": 'Passing a request-controlled path to send_file() allows arbitrary file disclosure via path traversal.',
+        "remediation": "Validate the requested filename against an allow-list, or use send_from_directory() with a fixed base directory and Werkzeug's built-in traversal protection.",
+    },
+    {
+        "id": 'SEC-244', "title": 'Insecure use of yaml.load on data read from a network socket',
+        "pattern": 'yaml\\.load\\s*\\(\\s*(?:socket|conn)\\.recv\\(',
+        "severity": 'Critical', "cwe": 'CWE-502', "cvss": 9.1,
+        "description": "Data read directly from a network socket is about as untrusted as input gets; combined with yaml.load's default unsafe loader, this is remote code execution.",
+        "remediation": 'Use yaml.safe_load(), and treat all network-sourced data as untrusted regardless of the deserialization format.',
+    },
+    {
+        "id": 'SEC-245', "title": 'Insecure comparison of a webhook signature with ==',
+        "pattern": 'if\\s+\\w*signature\\w*\\s*==\\s*(?:hmac\\.new|hashlib)',
+        "severity": 'Medium', "cwe": 'CWE-208', "cvss": 5.9,
+        "description": 'Comparing a computed webhook signature with == is subject to a timing side-channel that can help an attacker forge a valid signature byte-by-byte.',
+        "remediation": 'Use hmac.compare_digest() for any signature/HMAC comparison.',
+    },
+    {
+        "id": 'SEC-246', "title": "Insecure use of os.system to check for a file's existence via shell test",
+        "pattern": 'os\\.system\\s*\\(\\s*[\\"\']test\\s+-[ef]\\s',
+        "severity": 'Low', "cwe": 'CWE-78', "cvss": 4.3,
+        "description": 'Shelling out to `test -e/-f` for a file-existence check is unnecessary and re-opens command-injection risk if the path is ever built from external input.',
+        "remediation": 'Use os.path.exists()/os.path.isfile() instead of shelling out.',
+    },
+    {
+        "id": 'SEC-247', "title": 'Insecure use of a wildcard TrustManager/HostnameVerifier applied globally',
+        "pattern": 'HttpsURLConnection\\.setDefaultSSLSocketFactory|HttpsURLConnection\\.setDefaultHostnameVerifier',
+        "severity": 'Critical', "cwe": 'CWE-295', "cvss": 8.6,
+        "description": 'Setting a default (rather than per-connection) SSL socket factory or hostname verifier affects every HTTPS connection made by the JVM process, often unintentionally disabling certificate validation application-wide.',
+        "remediation": 'Configure TLS validation per-connection instead of overriding the JVM-wide defaults.',
+    },
+    {
+        "id": 'SEC-248', "title": "Insecure use of Node's crypto.createCipher (deprecated, weak key derivation)",
+        "pattern": 'crypto\\.createCipher\\s*\\(',
+        "severity": 'High', "cwe": 'CWE-327', "cvss": 7.5,
+        "description": 'createCipher derives the key and IV from a passphrase using a weak, undocumented algorithm and has been deprecated in favor of createCipheriv.',
+        "remediation": 'Use crypto.createCipheriv() with an explicitly generated key and IV instead of createCipher().',
+    },
+    {
+        "id": 'SEC-249', "title": 'Hardcoded Wise (TransferWise) API token',
+        "pattern": '[Ww]ise[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format token near a Wise reference matches Wise's API token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-250', "title": 'Hardcoded Paystack secret key',
+        "pattern": '\\bsk_live_[a-f0-9]{32,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Paystack live secret key is hardcoded in source -- this can move real money.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-251', "title": 'Hardcoded Recurly API key',
+        "pattern": '[Rr]ecurly[\\s\\S]{0,40}\\b[a-f0-9]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching Recurly's API key format appears near a Recurly reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-252', "title": 'Hardcoded FreshBooks API token',
+        "pattern": '[Ff]resh[Bb]ooks[\\s\\S]{0,40}\\b[A-Za-z0-9]{64}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching FreshBooks' API token format appears near a FreshBooks reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-253', "title": 'Hardcoded Help Scout API key',
+        "pattern": '[Hh]elp[Ss]cout[\\s\\S]{0,40}\\b[A-Za-z0-9]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Help Scout's API key format appears near a Help Scout reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-254', "title": 'Hardcoded Groove HQ API token',
+        "pattern": '[Gg]roove[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Groove's API token format appears near a Groove reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-255', "title": 'Hardcoded Crisp Chat API token',
+        "pattern": '[Cc]risp[\\s\\S]{0,40}\\b[A-Za-z0-9_]{30,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Crisp's API token format appears near a Crisp reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-256', "title": 'Hardcoded Podium API key',
+        "pattern": '[Pp]odium[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Podium's API key format appears near a Podium reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-257', "title": 'Hardcoded Yelp Fusion API key',
+        "pattern": '[Yy]elp[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{128}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Yelp Fusion's API key length appears near a Yelp reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-258', "title": 'Hardcoded ConvertKit API secret',
+        "pattern": '[Cc]onvert[Kk]it[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching ConvertKit's API secret format appears near a ConvertKit reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-259', "title": 'Hardcoded Klaviyo private API key',
+        "pattern": '\\bpk_[a-f0-9]{34}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Klaviyo private API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-260', "title": 'Hardcoded SendinBlue/Brevo API key',
+        "pattern": '\\bxkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Brevo (SendinBlue) API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-261', "title": 'Hardcoded Chocolatey API key',
+        "pattern": '[Cc]hocolatey[\\s\\S]{0,40}\\b[a-f0-9]{50}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Chocolatey's API key format appears near a Chocolatey reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-262', "title": 'Hardcoded Maven Central / Sonatype token',
+        "pattern": '[Ss]onatype[\\s\\S]{0,40}\\b[A-Za-z0-9+/=]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Sonatype's token format appears near a Sonatype reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-263', "title": 'Hardcoded GitHub Actions runner registration token',
+        "pattern": '[Aa]ctions[\\s\\S]{0,40}\\bA[A-Z0-9]{28}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching GitHub Actions runner registration token format appears near an Actions reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-264', "title": 'Hardcoded Buildkite API access token',
+        "pattern": '[Bb]uildkite[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Buildkite's API token format appears near a Buildkite reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-265', "title": 'Hardcoded TravisCI API token',
+        "pattern": '[Tt]ravis[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{22}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": "A string matching Travis CI's API token format appears near a Travis reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-266', "title": 'Hardcoded Vault AppRole secret ID',
+        "pattern": '[Aa]pp[Rr]ole[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format value near an AppRole reference matches HashiCorp Vault's AppRole secret ID format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-267', "title": 'Hardcoded Consul ACL token',
+        "pattern": '[Cc]onsul[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format value near a Consul reference matches Consul's ACL token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-268', "title": 'Hardcoded Nomad ACL token',
+        "pattern": '[Nn]omad[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format value near a Nomad reference matches Nomad's ACL token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-269', "title": 'Hardcoded Datadog application key',
+        "pattern": '[Dd]atadog[\\s\\S]{0,60}\\b[a-f0-9]{40}\\b(?=.{0,60}app)',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Datadog's application key format appears near Datadog and app references.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-270', "title": 'Hardcoded Rollbar access token',
+        "pattern": '[Rr]ollbar[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Rollbar's access token format appears near a Rollbar reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-271', "title": 'Hardcoded Bugsnag API key',
+        "pattern": '[Bb]ugsnag[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Bugsnag's API key format appears near a Bugsnag reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-272', "title": 'Hardcoded LaunchDarkly SDK key',
+        "pattern": '\\bsdk-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A LaunchDarkly server-side SDK key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-273', "title": 'Hardcoded Split.io API key',
+        "pattern": '[Ss]plit\\.io[\\s\\S]{0,40}\\b[a-z0-9]{32,40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Split.io's API key format appears near a Split.io reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-274', "title": 'Hardcoded Optimizely SDK key',
+        "pattern": '[Oo]ptimizely[\\s\\S]{0,40}\\b[A-Za-z0-9]{16,}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Optimizely's SDK key format appears near an Optimizely reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-275', "title": 'Hardcoded Amplitude API key',
+        "pattern": '[Aa]mplitude[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Amplitude's API key format appears near an Amplitude reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-276', "title": 'Hardcoded Mixpanel project token',
+        "pattern": '[Mm]ixpanel[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Mixpanel's project token format appears near a Mixpanel reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-277', "title": 'Hardcoded FullStory API key',
+        "pattern": '[Ff]ull[Ss]tory[\\s\\S]{0,40}\\b[A-Za-z0-9/+=]{40,}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching FullStory's API key format appears near a FullStory reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-278', "title": 'Hardcoded Hotjar site ID combined with API key',
+        "pattern": '[Hh]otjar[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Hotjar's API key format appears near a Hotjar reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-283', "title": 'Hardcoded Ably API key',
+        "pattern": '[Aa]bly[\\s\\S]{0,40}\\b[A-Za-z0-9]{8}\\.[A-Za-z0-9]{8}:[A-Za-z0-9_-]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'An Ably API key is hardcoded near an Ably reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-284', "title": 'Hardcoded PubNub publish/subscribe key',
+        "pattern": '[Pp]ub[Nn]ub[\\s\\S]{0,40}\\bsub-c-[a-f0-9-]{36}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 5.9,
+        "description": 'A PubNub subscribe key is hardcoded near a PubNub reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-285', "title": 'Hardcoded Stream (getstream.io) API secret',
+        "pattern": '[Gg]et[Ss]tream[\\s\\S]{0,40}\\b[a-z0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Stream's API secret format appears near a getstream.io reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-286', "title": 'Hardcoded Agora App Certificate',
+        "pattern": '[Aa]gora[\\s\\S]{0,40}\\b[a-f0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Agora's app certificate format appears near an Agora reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-287', "title": 'Hardcoded Twilio SendGrid webhook verification key',
+        "pattern": 'SENDGRID_WEBHOOK[\\s\\S]{0,40}-----BEGIN PUBLIC KEY-----',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 3.1,
+        "description": "A SendGrid webhook verification key is embedded in source -- this is a public key so lower risk, but confirm it's the correct one and not accidentally the private half.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-288', "title": 'Hardcoded Firebase Web API key combined with unrestricted API usage',
+        "pattern": 'AIzaSy[A-Za-z0-9_-]{33}[\\s\\S]{0,10}firebaseapp\\.com',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 3.7,
+        "description": "A Firebase Web API key is meant to be public-ish (it's shipped in client apps) but pair this finding with a check of your Firebase Security Rules -- the key alone doesn't grant access if rules are configured correctly.",
+        "remediation": 'Confirm Firebase Security Rules (Firestore/Realtime Database/Storage) restrict access appropriately; the API key itself is not the security boundary.',
+    },
+    {
+        "id": 'SEC-289', "title": 'Hardcoded Expo access token',
+        "pattern": '\\bexpo_[A-Za-z0-9_-]{35,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'An Expo access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-290', "title": 'Hardcoded CircleCI context/project token',
+        "pattern": 'circle-token[\\s\\S]{0,10}[a-f0-9]{40}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A CircleCI personal API token is hardcoded near a circle-token reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-291', "title": 'Hardcoded Render.com API key',
+        "pattern": '[Rr]ender\\.com[\\s\\S]{0,40}\\brnd_[A-Za-z0-9]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Render API key is hardcoded near a Render reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-292', "title": 'Hardcoded Railway API token',
+        "pattern": '[Rr]ailway[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A UUID-format token near a Railway reference matches Railway's API token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-293', "title": 'Hardcoded Fly.io API token',
+        "pattern": 'FlyV1\\s+fm2_[A-Za-z0-9_=]{100,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Fly.io API token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-294', "title": 'Hardcoded Cloudinary API secret',
+        "pattern": 'cloudinary://[0-9]+:[A-Za-z0-9_-]+@[a-z0-9]+',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Cloudinary URL with an embedded API secret is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-295', "title": 'Hardcoded ImageKit private key',
+        "pattern": '[Ii]mage[Kk]it[\\s\\S]{0,40}\\bprivate_[A-Za-z0-9+/=]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching ImageKit's private key format appears near an ImageKit reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-296', "title": 'Hardcoded Uploadcare secret key',
+        "pattern": '[Uu]ploadcare[\\s\\S]{0,40}\\b[a-f0-9]{20}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Uploadcare's secret key format appears near an Uploadcare reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-297', "title": 'Hardcoded Transloadit auth secret',
+        "pattern": '[Tt]ransloadit[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Transloadit's auth secret format appears near a Transloadit reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-298', "title": 'Hardcoded Bunny CDN API key',
+        "pattern": '[Bb]unny[Cc][Dd][Nn][\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{18}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching BunnyCDN's API key format appears near a BunnyCDN reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-299', "title": 'Hardcoded Backblaze B2 application key',
+        "pattern": '[Bb]ackblaze[\\s\\S]{0,40}\\bK[0-9]{3}[A-Za-z0-9]{31}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Backblaze B2 application key is hardcoded near a Backblaze reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-300', "title": 'Hardcoded Wasabi access key',
+        "pattern": '[Ww]asabi[\\s\\S]{0,40}\\b[A-Z0-9]{20}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Wasabi's access key format appears near a Wasabi reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-279', "title": 'Insecure use of a hardcoded database connection string with embedded credentials',
+        "pattern": '(?:mysql|postgres|postgresql|mongodb)://[^:]+:[^@]+@',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A database connection URI with embedded username:password is hardcoded in source.',
+        "remediation": "Load the connection string from environment configuration or a secrets manager, and prefer a form that doesn't embed credentials in the URI where the driver supports it.",
+    },
+    {
+        "id": 'SEC-280', "title": 'Insecure use of subprocess.run with a list argument that still contains shell operators',
+        "pattern": 'subprocess\\.run\\s*\\(\\s*\\[[^\\]]*(?:\\|\\||&&|;)[^\\]]*\\]',
+        "severity": 'Medium', "cwe": 'CWE-78', "cvss": 5.3,
+        "description": "Shell operators (|, &&, ;) inside a subprocess argument list are passed as literal characters, not interpreted -- if the intent was to chain commands, this silently doesn't do what it looks like; if the intent was genuinely a literal argument, this is fine, but it's worth a second look either way.",
+        "remediation": 'If shell chaining is actually needed, either run each command separately or explicitly pass shell=True with a single string (and validate/escape any dynamic parts).',
+    },
+    {
+        "id": 'SEC-281', "title": 'Insecure use of a wildcard exception handler that suppresses security-relevant errors',
+        "pattern": 'except\\s*:\\s*\\n\\s*pass\\s*\\n[\\s\\S]{0,50}(?:login|auth|verify|password)',
+        "severity": 'Medium', "cwe": 'CWE-390', "cvss": 5.3,
+        "description": 'A bare except: pass immediately after an authentication/verification-sounding operation can silently treat a failed security check as success.',
+        "remediation": 'Catch the specific exception type you expect, and ensure any authentication/authorization failure is treated as a denial, not silently ignored.',
+    },
+    {
+        "id": 'SEC-282', "title": 'Insecure use of Flask-CORS with resources set to a wildcard for all routes',
+        "pattern": 'CORS\\s*\\(\\s*app\\s*,\\s*resources\\s*=\\s*\\{\\s*r[\\"\']\\.\\*[\\"\']',
+        "severity": 'Medium', "cwe": 'CWE-942', "cvss": 5.3,
+        "description": 'Applying CORS to every route with a wildcard resource pattern is broader than almost any application actually needs.',
+        "remediation": 'Scope CORS to the specific route patterns that genuinely need cross-origin access.',
+    },
+]
+
+
+# ---- batch 8 (session 8): push toward 1000+ ----
+VULNERABILITY_RULES += [
+    {
+        "id": 'SEC-301', "title": 'Hardcoded Scaleway API secret key',
+        "pattern": '[Ss]caleway[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format secret key near a Scaleway reference matches Scaleway's API secret key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-302', "title": 'Hardcoded Linode API token',
+        "pattern": '[Ll]inode[\\s\\S]{0,40}\\b[a-f0-9]{64}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Linode's API token format appears near a Linode reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-303', "title": 'Hardcoded Vultr API key',
+        "pattern": '[Vv]ultr[\\s\\S]{0,40}\\b[A-Z0-9]{36}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Vultr's API key format appears near a Vultr reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-304', "title": 'Hardcoded OVH application secret',
+        "pattern": '[Oo][Vv][Hh][\\s\\S]{0,40}\\b[A-Za-z0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching OVH's application secret format appears near an OVH reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-305', "title": 'Hardcoded IBM Cloud API key',
+        "pattern": '[Ii][Bb][Mm]\\s*[Cc]loud[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{44}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching IBM Cloud's API key format appears near an IBM Cloud reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-306', "title": 'Hardcoded Alibaba Cloud AccessKey secret',
+        "pattern": '[Aa]libaba[\\s\\S]{0,40}\\b[A-Za-z0-9]{30}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Alibaba Cloud's AccessKey secret format appears near an Alibaba reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-307', "title": 'Hardcoded Tencent Cloud SecretKey',
+        "pattern": '[Tt]encent[\\s\\S]{0,40}\\b[A-Za-z0-9]{32}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Tencent Cloud's SecretKey format appears near a Tencent reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-308', "title": 'Hardcoded Yandex Cloud OAuth token',
+        "pattern": '\\by0_[A-Za-z0-9_-]{55}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Yandex Cloud OAuth token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-309', "title": 'Hardcoded Confluent Cloud API secret',
+        "pattern": '[Cc]onfluent[\\s\\S]{0,40}\\b[A-Za-z0-9+/]{64}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching Confluent Cloud's API secret format appears near a Confluent reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-310', "title": 'Hardcoded MongoDB Atlas API key',
+        "pattern": '[Aa]tlas[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format key near an Atlas reference matches MongoDB Atlas's API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-311', "title": 'Hardcoded Elastic Cloud API key',
+        "pattern": '[Ee]lastic\\s*[Cc]loud[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 8.1,
+        "description": "A string matching Elastic Cloud's API key format appears near an Elastic Cloud reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-312', "title": 'Hardcoded CockroachDB connection string with credentials',
+        "pattern": 'postgresql://[^:]+:[^@]+@[^/]+\\.cockroachlabs\\.cloud',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A CockroachDB Cloud connection string with embedded credentials is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-313', "title": 'Hardcoded Neon Postgres connection string with credentials',
+        "pattern": 'postgresql://[^:]+:[^@]+@[^/]+\\.neon\\.tech',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Neon Postgres connection string with embedded credentials is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-314', "title": 'Hardcoded Upstash Redis token',
+        "pattern": '[Uu]pstash[\\s\\S]{0,40}\\b[A-Za-z0-9_=]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Upstash's REST token format appears near an Upstash reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-315', "title": 'Hardcoded Temporal Cloud API key',
+        "pattern": '[Tt]emporal[\\s\\S]{0,40}\\b[A-Za-z0-9+/=]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Temporal Cloud's API key format appears near a Temporal reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-316', "title": 'Hardcoded Doppler service token',
+        "pattern": '\\bdp\\.st\\.[A-Za-z0-9_.-]{40,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Doppler service token is hardcoded in source -- Doppler tokens themselves grant access to your other secrets, making this especially high-impact.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-317', "title": 'Hardcoded Infisical service token',
+        "pattern": '\\bst\\.[a-f0-9]{24}\\.[a-f0-9]{24}\\.[a-f0-9]{24}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Infisical service token is hardcoded in source -- like Doppler, this grants access to your other secrets.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-318', "title": 'Hardcoded Cloudflare Workers KV namespace token',
+        "pattern": '[Cc]loudflare[\\s\\S]{0,40}\\bworkers_kv[\\s\\S]{0,10}[A-Za-z0-9_-]{40}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Cloudflare Workers KV's token format appears near a Cloudflare reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-319', "title": 'Hardcoded Deno Deploy access token',
+        "pattern": '[Dd]eno\\s*[Dd]eploy[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Deno Deploy's access token format appears near a Deno Deploy reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-320', "title": 'Hardcoded Porter/Northflank deployment token',
+        "pattern": '[Nn]orthflank[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Northflank's deployment token format appears near a Northflank reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-321', "title": 'Insecure use of a hardcoded AWS session token',
+        "pattern": 'ASIA[0-9A-Z]{16}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "An AWS temporary (STS) access key ID is hardcoded in source. Even though it's temporary, if the full session (including the secret and session token) is also present, this grants time-limited but real access.",
+        "remediation": 'Rotate/invalidate the underlying credentials and load temporary credentials from the instance metadata service or STS at runtime, never from source.',
+    },
+    {
+        "id": 'SEC-322', "title": 'Insecure use of eval() on a value read from an HTTP response',
+        "pattern": 'eval\\s*\\(\\s*(?:requests\\.get|urlopen)\\([^)]*\\)\\.(?:text|read\\(\\))\\s*\\)',
+        "severity": 'Critical', "cwe": 'CWE-95', "cvss": 9.1,
+        "description": 'Evaluating HTTP response content as code executes whatever the remote server (or anyone positioned to intercept/redirect the request) returns.',
+        "remediation": 'Never eval() network response data; parse it with an explicit, safe format (JSON, etc.) instead.',
+    },
+    {
+        "id": 'SEC-323', "title": 'Insecure use of a wildcard in a Content-Security-Policy header',
+        "pattern": 'Content-Security-Policy[\\"\']?\\s*[:,]\\s*[\\"\']default-src\\s+\\*',
+        "severity": 'Medium', "cwe": 'CWE-1021', "cvss": 5.3,
+        "description": "A wildcard default-src effectively disables CSP's main protection against XSS and data injection.",
+        "remediation": 'Scope default-src (and other directives) to the specific origins your application actually needs to load resources from.',
+    },
+    {
+        "id": 'SEC-324', "title": 'Insecure use of subprocess with a command built from an environment variable with no validation',
+        "pattern": 'subprocess\\.\\w+\\s*\\(\\s*os\\.environ\\[',
+        "severity": 'Medium', "cwe": 'CWE-78', "cvss": 6.1,
+        "description": "If the environment variable can ever be influenced by a less-trusted context (e.g. a CI job's untrusted input, or a container's env set by an orchestrator API an attacker partially controls), this is command injection.",
+        "remediation": 'Validate/allowlist the value read from the environment before using it to build a command, especially in any multi-tenant or CI context.',
+    },
+    {
+        "id": 'SEC-325', "title": 'Insecure use of a hardcoded private SSH key',
+        "pattern": '-----BEGIN OPENSSH PRIVATE KEY-----',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.8,
+        "description": 'An OpenSSH private key is embedded directly in source.',
+        "remediation": 'Remove the key from source control, treat it as compromised (rotate/reissue), and load private keys from a secrets manager or mounted secret volume.',
+    },
+    {
+        "id": 'SEC-326', "title": 'Hardcoded Shopify webhook signing secret',
+        "pattern": '[Ss]hopify[\\s\\S]{0,40}webhook[\\s\\S]{0,20}[A-Za-z0-9+/=]{40,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Shopify's webhook signing secret format appears near Shopify/webhook references.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-327', "title": 'Hardcoded WooCommerce consumer secret',
+        "pattern": '\\bcs_[a-f0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A WooCommerce REST API consumer secret is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-328', "title": 'Hardcoded BigCommerce API token',
+        "pattern": '[Bb]ig[Cc]ommerce[\\s\\S]{0,40}\\b[a-z0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching BigCommerce's API token format appears near a BigCommerce reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-329', "title": 'Hardcoded Magento integration access token',
+        "pattern": '[Mm]agento[\\s\\S]{0,40}\\b[a-z0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Magento's integration access token format appears near a Magento reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-330', "title": 'Hardcoded Salesforce connected app client secret',
+        "pattern": '[Ss]alesforce[\\s\\S]{0,40}\\b[0-9A-Z]{60,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Salesforce's connected-app client secret format appears near a Salesforce reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-331', "title": 'Hardcoded HubSpot private app access token',
+        "pattern": '\\bpat-(?:na1|eu1)-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A HubSpot private app access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-332', "title": 'Hardcoded Marketo REST API client secret',
+        "pattern": '[Mm]arketo[\\s\\S]{0,40}\\b[a-zA-Z0-9]{32}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Marketo's client secret format appears near a Marketo reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-333', "title": 'Hardcoded Braze REST API key',
+        "pattern": '[Bb]raze[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A UUID-format key near a Braze reference matches Braze's REST API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-334', "title": 'Hardcoded Iterable API key',
+        "pattern": '[Ii]terable[\\s\\S]{0,40}\\b[a-f0-9]{40}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Iterable's API key format appears near an Iterable reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-335', "title": 'Hardcoded Customer.io API key',
+        "pattern": '[Cc]ustomer\\.io[\\s\\S]{0,40}\\b[A-Za-z0-9]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Customer.io's API key format appears near a Customer.io reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-336', "title": 'Hardcoded Zapier webhook URL with an embedded token',
+        "pattern": 'hooks\\.zapier\\.com/hooks/catch/\\d+/[a-z0-9]+',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": 'A Zapier webhook URL (with an embedded catch-hook token) is hardcoded in source -- anyone with this URL can trigger the associated Zap.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-337', "title": 'Hardcoded Make (Integromat) webhook URL',
+        "pattern": 'hook\\.(?:eu1|us1)\\.make\\.com/[a-z0-9]{32,}',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": 'A Make.com webhook URL is hardcoded in source -- anyone with this URL can trigger the associated scenario.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-338', "title": 'Hardcoded n8n webhook URL with a production path',
+        "pattern": '/webhook/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 3.7,
+        "description": 'An n8n production webhook URL is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-339', "title": 'Hardcoded Retool API token',
+        "pattern": '[Rr]etool[\\s\\S]{0,40}\\bretool_[a-z0-9]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Retool API token is hardcoded near a Retool reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-340', "title": 'Hardcoded Appwrite API key',
+        "pattern": '[Aa]ppwrite[\\s\\S]{0,40}\\b[a-f0-9]{64,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Appwrite's API key format appears near an Appwrite reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-341', "title": 'Hardcoded Directus static token',
+        "pattern": '[Dd]irectus[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Directus's static token format appears near a Directus reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-342', "title": 'Hardcoded Strapi API token',
+        "pattern": '[Ss]trapi[\\s\\S]{0,40}\\b[A-Za-z0-9_.=-]{100,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Strapi's long-lived API token format appears near a Strapi reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-343', "title": 'Hardcoded Sanity.io API token',
+        "pattern": '[Ss]anity\\.io[\\s\\S]{0,40}\\bsk[A-Za-z0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Sanity.io API token is hardcoded near a Sanity reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-344', "title": 'Hardcoded Hygraph (GraphCMS) token',
+        "pattern": '[Hh]ygraph[\\s\\S]{0,40}eyJhbGciOiJSUzI1NiIs[A-Za-z0-9_.-]{20,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Hygraph permanent auth token (JWT) is hardcoded near a Hygraph reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-345', "title": 'Hardcoded Prismic API token',
+        "pattern": '[Pp]rismic[\\s\\S]{0,40}\\bMC5[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Prismic API token is hardcoded near a Prismic reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-346', "title": 'Hardcoded Contentstack delivery/management token',
+        "pattern": '[Cc]ontentstack[\\s\\S]{0,40}\\bcs[a-f0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Contentstack's token format appears near a Contentstack reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-347', "title": 'Hardcoded Storyblok API token',
+        "pattern": '[Ss]toryblok[\\s\\S]{0,40}\\b[A-Za-z0-9]{22}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Storyblok's API token format appears near a Storyblok reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-348', "title": 'Hardcoded Ghost Admin API key',
+        "pattern": '[Gg]host[\\s\\S]{0,40}\\b[a-f0-9]{24}:[a-f0-9]{64}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Ghost Admin API key (id:secret format) is hardcoded near a Ghost reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-349', "title": 'Hardcoded WPEngine API token',
+        "pattern": '[Ww][Pp][Ee]ngine[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching WPEngine's API token format appears near a WPEngine reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-350', "title": 'Hardcoded Kinsta API key',
+        "pattern": '[Kk]insta[\\s\\S]{0,40}\\b[a-f0-9]{64}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Kinsta's API key format appears near a Kinsta reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-351', "title": 'Hardcoded Pantheon machine token',
+        "pattern": '[Pp]antheon[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A UUID-format token near a Pantheon reference matches Pantheon's machine token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-352', "title": 'Hardcoded Platform.sh API token',
+        "pattern": '[Pp]latform\\.sh[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Platform.sh's API token format appears near a Platform.sh reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-353', "title": 'Hardcoded Vercel OIDC/environment token',
+        "pattern": 'VERCEL_OIDC_TOKEN\\s*=\\s*eyJ[A-Za-z0-9_.-]{40,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Vercel OIDC token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-354', "title": 'Hardcoded GitLab CI job token pattern',
+        "pattern": 'CI_JOB_TOKEN\\s*=\\s*[\\"\']glcbt-[A-Za-z0-9_-]{20,}[\\"\']',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A hardcoded value for CI_JOB_TOKEN defeats its purpose as a short-lived, pipeline-scoped credential -- this should never be a literal in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-355', "title": 'Hardcoded Semaphore CI API token',
+        "pattern": '[Ss]emaphore[Cc][Ii][\\s\\S]{0,40}\\b[a-f0-9]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Semaphore CI's API token format appears near a Semaphore reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-356', "title": 'Hardcoded Drone CI API token',
+        "pattern": '[Dd]rone[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Drone CI's API token format appears near a Drone reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-357', "title": 'Hardcoded Codefresh API token',
+        "pattern": '[Cc]odefresh[\\s\\S]{0,40}eyJhbGciOiJSUzI1NiIs[A-Za-z0-9_.-]{20,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Codefresh API token (JWT) is hardcoded near a Codefresh reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-358', "title": 'Hardcoded Harness.io API key',
+        "pattern": '[Hh]arness[\\s\\S]{0,40}\\bpat\\.[A-Za-z0-9_.-]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Harness.io personal access token is hardcoded near a Harness reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-359', "title": 'Hardcoded Spacelift API key',
+        "pattern": '[Ss]pacelift[\\s\\S]{0,40}\\beyJhbGciOiJIUzI1NiIs[A-Za-z0-9_.-]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Spacelift API key (JWT) is hardcoded near a Spacelift reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-360', "title": 'Hardcoded Env0 API key',
+        "pattern": '[Ee]nv0[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching env0's API key format appears near an env0 reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+]
+
+
+# ---- batch 9 (session 9): crossing 1000+ ----
+VULNERABILITY_RULES += [
+    {
+        "id": 'SEC-361', "title": 'Hardcoded Databricks personal access token',
+        "pattern": '\\bdapi[a-f0-9]{32,40}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Databricks personal access token is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-362', "title": 'Hardcoded Snowflake private key passphrase',
+        "pattern": '[Ss]nowflake[\\s\\S]{0,40}PRIVATE_KEY_PASSPHRASE\\s*=\\s*[\\"\'][^\\"\']{6,}[\\"\']',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Snowflake private key passphrase is hardcoded near a Snowflake reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-363', "title": 'Hardcoded dbt Cloud API token',
+        "pattern": '[Dd]bt\\s*[Cc]loud[\\s\\S]{0,40}\\b[A-Za-z0-9_]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching dbt Cloud's API token format appears near a dbt Cloud reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-364', "title": 'Hardcoded Fivetran API secret',
+        "pattern": '[Ff]ivetran[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Fivetran's API secret format appears near a Fivetran reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-365', "title": 'Hardcoded Airbyte API key',
+        "pattern": '[Aa]irbyte[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A UUID-format key near an Airbyte reference matches Airbyte's API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-366', "title": 'Hardcoded Metabase API session token',
+        "pattern": '[Mm]etabase[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A UUID-format token near a Metabase reference matches Metabase's session token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-367', "title": 'Hardcoded Looker API3 client secret',
+        "pattern": '[Ll]ooker[\\s\\S]{0,40}\\b[A-Za-z0-9]{24}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Looker's API3 client secret format appears near a Looker reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-368', "title": 'Hardcoded Tableau personal access token secret',
+        "pattern": '[Tt]ableau[\\s\\S]{0,40}\\b[A-Za-z0-9+/=]{22,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Tableau's personal access token secret format appears near a Tableau reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-369', "title": 'Hardcoded Power BI service principal secret',
+        "pattern": '[Pp]ower\\s*BI[\\s\\S]{0,40}\\b[A-Za-z0-9_~.-]{34,40}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A string matching an Azure AD service principal client secret format appears near a Power BI reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-370', "title": 'Hardcoded Qlik Sense API key',
+        "pattern": '[Qq]lik[\\s\\S]{0,40}eyJhbGciOiJFUzM4NCIs[A-Za-z0-9_.-]{20,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Qlik Cloud API key (JWT) is hardcoded near a Qlik reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-371', "title": 'Hardcoded Domo access token',
+        "pattern": '[Dd]omo[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Domo's access token format appears near a Domo reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-372', "title": 'Hardcoded Preset (Superset) API token',
+        "pattern": '[Pp]reset[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Preset's API token format appears near a Preset reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-373', "title": 'Hardcoded Census API key',
+        "pattern": '[Cc]ensus[\\s\\S]{0,40}\\bsecret-token:[A-Za-z0-9_-]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A Census API key is hardcoded near a Census reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-374', "title": 'Hardcoded Hightouch API key',
+        "pattern": '[Hh]ightouch[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Hightouch's API key format appears near a Hightouch reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-375', "title": 'Hardcoded Rudderstack write key',
+        "pattern": '[Rr]udderstack[\\s\\S]{0,40}\\b[A-Za-z0-9]{27}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching RudderStack's write key format appears near a RudderStack reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-376', "title": 'Hardcoded PostHog project API key',
+        "pattern": '\\bphc_[A-Za-z0-9]{40,}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A PostHog project API key is hardcoded in source -- these are meant to be client-embeddable, but confirm this isn't the (more sensitive) personal API key format instead.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-377', "title": 'Hardcoded Heap Analytics app ID combined with a secret key',
+        "pattern": '[Hh]eap[\\s\\S]{0,40}secret[\\s\\S]{0,10}[A-Za-z0-9]{32,}',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Heap's secret key format appears near Heap and secret references.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-378', "title": 'Hardcoded Statsig server secret key',
+        "pattern": '\\bsecret-[A-Za-z0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Statsig server secret key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-379', "title": 'Hardcoded LaunchNotes API key',
+        "pattern": '[Ll]aunch[Nn]otes[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{32,}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching LaunchNotes' API key format appears near a LaunchNotes reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-380', "title": 'Hardcoded Beamer API key',
+        "pattern": '[Bb]eamer[\\s\\S]{0,40}\\b[a-f0-9]{24}\\b',
+        "severity": 'Low', "cwe": 'CWE-798', "cvss": 4.3,
+        "description": "A string matching Beamer's API key format appears near a Beamer reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-381', "title": 'Hardcoded Auth0 Management API token',
+        "pattern": '[Aa]uth0[\\s\\S]{0,40}eyJhbGciOiJSUzI1NiIs[A-Za-z0-9_.-]{40,}',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Auth0 Management API token (JWT) is hardcoded near an Auth0 reference -- this can grant full tenant administration access.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-382', "title": 'Hardcoded WorkOS API key',
+        "pattern": '\\bsk_(?:live|test)_[A-Za-z0-9]{40,}\\b(?=.{0,20}workos)',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching WorkOS's API key format appears near a WorkOS reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-383', "title": 'Hardcoded Clerk secret key',
+        "pattern": '\\bsk_(?:live|test)_[A-Za-z0-9]{40,}\\b(?=.{0,20}clerk)',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Clerk's secret key format appears near a Clerk reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-384', "title": 'Hardcoded Supabase anon/service key confusion (service_role in client code)',
+        "pattern": 'service_role[\\s\\S]{0,40}eyJhbGciOiJIUzI1NiIs',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Supabase service_role JWT appears in what looks like client-facing code -- this key bypasses row-level security and should never be shipped to a client.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-385', "title": 'Hardcoded PropelAuth API key',
+        "pattern": '[Pp]ropel[Aa]uth[\\s\\S]{0,40}\\b[A-Za-z0-9]{64}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching PropelAuth's API key format appears near a PropelAuth reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-386', "title": 'Hardcoded FusionAuth API key',
+        "pattern": '[Ff]usion[Aa]uth[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format key near a FusionAuth reference matches FusionAuth's API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-387', "title": 'Hardcoded Frontegg API key',
+        "pattern": '[Ff]rontegg[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A UUID-format key near a Frontegg reference matches Frontegg's API key format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-388', "title": 'Hardcoded Ory API key',
+        "pattern": '[Oo]ry[\\s\\S]{0,40}\\bory_pat_[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'An Ory personal access token is hardcoded near an Ory reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-389', "title": 'Hardcoded SuperTokens API key',
+        "pattern": '[Ss]uper[Tt]okens[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching SuperTokens' API key format appears near a SuperTokens reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-390', "title": 'Hardcoded Descope project management key',
+        "pattern": '[Dd]escope[\\s\\S]{0,40}\\bK[0-9A-Za-z]{30,}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "A string matching Descope's management key format appears near a Descope reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-391', "title": 'Hardcoded Stytch API secret',
+        "pattern": '[Ss]tytch[\\s\\S]{0,40}secret-(?:live|test)-[A-Za-z0-9_-]{36}\\b',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'A Stytch API secret is hardcoded near a Stytch reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-392', "title": 'Hardcoded Kinde API key',
+        "pattern": '[Kk]inde[\\s\\S]{0,40}\\b[A-Za-z0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Kinde's API key format appears near a Kinde reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-393', "title": 'Hardcoded Logto API key',
+        "pattern": '[Ll]ogto[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Logto's API key format appears near a Logto reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-394', "title": 'Hardcoded Permit.io API key',
+        "pattern": '[Pp]ermit\\.io[\\s\\S]{0,40}\\bpermit_key_[A-Za-z0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Permit.io API key is hardcoded near a Permit.io reference.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-395', "title": 'Hardcoded Oso Cloud API key',
+        "pattern": '[Oo]so\\s*[Cc]loud[\\s\\S]{0,40}\\b[a-f0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A string matching Oso Cloud's API key format appears near an Oso reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-396', "title": 'Hardcoded Cerbos API key',
+        "pattern": '[Cc]erbos[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Cerbos' API key format appears near a Cerbos reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-397', "title": 'Hardcoded Unkey API key',
+        "pattern": '\\bunkey_[A-Za-z0-9]{40,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'An Unkey API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-398', "title": 'Hardcoded Resend API key',
+        "pattern": '\\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{24,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Resend API key is hardcoded in source.',
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-399', "title": 'Hardcoded Loops.so API key',
+        "pattern": '[Ll]oops\\.so[\\s\\S]{0,40}\\b[a-f0-9]{24,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": "A string matching Loops.so's API key format appears near a Loops reference.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-400', "title": 'Hardcoded Postmark server API token',
+        "pattern": '[Pp]ostmark[\\s\\S]{0,40}\\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": "A UUID-format token near a Postmark reference matches Postmark's server API token format.",
+        "remediation": "Revoke/rotate the credential immediately in the issuing service's dashboard and load it from a secrets manager or environment configuration, never from source.",
+    },
+    {
+        "id": 'SEC-401', "title": 'Hardcoded Novu API key',
+        "pattern": '[Nn]ovu[\\s\\S]{0,40}\\b[a-f0-9]{20,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A string matching Novu API key format appears near a Novu reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-402', "title": 'Hardcoded Knock notification API key',
+        "pattern": '[Kk]nock[\\s\\S]{0,40}\\bsk_(?:test|live)_[A-Za-z0-9]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Knock secret API key is hardcoded near a Knock reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-403', "title": 'Hardcoded Courier API key',
+        "pattern": '[Cc]ourier[\\s\\S]{0,40}\\b[A-Za-z0-9+/=]{40,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A string matching Courier API key format appears near a Courier reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-404', "title": 'Hardcoded Trigger.dev API key',
+        "pattern": '\\btr_(?:dev|prod)_[A-Za-z0-9]{30,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Trigger.dev API key is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-405', "title": 'Hardcoded Inngest event key',
+        "pattern": '[Ii]nngest[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A string matching Inngest event key format appears near an Inngest reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-406', "title": 'Hardcoded Temporal API key for Cloud namespace access',
+        "pattern": '[Tt]emporal[\\s\\S]{0,40}namespace[\\s\\S]{0,20}[A-Za-z0-9+/=]{40,}',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching Temporal Cloud namespace credential format appears near a Temporal reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-407', "title": 'Insecure use of a hardcoded default Grafana admin password',
+        "pattern": 'GF_SECURITY_ADMIN_PASSWORD\\s*[=:]\\s*["\\\'](?:admin|password|changeme)["\\\']',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": 'Grafana is configured with a well-known default admin password.',
+        "remediation": 'Set a strong, unique admin password via a secrets-manager-backed environment variable, and change it on first login.',
+    },
+    {
+        "id": 'SEC-408', "title": 'Hardcoded Mapbox secret access token',
+        "pattern": '\\bsk\\.eyJ1Ijoi[A-Za-z0-9_.-]{60,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Mapbox secret (not public) access token is hardcoded in source.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-409', "title": 'Hardcoded Radar.io secret key',
+        "pattern": '[Rr]adar\\.io[\\s\\S]{0,40}\\bprj_(?:test|live)_sk_[A-Za-z0-9]{20,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A Radar secret key is hardcoded near a Radar.io reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-410', "title": 'Hardcoded HERE Maps API key',
+        "pattern": '[Hh][Ee][Rr][Ee]\\s*[Mm]aps[\\s\\S]{0,40}\\b[A-Za-z0-9_-]{43}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A string matching HERE Maps API key format appears near a HERE Maps reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-411', "title": 'Hardcoded TomTom API key',
+        "pattern": '[Tt]om[Tt]om[\\s\\S]{0,40}\\b[A-Za-z0-9]{32}\\b',
+        "severity": 'Medium', "cwe": 'CWE-798', "cvss": 6.5,
+        "description": 'A string matching TomTom API key format appears near a TomTom reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-412', "title": 'Insecure use of a hardcoded default RabbitMQ guest password over the network',
+        "pattern": 'amqp://guest:guest@(?!localhost|127\\.0\\.0\\.1)',
+        "severity": 'Critical', "cwe": 'CWE-798', "cvss": 9.1,
+        "description": "RabbitMQ's default guest/guest credentials are restricted to localhost by RabbitMQ itself since 3.3, but this connection string targets a non-localhost host, suggesting either a misconfigured broker or a knowingly-insecure setup.",
+        "remediation": 'Create a dedicated user with a strong password for any non-localhost RabbitMQ access; never rely on the guest account remotely.',
+    },
+    {
+        "id": 'SEC-413', "title": 'Hardcoded Meilisearch master key',
+        "pattern": '[Mm]eilisearch[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching Meilisearch master key format appears near a Meilisearch reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+    {
+        "id": 'SEC-414', "title": 'Hardcoded Typesense API key',
+        "pattern": '[Tt]ypesense[\\s\\S]{0,40}\\b[A-Za-z0-9]{32,}\\b',
+        "severity": 'High', "cwe": 'CWE-798', "cvss": 7.5,
+        "description": 'A string matching Typesense API key format appears near a Typesense reference.',
+        "remediation": 'Revoke/rotate the credential immediately and load it from a secrets manager.',
+    },
+]
 # ------------------------------------------------------------------------
 # OWASP Top 10 (2021) mapping — used for compliance-style rollups
 # ------------------------------------------------------------------------
@@ -1487,6 +3506,7 @@ class LLMTriageOrchestrator:
 
     def execute_triage(self, context_label: str, payload: str, score: float) -> TriageReport:
         prompt = self._build_prompt(context_label, payload, score)
+        self.last_error: Optional[str] = None  # set below if the live call fails and we fall back
 
         if self.provider == "Ollama (Local)":
             try:
@@ -1498,8 +3518,9 @@ class LLMTriageOrchestrator:
                 if response.status_code == 200:
                     data = json.loads(response.json().get("response", "{}"))
                     return TriageReport(**data)
-            except Exception:
-                pass
+                self.last_error = f"Ollama returned HTTP {response.status_code}"
+            except Exception as e:
+                self.last_error = f"Ollama request failed: {e}"
 
         elif self.provider == "OpenAI" and self.api_key and OpenAI:
             try:
@@ -1514,8 +3535,8 @@ class LLMTriageOrchestrator:
                 )
                 data = json.loads(response.choices[0].message.content)
                 return TriageReport(**data)
-            except Exception:
-                pass
+            except Exception as e:
+                self.last_error = f"OpenAI request failed: {e}"
 
         elif self.provider == "Anthropic" and self.api_key and Anthropic:
             try:
@@ -1527,10 +3548,23 @@ class LLMTriageOrchestrator:
                 )
                 data = json.loads(message.content[0].text)
                 return TriageReport(**data)
-            except Exception:
-                pass
+            except Exception as e:
+                self.last_error = f"Anthropic request failed: {e}"
+        elif self.provider in ("OpenAI", "Anthropic"):
+            # Falls here when the specific provider branch above didn't run:
+            # no API key entered, or the provider's SDK isn't installed.
+            # Previously this case just fell through to the offline
+            # fallback with no explanation at all.
+            if not self.api_key:
+                self.last_error = f"No {self.provider} API key was provided"
+            elif (self.provider == "OpenAI" and OpenAI is None) or (self.provider == "Anthropic" and Anthropic is None):
+                self.last_error = f"The {self.provider} Python SDK isn't installed in this environment"
 
-        # Deterministic offline fallback so the app always returns a usable report
+        # Deterministic offline fallback so the app always returns a usable report.
+        # Previously execute_triage() failed COMPLETELY SILENTLY on a live-provider
+        # error (bad key, network down, rate limit) — the user would see a fully
+        # formed-looking report and have no reason to suspect it wasn't real AI
+        # analysis. self.last_error above lets the caller show what happened.
         level = "Critical" if score > 85 else "High" if score > 65 else "Medium" if score > 35 else "Low"
         return TriageReport(
             threat_level=level,
@@ -1811,6 +3845,131 @@ class ReportGenerator:
         }
         return json.dumps(report, indent=2)
 
+    @staticmethod
+    def build_sarif_report(findings: List[VulnerabilityFinding],
+                            container_findings: Optional[List["ContainerFinding"]] = None,
+                            tool_version: str = "1.0.0") -> str:
+        """
+        SARIF 2.1.0 export (https://docs.oasis-open.org/sarif/sarif/v2.1.0)
+        of code findings + container/IaC findings — the format GitHub code
+        scanning, Azure DevOps, and most CI security gates expect. This is
+        the one comparison-table row ("CI / IDE / SARIF") this project had
+        nothing for at all; every commercial competitor in the comparison
+        has it.
+
+        Deliberately scoped to `findings` (the rule-engine SAST results)
+        and `container_findings` (Dockerfile/Compose/K8s checks) — both
+        are static, rule-keyed detections with a stable rule_id/check_id,
+        which is exactly what SARIF's rule-catalog model expects.
+        Semantic/AI findings are explicitly NOT included: they're
+        non-deterministic and can hallucinate (see the AI Semantic
+        Reviewer tab's own warning), and SARIF consumers like GitHub code
+        scanning treat every result as an asserted, stable finding tied to
+        a fixed rule — mixing in non-deterministic output would misrepresent
+        both what SARIF means and what that engine actually guarantees.
+        """
+        container_findings = container_findings or []
+        sev_to_level = {"Critical": "error", "High": "error", "Medium": "warning",
+                         "Low": "note", "Info": "note", "OK": "note", "Unknown": "warning"}
+        sev_to_score = {"Critical": "9.0", "High": "7.5", "Medium": "5.0", "Low": "3.0", "Info": "1.0"}
+
+        rules: Dict[str, Dict[str, Any]] = {}
+        results: List[Dict[str, Any]] = []
+
+        def _fingerprint(*parts: str) -> str:
+            # Deliberately excludes line number: a finding's identity
+            # shouldn't change just because unrelated code moved above it,
+            # or GitHub code scanning will treat every line-shift as a
+            # brand-new finding instead of tracking the same one.
+            h = hashlib.sha256("|".join(parts).encode("utf-8", errors="ignore"))
+            return h.hexdigest()[:16]
+
+        for f in findings:
+            if f.rule_id not in rules:
+                rules[f.rule_id] = {
+                    "id": f.rule_id,
+                    "name": f.rule_id,
+                    "shortDescription": {"text": f.title},
+                    "fullDescription": {"text": f.description or f.title},
+                    "help": {"text": f.remediation or "See finding details."},
+                    "properties": {
+                        "tags": ["security", f.cwe] if f.cwe else ["security"],
+                        "cwe": f.cwe,
+                        "security-severity": f"{f.cvss_estimate:.1f}",
+                        "precision": f.confidence.lower() if f.confidence else "medium",
+                    },
+                    "defaultConfiguration": {"level": sev_to_level.get(f.severity, "warning")},
+                }
+            uri = f.file_name.replace("\\", "/").lstrip("/")
+            line = max(1, f.line_number)
+            result: Dict[str, Any] = {
+                "ruleId": f.rule_id,
+                "level": sev_to_level.get(f.severity, "warning"),
+                "message": {"text": f.description or f.title},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {"startLine": line},
+                    }
+                }],
+                "partialFingerprints": {
+                    "sentinelaiFingerprint/v1": _fingerprint(f.rule_id, uri, f.matched_snippet)
+                },
+                "properties": {"security-severity": f"{f.cvss_estimate:.1f}"},
+            }
+            if f.matched_snippet:
+                result["locations"][0]["physicalLocation"]["region"]["snippet"] = {"text": f.matched_snippet}
+            results.append(result)
+
+        for c in container_findings:
+            if c.check_id not in rules:
+                rules[c.check_id] = {
+                    "id": c.check_id,
+                    "name": c.check_id,
+                    "shortDescription": {"text": c.title},
+                    "fullDescription": {"text": c.detail or c.title},
+                    "help": {"text": c.recommendation or "See finding details."},
+                    "properties": {
+                        "tags": ["security", "container", c.category] if c.category else ["security", "container"],
+                        "security-severity": sev_to_score.get(c.severity, "5.0"),
+                        "precision": "medium",
+                    },
+                    "defaultConfiguration": {"level": sev_to_level.get(c.severity, "warning")},
+                }
+            uri = c.file_name.replace("\\", "/").lstrip("/")
+            line = max(1, c.line_number)
+            results.append({
+                "ruleId": c.check_id,
+                "level": sev_to_level.get(c.severity, "warning"),
+                "message": {"text": c.detail or c.title},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {"startLine": line},
+                    }
+                }],
+                "partialFingerprints": {
+                    "sentinelaiFingerprint/v1": _fingerprint(c.check_id, uri, c.title)
+                },
+                "properties": {"security-severity": sev_to_score.get(c.severity, "5.0")},
+            })
+
+        sarif_log = {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "SentinelAI",
+                        "version": tool_version,
+                        "rules": list(rules.values()),
+                    }
+                },
+                "results": results,
+            }],
+        }
+        return json.dumps(sarif_log, indent=2)
+
 
 # ==============================================================================
 # ==============================================================================
@@ -1958,6 +4117,7 @@ ALL_VULN_CLASSES: Set[str] = {
     "sql_injection", "command_injection", "code_execution", "xss",
     "path_traversal", "ssrf", "insecure_deserialization",
     "template_injection", "ldap_injection", "xxe",
+    "open_redirect",  # added batch 4 (session 4), for TS-021
 }
 
 
@@ -1994,6 +4154,7 @@ STD_XXE = _std("CWE-611", "A05:2021-Security Misconfiguration", "ASVS 5.5.2", "C
 SOURCE_PATTERNS: Set[str] = {
     "request.args", "request.form", "request.GET", "request.POST", "request.json",
     "request.data", "request.cookies", "request.headers", "request.values",
+    "request.files",  # added batch 5 (session 5): uploaded file content/objects are untrusted input
     "input", "sys.argv", "os.environ.get", "*.get_json",
     "req.query", "req.body", "req.params",
 }
@@ -3041,6 +5202,18 @@ class TaintWalker:
                 if rule.vuln_class in t:
                     tainted_here = True
                     break
+
+            # Receiver-taint check (added: engine previously only looked at
+            # arguments, so a sink called on a tainted object with no
+            # dangerous argument -- e.g. tainted_zip.extractall(), no args
+            # at all -- could never match no matter how tainted the object
+            # actually was). Mirrors the same receiver-chain evaluation
+            # _eval_call() already does for its own return-taint computation.
+            if not tainted_here and isinstance(call_node.func, ast.Attribute):
+                receiver_taint = self._eval_expr(call_node.func.value, taint_state, path, func_name)
+                if rule.vuln_class in receiver_taint:
+                    tainted_here = True
+
             if not tainted_here:
                 continue
 
@@ -3550,7 +5723,20 @@ class PatternScanner:
 
     def __init__(self, rules: Optional[List[PatternRule]] = None):
         self.rules = rules or PATTERN_RULES
-        self._compiled = [(r, re.compile(r.pattern, re.MULTILINE)) for r in self.rules]
+        # Previously an unguarded list comprehension: one bad regex anywhere
+        # in PATTERN_RULES would raise re.error here and take the ENTIRE
+        # app down at startup for every user, since this class is
+        # instantiated at module/session init. That's a real risk given
+        # the plan to grow this rule set into the thousands — a single
+        # authoring typo shouldn't be able to crash the whole scanner.
+        # Now a bad rule is skipped and recorded instead of fatal.
+        self._compiled: List[Tuple[PatternRule, "re.Pattern"]] = []
+        self.compile_errors: List[Dict[str, str]] = []
+        for r in self.rules:
+            try:
+                self._compiled.append((r, re.compile(r.pattern, re.MULTILINE)))
+            except re.error as e:
+                self.compile_errors.append({"id": r.id, "error": str(e)})
 
     def scan(self, file_name: str, content: str, language: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
@@ -4418,6 +6604,8 @@ LIVE_WATCH_EXTENSIONS: Dict[str, str] = {
     ".rs": "rust", ".c": "c", ".h": "c", ".cs": "csharp", ".rb": "ruby",
     ".kt": "kotlin", ".kts": "kotlin",
     ".swift": "swift", ".scala": "scala", ".sc": "scala",  # added: extended_rules.py batch 1
+    ".pl": "perl", ".pm": "perl", ".m": "objc", ".mm": "objc",  # added: batch 6
+    ".ex": "elixir", ".exs": "elixir", ".lua": "lua", ".dart": "dart", ".ps1": "powershell",
 }
 
 # Directories excluded from both watchdog recursion (via glob filtering) and
@@ -5373,6 +7561,138 @@ class SSLCertAnalyzer:
 
 # ==============================================================================
 # ==============================================================================
+#  MODULE: LIVE VULNERABILITY FEED (OSV.dev)
+#  Closes the comparison-table gap: MOCK_CVE_DATABASE is 29 hardcoded
+#  examples; this queries a real, continuously-updated aggregated feed —
+#  the same category of source (GitHub Security Advisories, PyPA, npm
+#  advisories, RustSec, Go vuln DB, etc.) that GitHub/Snyk draw from.
+#  No API key needed, which is what makes it usable here without asking
+#  the person running this app for a credential they may not have.
+# ==============================================================================
+# ==============================================================================
+
+class OSVFeedClient:
+    """
+    Live package-vulnerability lookups against OSV.dev's public API.
+
+    AUTHORSHIP NOTE (read before trusting this in production): this class
+    was written against OSV's documented request/response schema and unit
+    -tested against synthetic payloads shaped like that schema, but this
+    was built in a sandboxed environment with no network egress, so the
+    live HTTP call itself was never exercised against the real endpoint.
+    The request/response shapes below match OSV's published API docs
+    (https://ossf.github.io/osv-schema/, https://google.github.io/osv.dev/)
+    as of this writing — verify the first real batch query by hand
+    (`curl -X POST https://api.osv.dev/v1/querybatch -d '...'`) before
+    relying on this for anything.
+
+    Deliberately scoped to ecosystems OSV can resolve by name+version
+    alone (PyPI, npm) — Docker base images aren't included because
+    resolving OS-level packages inside an image requires actually
+    enumerating that image's package list, which this SBOM generator
+    doesn't do (it only reads the FROM line).
+    """
+    BATCH_URL = "https://api.osv.dev/v1/querybatch"
+    ECOSYSTEM_MAP = {"python": "PyPI", "npm": "npm"}
+
+    def __init__(self, timeout: float = 6.0):
+        self.timeout = timeout
+        self.last_error: Optional[str] = None
+        self._cache: Dict[Tuple[str, str, str], List[Dict[str, str]]] = {}
+
+    @staticmethod
+    def _clean_version(version: str) -> Optional[str]:
+        """None means 'query the package with no version pin' (OSV
+        supports this — it returns everything known against that
+        package), which is the honest thing to do for a range like
+        '^4.17.21' or '>=1.2.0 <2.0.0' that this SBOM generator doesn't
+        resolve to one concrete version. Sending the raw range string as
+        if it were a pinned version would just silently match nothing.
+        Strips common range-operator prefixes itself rather than trusting
+        the caller to have already done it — SBOMGenerator's own parsers
+        happen to lstrip these too, but this method has to be correct on
+        its own for any future caller that doesn't."""
+        v = (version or "").strip()
+        if not v or v.lower() in ("unspecified", "latest"):
+            return None
+        v = v.lstrip("^~>=<")
+        if any(ch in v for ch in " <>|*") or v.lower() in ("x", "x.x", "x.x.x"):
+            return None
+        return v or None
+
+    def query_many(self, components: List[Tuple[str, str, str]]
+                    ) -> Dict[str, List[Dict[str, str]]]:
+        """
+        components: (name, version, package_type) tuples.
+        Returns {"name|version": [{"cve_id", "severity", "summary"}, ...]}.
+        A KEY BEING PRESENT (even with an empty list) means that exact
+        component was successfully checked live — distinct from being
+        absent, which means it was never queried at all. That distinction
+        matters: "checked live, zero known vulns" and "we have no data on
+        this" are different claims and callers need to tell them apart.
+        On any request-level failure this returns {} and sets
+        self.last_error; callers should read that as "OSV was
+        unreachable, fall back to the demo feed" — NOT as "zero
+        vulnerabilities everywhere."
+        """
+        self.last_error = None
+        queryable = [(n, v, t) for n, v, t in components if t in self.ECOSYSTEM_MAP]
+        if not queryable:
+            return {}
+
+        out: Dict[str, List[Dict[str, str]]] = {}
+        to_fetch: List[Tuple[str, str, str]] = []
+        for name, version, ptype in queryable:
+            key = (self.ECOSYSTEM_MAP[ptype], name, version)
+            if key in self._cache:
+                out[f"{name}|{version}"] = self._cache[key]
+            else:
+                to_fetch.append((name, version, ptype))
+        if not to_fetch:
+            return out
+
+        queries = []
+        for name, version, ptype in to_fetch:
+            q: Dict[str, Any] = {"package": {"name": name, "ecosystem": self.ECOSYSTEM_MAP[ptype]}}
+            clean_v = self._clean_version(version)
+            if clean_v:
+                q["version"] = clean_v
+            queries.append(q)
+
+        try:
+            resp = requests.post(self.BATCH_URL, json={"queries": queries}, timeout=self.timeout)
+            resp.raise_for_status()
+            raw_results = resp.json().get("results", [])
+        except Exception as e:
+            self.last_error = f"OSV.dev query failed, falling back to demo CVE data: {e}"
+            return out  # still return whatever the cache already had
+
+        for (name, version, ptype), result in zip(to_fetch, raw_results):
+            entries = [self._to_entry(v) for v in result.get("vulns", [])]
+            key = (self.ECOSYSTEM_MAP[ptype], name, version)
+            self._cache[key] = entries
+            out[f"{name}|{version}"] = entries
+        return out
+
+    @staticmethod
+    def _to_entry(vuln: Dict[str, Any]) -> Dict[str, str]:
+        cve_id = next((a for a in vuln.get("aliases", []) if a.startswith("CVE-")), vuln.get("id", "?"))
+        # OSV doesn't normalize severity to one score itself — a source
+        # that supplies a plain label (common for GHSA-derived entries)
+        # is used directly; a raw CVSS vector is flagged rather than
+        # hand-parsed into a bucket this class isn't confident about.
+        label = (vuln.get("database_specific") or {}).get("severity")
+        if label:
+            severity = str(label).title()
+        elif vuln.get("severity"):
+            severity = "See CVE"
+        else:
+            severity = "Unrated"
+        return {"cve_id": cve_id, "severity": severity, "summary": (vuln.get("summary") or "")[:200]}
+
+
+# ==============================================================================
+# ==============================================================================
 #  MODULE: SBOM GENERATOR (Software Bill of Materials)
 #  Parses dependency manifests from any project and cross-references against
 #  the local CVE feed. Outputs CycloneDX-inspired JSON.
@@ -5387,6 +7707,7 @@ class SBOMComponent:
     source_file: str
     known_cves: List[str]
     highest_severity: str
+    cve_source: str = "demo"  # "demo" (MOCK_CVE_DATABASE) or "osv.dev" (live, checked this run)
 
 @dataclass
 class SBOMReport:
@@ -5396,6 +7717,7 @@ class SBOMReport:
     vulnerable_count: int
     components: List[SBOMComponent]
     overall_risk: str
+    parse_errors: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -5413,9 +7735,11 @@ class SBOMReport:
                     "name": c.name, "version": c.version,
                     "type": c.package_type, "sourceFile": c.source_file,
                     "knownCVEs": c.known_cves, "highestSeverity": c.highest_severity,
+                    "cveSource": c.cve_source,
                 }
                 for c in self.components
             ],
+            "parseErrors": self.parse_errors,
         }
 
 
@@ -5427,8 +7751,15 @@ class SBOMGenerator:
     Outputs a CycloneDX-inspired SBOM in JSON.
     """
 
-    def __init__(self, cve_feed: Optional[List[Dict[str, str]]] = None):
+    def __init__(self, cve_feed: Optional[List[Dict[str, str]]] = None,
+                 osv_client: Optional[OSVFeedClient] = None):
         self.cve_feed = cve_feed or MOCK_CVE_DATABASE
+        self.parse_errors: List[str] = []
+        # None (default) = demo-data-only, unchanged from before. Pass a
+        # real OSVFeedClient to check live data for python/npm components;
+        # anything OSV doesn't cover for, or that OSV fails to reach,
+        # keeps its demo-feed result rather than losing data entirely.
+        self.osv_client = osv_client
 
     def _cves_for(self, name: str) -> Tuple[List[str], str]:
         cves: List[str] = []
@@ -5477,8 +7808,14 @@ class SBOMGenerator:
                         package_type="npm", source_file=source_file,
                         known_cves=cves, highest_severity=highest,
                     ))
-        except Exception:
-            pass
+        except Exception as e:
+            # Previously silent: an unparseable package.json (bad JSON,
+            # JSONC comments, a truncated upload) produced an empty
+            # component list with NO indication anything went wrong — a
+            # user would see "0 npm components" and reasonably read that
+            # as "no JS dependencies" rather than "we failed to read this
+            # file." Now the caller (generate()) surfaces this instead.
+            self.parse_errors.append(f"{source_file}: could not parse as JSON ({e})")
         return components
 
     def _parse_dockerfile(self, content: str, source_file: str) -> List[SBOMComponent]:
@@ -5498,6 +7835,7 @@ class SBOMGenerator:
         return components
 
     def generate(self, files: Dict[str, str], project_name: str = "Project") -> SBOMReport:
+        self.parse_errors = []  # reset per-run; this instance persists across reruns in session_state
         all_components: List[SBOMComponent] = []
         for file_name, content in files.items():
             base = file_name.replace("\\", "/").split("/")[-1].lower()
@@ -5509,6 +7847,27 @@ class SBOMGenerator:
                 all_components.extend(self._parse_dockerfile(content, file_name))
             elif base == "pipfile":
                 all_components.extend(self._parse_requirements(content, file_name))
+
+        if self.osv_client is not None and all_components:
+            sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1,
+                         "See CVE": 1, "Unrated": 0, "None": 0}
+            live = self.osv_client.query_many(
+                [(c.name, c.version, c.package_type) for c in all_components]
+            )
+            if self.osv_client.last_error:
+                self.parse_errors.append(self.osv_client.last_error)
+            for c in all_components:
+                key = f"{c.name}|{c.version}"
+                if key not in live:
+                    continue  # not queryable, or the batch call failed — demo data stands
+                entries = live[key]
+                c.known_cves = [e["cve_id"] for e in entries]
+                c.cve_source = "osv.dev"
+                highest = "None"
+                for e in entries:
+                    if sev_order.get(e["severity"], 0) > sev_order.get(highest, 0):
+                        highest = e["severity"]
+                c.highest_severity = highest if entries else "None"
 
         vulnerable = [c for c in all_components if c.known_cves]
         sev_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "None": 0}
@@ -5522,6 +7881,7 @@ class SBOMGenerator:
             vulnerable_count=len(vulnerable),
             components=all_components,
             overall_risk=overall,
+            parse_errors=list(self.parse_errors),
         )
 
 
@@ -5585,6 +7945,106 @@ TAINT_RULES += [
               remediation="Only call mark_safe/Markup on strings that have been explicitly "
                           "sanitized with html.escape() or an equivalent HTML sanitizer."),
 ]
+
+# ---- batch 4 (session 4): additional taint sinks ----
+TAINT_RULES += [
+    TaintRule(id="TS-020", title="Zip Slip via archive extraction of tainted data",
+              vuln_class="path_traversal",
+              sinks={"*.extractall"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_PATH,
+              remediation="Validate each archive member's resolved path stays inside the target "
+                          "directory before extracting, rather than calling extractall() on "
+                          "archive data constructed from an untrusted source."),
+    TaintRule(id="TS-021", title="Open redirect via tainted redirect target",
+              vuln_class="open_redirect",
+              sinks={"flask.redirect", "django.shortcuts.redirect", "werkzeug.utils.redirect"},
+              severity=Severity.MEDIUM, base_confidence=Confidence.MEDIUM,
+              standards=_std("CWE-601", "A01:2021-Broken Access Control", "ASVS 5.1.5",
+                              "CAPEC-178", "PW.5.1"),
+              remediation="Validate the redirect target against an allow-list of known-safe "
+                          "paths/hosts before passing tainted data to a redirect call."),
+    TaintRule(id="TS-022", title="LDAP bind using tainted credentials",
+              vuln_class="ldap_injection",
+              sinks={"*.bind", "*.simple_bind_s"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_LDAP,
+              remediation="Never bind to an LDAP directory with unvalidated credentials; "
+                          "authenticate the user through a dedicated auth flow first."),
+    TaintRule(id="TS-023", title="Arbitrary file deletion via a path built from tainted data",
+              vuln_class="path_traversal",
+              sinks={"*.unlink", "*.rmdir"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_PATH,
+              remediation="Resolve the path and verify it stays inside the intended base "
+                          "directory before deleting anything derived from user input."),
+    TaintRule(id="TS-024", title="Permission change on a path built from tainted data",
+              vuln_class="path_traversal",
+              sinks={"*.chmod"},
+              severity=Severity.MEDIUM, base_confidence=Confidence.LOW,
+              standards=STD_PATH,
+              remediation="Resolve the path and verify it stays inside the intended base "
+                          "directory before changing permissions on anything derived from "
+                          "user input."),
+]
+
+# ---- batch 6 (session 6): additional taint sinks ----
+TAINT_RULES += [
+    TaintRule(id="TS-025", title="Insecure deserialization via a tainted file path passed to pickle",
+              vuln_class="insecure_deserialization",
+              sinks={"pickle.load"},
+              severity=Severity.CRITICAL, base_confidence=Confidence.MEDIUM,
+              standards=STD_DESER,
+              remediation="Never unpickle a file whose path (not just contents) is attacker-influenced "
+                          "without also verifying its contents are trusted."),
+    TaintRule(id="TS-026", title="SSRF via httpx.post/put/delete with tainted URL",
+              vuln_class="ssrf",
+              sinks={"httpx.post", "httpx.put", "httpx.delete", "httpx.patch"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_SSRF,
+              remediation="Validate/allowlist destination hosts; block requests to internal/link-local "
+                          "address ranges before making the request."),
+]
+TAINT_RULES += [
+    TaintRule(id="TS-027", title="Insecure deserialization via jsonpickle.decode on tainted data",
+              vuln_class="insecure_deserialization",
+              sinks={"jsonpickle.decode"},
+              severity=Severity.CRITICAL, base_confidence=Confidence.MEDIUM,
+              standards=STD_DESER,
+              remediation="jsonpickle.decode can reconstruct arbitrary Python objects, the same risk "
+                          "class as pickle -- never call it on untrusted input; use plain json for "
+                          "data crossing a trust boundary."),
+    TaintRule(id="TS-028", title="Command injection via os.spawn family with tainted argument",
+              vuln_class="command_injection",
+              sinks={"os.spawnl", "os.spawnv", "os.spawnle", "os.spawnve"},
+              severity=Severity.CRITICAL, base_confidence=Confidence.MEDIUM,
+              standards=STD_CMDI,
+              remediation="Use subprocess.run() with a fixed argument list and shell=False instead "
+                          "of the os.spawn* family with tainted arguments."),
+    TaintRule(id="TS-030", title="Template loaded by a tainted template name (SSTI via template selection)",
+              vuln_class="template_injection",
+              sinks={"*.get_template", "*.select_template"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_SSTI,
+              remediation="Never let external input choose which template file gets loaded and "
+                          "rendered; map allowed values to a fixed allow-list of template names."),
+    TaintRule(id="TS-031", title="Django format_html called with a tainted format string",
+              vuln_class="xss",
+              sinks={"format_html"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_XSS,
+              remediation="format_html() only escapes the *arguments*, not the format string itself -- "
+                          "never let external input become the format string; keep it a fixed literal "
+                          "and pass tainted data only as arguments."),
+    TaintRule(id="TS-032", title="Insecure file copy with a tainted destination path",
+              vuln_class="path_traversal",
+              sinks={"shutil.copyfile", "shutil.copytree"},
+              severity=Severity.HIGH, base_confidence=Confidence.MEDIUM,
+              standards=STD_PATH,
+              remediation="Resolve the destination path and verify it stays inside the intended base "
+                          "directory before copying anything to a location derived from tainted input."),
+]
+
 
 # ==============================================================================
 # ==============================================================================
@@ -6166,6 +8626,431 @@ MALWARE_PATTERNS: List[Dict[str, Any]] = [
      "recommendation": "Remove immediately. Treat this system as compromised. Full incident response."},
 ]
 
+# ---- batch 4 (session 4): additional malware signatures ----
+MALWARE_PATTERNS += [
+    {"id": 'MAL-026', "name": 'PHP webshell via eval on request superglobal', "category": 'Webshell',
+     "severity": 'Critical',
+     "pattern": 'eval\\s*\\(\\s*\\$_(?:POST|GET|REQUEST)\\[',
+     "explanation": 'Classic PHP webshell pattern: executes arbitrary code directly from an HTTP request parameter.',
+     "recommendation": 'Remove immediately. This grants full remote code execution to anyone who can reach the endpoint. Check web server access logs for exploitation.'},
+    {"id": 'MAL-027', "name": 'Shadow copy / backup catalog deletion (ransomware precursor)', "category": 'Ransomware',
+     "severity": 'Critical',
+     "pattern": 'vssadmin\\s+delete\\s+shadows|wbadmin\\s+delete\\s+catalog|bcdedit\\s+.*recoveryenabled\\s+no',
+     "explanation": 'Deleting Windows shadow copies and recovery options is a near-universal precursor step in ransomware, done to block file recovery before encryption.',
+     "recommendation": 'Remove immediately and treat the host as potentially compromised — this is one of the strongest single indicators of imminent ransomware activity.'},
+    {"id": 'MAL-028', "name": 'Bulk file walk combined with symmetric encryption call', "category": 'Ransomware',
+     "severity": 'Critical',
+     "pattern": 'os\\.walk\\([^)]*\\)[\\s\\S]{0,300}(?:Fernet\\(|AES\\.new\\()',
+     "explanation": 'Recursively walking a directory tree while calling a symmetric-encryption primitive in the same routine matches the core loop of file-encrypting ransomware.',
+     "recommendation": "Investigate immediately. Confirm this isn't a legitimate backup/encryption tool; if unexpected, treat as active ransomware and isolate the host."},
+    {"id": 'MAL-029', "name": 'Anti-debugger / anti-tracing check', "category": 'Anti-Analysis',
+     "severity": 'High',
+     "pattern": 'IsDebuggerPresent\\s*\\(\\)|ptrace\\s*\\(\\s*PTRACE_TRACEME',
+     "explanation": "Malware commonly checks whether it's running under a debugger and alters behavior (or exits) to evade analysis.",
+     "recommendation": 'Investigate why the code needs to detect a debugger/tracer — legitimate software rarely does this outside of DRM or crash-reporting contexts.'},
+    {"id": 'MAL-030', "name": 'Sandbox/VM environment fingerprinting', "category": 'Anti-Analysis',
+     "severity": 'Medium',
+     "pattern": 'VBoxService|vmware-toolbox|/proc/scsi/scsi',
+     "explanation": 'Checking for known virtualization/sandbox artifacts is a common technique to detect an analysis environment and suppress malicious behavior there.',
+     "recommendation": 'Investigate why the code checks for VM/sandbox artifacts; combine with other findings in this file to assess intent.'},
+    {"id": 'MAL-031', "name": 'Keyboard hook combined with network exfiltration', "category": 'Keylogging',
+     "severity": 'Critical',
+     "pattern": '(?:pynput\\.keyboard|GetAsyncKeyState)[\\s\\S]{0,300}(?:requests\\.post|urlopen|smtplib)',
+     "explanation": 'A keyboard-input hook combined with an outbound network/email call in the same routine matches the core pattern of a keylogger exfiltrating captured keystrokes.',
+     "recommendation": 'Remove immediately unless this is a deliberately-built, authorized input-logging tool with clear user consent and no covert exfiltration.'},
+    {"id": 'MAL-032', "name": 'Clipboard monitor with silent content replacement', "category": 'Clipboard Hijacking',
+     "severity": 'High',
+     "pattern": 'pyperclip\\.paste\\(\\)[\\s\\S]{0,200}pyperclip\\.copy\\(',
+     "explanation": 'Reading the clipboard and then immediately overwriting it in the same routine matches clipboard-hijacking malware that swaps copied cryptocurrency addresses for an attacker-controlled one.',
+     "recommendation": "Confirm this isn't legitimate clipboard-management software; if the replaced content is attacker-influenced, treat as active clipboard-hijacking malware."},
+    {"id": 'MAL-033', "name": 'Executable memory allocation via ctypes (fileless execution)', "category": 'Fileless Execution',
+     "severity": 'Critical',
+     "pattern": 'ctypes[\\s\\S]{0,100}(?:VirtualAlloc|mmap)\\([^)]*PROT_EXEC',
+     "explanation": 'Allocating memory with execute permissions via ctypes is the core primitive behind fileless/in-memory malware that never writes a payload to disk.',
+     "recommendation": 'Investigate immediately — legitimate use cases for raw executable memory allocation from Python are extremely rare.'},
+    {"id": 'MAL-034', "name": 'Screen capture combined with network exfiltration', "category": 'Data Exfiltration',
+     "severity": 'High',
+     "pattern": 'ImageGrab\\.grab\\(\\)[\\s\\S]{0,200}(?:requests\\.post|urlopen)',
+     "explanation": "Capturing a screenshot and immediately uploading it in the same routine matches spyware that exfiltrates visual data from the victim's screen.",
+     "recommendation": 'Remove unless this is a deliberately-built, authorized screen-sharing/monitoring feature with clear user consent.'},
+]
+
+# ---- batch 6 (session 6): expanded malware signatures ----
+MALWARE_PATTERNS += [
+    {"id": 'MAL-035', "name": 'PowerShell download cradle (IEX + WebClient)', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'IEX\\s*\\(\\s*New-Object\\s+Net\\.WebClient\\)\\.DownloadString',
+     "explanation": 'Downloads and immediately executes a remote script in-memory, a staple technique for fileless PowerShell malware delivery.',
+     "recommendation": 'Remove immediately. Check outbound network logs for the download URL and treat the host as compromised.'},
+    {"id": 'MAL-036', "name": 'certutil.exe abused for file download', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'certutil\\.exe\\s+.*-urlcache.*-split.*-f',
+     "explanation": 'certutil is a legitimate Windows certificate utility whose -urlcache flag is commonly abused to download files while evading application allow-lists that block known downloader tools.',
+     "recommendation": "Investigate the download source and target. Consider blocking certutil's network-capable flags via application control policy."},
+    {"id": 'MAL-037', "name": 'regsvr32 used with a remote scriptlet (Squiblydoo)', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'regsvr32\\.exe\\s+/[su]\\s+/[in]\\s+.*scrobj\\.dll',
+     "explanation": "This is the well-documented 'Squiblydoo' technique: regsvr32 executes a remote .sct scriptlet, bypassing application allow-listing since regsvr32 is a signed Microsoft binary.",
+     "recommendation": 'Remove immediately. This is almost never legitimate outside of very specific enterprise scripting scenarios.'},
+    {"id": 'MAL-038', "name": 'LSASS memory access (credential dumping)', "category": 'Credential Theft',
+     "severity": 'Critical',
+     "pattern": '(?:MiniDumpWriteDump|OpenProcess)\\s*\\([^)]*lsass',
+     "explanation": 'Reading LSASS process memory is the primary technique for dumping Windows credentials (as used by Mimikatz and similar tools).',
+     "recommendation": 'Remove immediately unless this is an authorized, deliberately-built credential-recovery/forensics tool. Treat as active credential theft otherwise.'},
+    {"id": 'MAL-039', "name": 'Reading /etc/shadow directly', "category": 'Credential Theft',
+     "severity": 'High',
+     "pattern": 'open\\s*\\(\\s*[\\"\']/etc/shadow[\\"\']',
+     "explanation": 'Direct access to /etc/shadow (which requires root) to read password hashes is a common step after privilege escalation, prior to offline cracking.',
+     "recommendation": 'Confirm this is an authorized administrative/audit tool. Otherwise, treat as credential-harvesting activity.'},
+    {"id": 'MAL-040', "name": 'Browser saved-credential file accessed', "category": 'Credential Theft',
+     "severity": 'Critical',
+     "pattern": '(?:Login Data|key4\\.db|logins\\.json)[\\s\\S]{0,200}(?:sqlite3\\.connect|shutil\\.copy)',
+     "explanation": 'Chrome/Firefox store saved logins in these specific files; copying or querying them directly is the core technique behind browser credential-stealing malware.',
+     "recommendation": 'Remove immediately unless this is a deliberately-built, authorized credential-migration tool with clear user consent.'},
+    {"id": 'MAL-041', "name": 'Persistence via crontab modification', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": 'crontab\\s+-l[\\s\\S]{0,100}(?:crontab\\s+-|>>\\s*/var/spool/cron)',
+     "explanation": 'Reading and rewriting the crontab to add an entry is a common persistence mechanism, especially when combined with a download-and-execute payload.',
+     "recommendation": "Review the added cron entry's command; if unauthorized, remove it and investigate how it was added."},
+    {"id": 'MAL-042', "name": 'Persistence via Windows Registry Run key', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": '(?:HKEY_CURRENT_USER|HKCU)\\\\\\\\Software\\\\\\\\Microsoft\\\\\\\\Windows\\\\\\\\CurrentVersion\\\\\\\\Run',
+     "explanation": 'Writing to the Run registry key causes a program to auto-start at every user login, a classic persistence mechanism.',
+     "recommendation": 'Review the registry value being set; if unauthorized, remove it and treat the host as potentially compromised.'},
+    {"id": 'MAL-043', "name": 'Bash history cleared (anti-forensics)', "category": 'Anti-Forensics',
+     "severity": 'Medium',
+     "pattern": 'history\\s+-c\\b|>\\s*~?/\\.bash_history\\b',
+     "explanation": 'Clearing shell history is a common step to hide previously-run commands from later forensic review.',
+     "recommendation": 'Investigate what commands may have run before history was cleared; check other logs (auditd, shell session recording) for the gap.'},
+    {"id": 'MAL-044', "name": 'Windows Event Log cleared', "category": 'Anti-Forensics',
+     "severity": 'High',
+     "pattern": 'wevtutil\\s+cl\\s+|Clear-EventLog\\s',
+     "explanation": 'Clearing event logs removes evidence of prior activity and is a strong indicator of an attacker covering their tracks.',
+     "recommendation": 'Treat as a strong compromise indicator. Preserve any surviving logs (forwarded/centralized copies) immediately for investigation.'},
+    {"id": 'MAL-045', "name": 'DNS-based data exfiltration pattern', "category": 'Data Exfiltration',
+     "severity": 'High',
+     "pattern": 'socket\\.gethostbyname\\s*\\(\\s*(?:base64|hex)[\\s\\S]{0,50}\\+',
+     "explanation": 'Encoding data into a hostname and resolving it is a classic DNS-tunneling exfiltration technique, since DNS traffic is rarely blocked or deeply inspected.',
+     "recommendation": "Investigate the destination DNS resolver and encoded content. Compare against your organization's approved DNS egress policy."},
+    {"id": 'MAL-046', "name": 'wmic.exe used for remote process execution', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'wmic(?:\\.exe)?\\s+/node:',
+     "explanation": 'wmic /node: executes commands on a remote host using existing credentials, a common lateral-movement technique that abuses a signed, built-in Windows tool.',
+     "recommendation": 'Investigate the target host and command. Consider auditing/restricting wmic remote execution via application control policy.'},
+    {"id": 'MAL-047', "name": 'bitsadmin used to download a payload', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'bitsadmin(?:\\.exe)?\\s+/transfer',
+     "explanation": 'BITS jobs can download files in the background and persist across reboots, making bitsadmin a common living-off-the-land downloader that evades tools watching only for direct network calls.',
+     "recommendation": 'Investigate the download URL and destination. BITS jobs can be enumerated with bitsadmin /list /allusers.'},
+    {"id": 'MAL-048', "name": 'mshta.exe executing a remote HTA payload', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'mshta(?:\\.exe)?\\s+https?://',
+     "explanation": 'mshta.exe executes HTML Application files with full script access and no sandboxing, and fetching one directly from a URL is a common initial-access/execution technique.',
+     "recommendation": 'Remove immediately. Check how mshta was invoked (often via a malicious Office macro or phishing link).'},
+    {"id": 'MAL-049', "name": 'rundll32 executing a non-standard/suspicious export', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'rundll32(?:\\.exe)?\\s+.*,\\s*(?:Control_RunDLL|a|DllRegisterServer)\\b.*\\.(?:txt|jpg|dat)',
+     "explanation": 'Invoking rundll32 against a file with a non-DLL extension (renamed payload) is a common technique to execute malicious code via a trusted, signed binary.',
+     "recommendation": "Investigate the target file's actual content regardless of its extension; treat as likely malicious."},
+    {"id": 'MAL-050', "name": 'Cryptomining pool connection string', "category": 'Cryptominer',
+     "severity": 'Critical',
+     "pattern": 'stratum\\+tcp://[a-zA-Z0-9.-]+:\\d+',
+     "explanation": 'A stratum+tcp:// URL is the connection protocol used by cryptocurrency mining pools -- its presence in application code strongly suggests unauthorized cryptomining.',
+     "recommendation": 'Remove immediately and audit the host for unauthorized mining processes and persistence mechanisms.'},
+    {"id": 'MAL-051', "name": 'XMRig-style miner configuration keys present', "category": 'Cryptominer',
+     "severity": 'Critical',
+     "pattern": '\\"donate-level\\"\\s*:\\s*\\d+',
+     "explanation": 'The donate-level configuration key is specific to XMRig and similar cryptominer software.',
+     "recommendation": "Remove immediately and treat the host as compromised if this wasn't deliberately installed mining software."},
+    {"id": 'MAL-052', "name": 'Process hollowing indicators (suspended process + memory write)', "category": 'Process Injection',
+     "severity": 'Critical',
+     "pattern": 'CREATE_SUSPENDED[\\s\\S]{0,200}WriteProcessMemory',
+     "explanation": 'Creating a process in a suspended state and then writing to its memory before resuming is the core technique behind process hollowing, used to run malicious code under the guise of a legitimate process name.',
+     "recommendation": 'Investigate immediately -- this combination has very few legitimate uses outside of specialized debugging/instrumentation tools.'},
+    {"id": 'MAL-053', "name": 'DLL side-loading via a suspicious search-order-hijack pattern', "category": 'Process Injection',
+     "severity": 'Medium',
+     "pattern": 'LoadLibrary(?:Ex)?[AW]?\\s*\\(\\s*[\\"\'](?:\\.\\\\|\\./)',
+     "explanation": 'Loading a DLL from the current/relative directory rather than an absolute, trusted path is exploitable via DLL search-order hijacking if an attacker can place a malicious DLL with the same name earlier in the search path.',
+     "recommendation": "Load DLLs by absolute path, and set the process's DLL search mode to exclude the current working directory (SetDefaultDllDirectories)."},
+    {"id": 'MAL-054', "name": 'Suspicious base64-encoded PE header in a string literal', "category": 'Obfuscation',
+     "severity": 'High',
+     "pattern": '[\\"\']TVqQAAMAAAAEAAAA',
+     "explanation": 'This is the base64 encoding of the standard Windows PE file header (MZ...) -- an embedded, base64-encoded executable is a common way to smuggle a payload past static file-type scanning.',
+     "recommendation": 'Decode and analyze the embedded payload; treat as malicious pending investigation.'},
+    {"id": 'MAL-055', "name": 'Typosquat-shaped package name pattern in a dependency file', "category": 'Supply Chain',
+     "severity": 'Medium',
+     "pattern": '\\b(?:reqeusts|urlib3|beautifulsoup4-|colourama|python3-dateutil)\\b',
+     "explanation": 'These are known/plausible typosquats of popular package names (requests, urllib3, beautifulsoup4, colorama, python-dateutil) that have been used in real supply-chain attacks to trick developers into installing a malicious lookalike.',
+     "recommendation": 'Verify the exact package name character-by-character against the legitimate package on PyPI/npm before installing.'},
+    {"id": 'MAL-057', "name": 'Fork bomb pattern', "category": 'Denial of Service',
+     "severity": 'High',
+     "pattern": ':\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:',
+     "explanation": 'This is the classic bash fork-bomb pattern -- a self-replicating function that rapidly exhausts process table entries and crashes the system.',
+     "recommendation": 'Remove immediately; this has no legitimate purpose in application code.'},
+    {"id": 'MAL-058', "name": 'Suspicious outbound connection to a raw IP with an uncommon high port', "category": 'Command and Control',
+     "severity": 'Medium',
+     "pattern": 'connect\\s*\\(\\s*\\(\\s*[\\"\']\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}[\\"\']\\s*,\\s*(?:4444|1337|31337|8443)\\s*\\)',
+     "explanation": 'Ports 4444, 1337, 31337, and 8443 (in this context) are commonly used default C2 listener ports in penetration-testing frameworks and malware alike.',
+     "recommendation": "Investigate the destination IP's reputation and the surrounding code's purpose; treat as a potential C2 channel pending investigation."},
+    {"id": 'MAL-059', "name": 'Environment variable used to smuggle a second-stage payload', "category": 'Obfuscation',
+     "severity": 'High',
+     "pattern": 'os\\.environ\\.get\\s*\\(\\s*[\\"\'][A-Z_]{10,}[\\"\']\\s*\\)[\\s\\S]{0,100}(?:exec|eval)\\(',
+     "explanation": 'Reading a payload from an environment variable and then executing it is a technique used to hide a malicious payload from static file scanning (since the payload never appears in the file itself).',
+     "recommendation": 'Investigate where the environment variable is set and what value it holds; treat as likely malicious code smuggling.'},
+    {"id": 'MAL-060', "name": 'Suspicious use of the `curl | bash` pattern for self-update', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'curl\\s+[^|]*\\|\\s*(?:sudo\\s+)?(?:bash|sh)\\b',
+     "explanation": 'Piping a curl download directly into a shell executes whatever the remote server returns with no integrity check, no matter how trustworthy the source appears at the time the code was written -- if the remote content ever changes or the connection is intercepted, this executes arbitrary code.',
+     "recommendation": 'Download to a file, verify its checksum/signature, and inspect it before executing, rather than piping directly into a shell.'},
+]
+
+# ---- batch 7 (session 7) ----
+MALWARE_PATTERNS += [
+    {"id": 'MAL-061', "name": 'AWS Lambda backdoor via unauthorized layer injection', "category": 'Cloud',
+     "severity": 'Critical',
+     "pattern": 'lambda\\.update_function_configuration\\s*\\([^)]*Layers\\s*=',
+     "explanation": 'Programmatically adding a Lambda layer at runtime can be used to inject a backdoor into every future invocation of a function without modifying its visible source code.',
+     "recommendation": 'Investigate immediately -- confirm this is part of an authorized deployment pipeline, not a runtime modification.'},
+    {"id": 'MAL-062', "name": 'IAM privilege escalation via PassRole combined with CreateFunction', "category": 'Cloud',
+     "severity": 'Critical',
+     "pattern": 'iam:PassRole[\\s\\S]{0,200}lambda:CreateFunction',
+     "explanation": 'The PassRole + CreateFunction combination is a well-documented AWS privilege-escalation path: it lets a low-privilege identity create a Lambda function that assumes a more privileged role.',
+     "recommendation": 'Review IAM policies granting both permissions to the same principal; scope PassRole to only the specific roles that principal legitimately needs to pass.'},
+    {"id": 'MAL-063', "name": 'XOR-encoded payload with a short repeating key', "category": 'Obfuscation',
+     "severity": 'Medium',
+     "pattern": 'bytes\\(\\[b\\s*\\^\\s*(?:0x[0-9a-fA-F]{1,2}|\\d{1,3})\\s*for\\s+b\\s+in',
+     "explanation": 'XOR with a short, hardcoded key is one of the most common simple obfuscation techniques for hiding a malicious payload from static string-matching scanners.',
+     "recommendation": 'Decode the payload with the visible key and inspect the result before concluding this is benign.'},
+    {"id": 'MAL-064', "name": 'Base64 decode chained directly into exec/eval', "category": 'Obfuscation',
+     "severity": 'Critical',
+     "pattern": '(?:exec|eval)\\s*\\(\\s*base64\\.b64decode\\s*\\(',
+     "explanation": 'Chaining base64 decoding directly into exec/eval is a near-universal pattern for smuggling an obfuscated payload past both human code review and simple static scanners.',
+     "recommendation": 'Decode and inspect the payload; treat as malicious pending investigation regardless of what the decoded content turns out to be.'},
+    {"id": 'MAL-065', "name": 'Scheduled task creation for persistence (Windows)', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": 'schtasks\\s+/create\\s+.*(?:/sc\\s+onlogon|/sc\\s+onstart)',
+     "explanation": 'Creating a scheduled task that runs at logon/startup is a standard Windows persistence mechanism, especially when combined with a download-and-execute payload.',
+     "recommendation": "Review the scheduled task's target command; if unauthorized, remove it and investigate how it was created."},
+    {"id": 'MAL-066', "name": 'launchd persistence via a plist written to LaunchAgents/LaunchDaemons', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": '~/Library/LaunchAgents/|/Library/LaunchDaemons/',
+     "explanation": 'Writing a property list into these macOS directories causes launchd to execute the specified program automatically, a standard macOS persistence mechanism.',
+     "recommendation": "Review the plist's ProgramArguments; if unauthorized, remove it and investigate how it was written."},
+    {"id": 'MAL-067', "name": 'Reflective DLL injection indicator', "category": 'Process Injection',
+     "severity": 'Critical',
+     "pattern": 'VirtualAllocEx[\\s\\S]{0,150}WriteProcessMemory[\\s\\S]{0,150}CreateRemoteThread',
+     "explanation": 'This three-call sequence (allocate memory in a remote process, write to it, create a thread to execute it) is the canonical Windows DLL/shellcode injection technique.',
+     "recommendation": 'Investigate immediately -- this combination has very few legitimate uses outside specialized debugging/instrumentation tools.'},
+    {"id": 'MAL-068', "name": 'Suspicious use of WMI event subscription for persistence', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": 'Set-WmiInstance\\s+.*__EventFilter|Register-WmiEvent',
+     "explanation": 'WMI event subscriptions can trigger a payload on system events (startup, user logon, specific time) with no file on disk in some configurations, a fileless persistence technique.',
+     "recommendation": 'Enumerate WMI subscriptions (Get-WmiObject -Namespace root\\subscription -Class __EventFilter) and remove any unauthorized ones.'},
+    {"id": 'MAL-069', "name": 'Suspicious disabling of Windows Defender via registry/PowerShell', "category": 'Anti-Analysis',
+     "severity": 'Critical',
+     "pattern": 'Set-MpPreference\\s+.*-DisableRealtimeMonitoring\\s+\\$true|DisableAntiSpyware',
+     "explanation": 'Disabling real-time antivirus protection is a common step immediately before deploying a payload that would otherwise be caught.',
+     "recommendation": 'Treat as a strong compromise indicator; re-enable protection and investigate what was deployed in the window it was disabled.'},
+    {"id": 'MAL-070', "name": 'Cobalt Strike / Metasploit default named pipe pattern', "category": 'Command and Control',
+     "severity": 'Critical',
+     "pattern": '\\\\\\\\\\\\\\\\\\.\\\\\\\\pipe\\\\\\\\(?:msagent_|status_|MSSE-)',
+     "explanation": 'These named pipe name patterns match known default configurations of Cobalt Strike and Metasploit Meterpreter, both widely used offensive frameworks that are also commonly repurposed by real attackers.',
+     "recommendation": 'Treat as a strong compromise indicator pending investigation into how the framework got there and who deployed it.'},
+    {"id": 'MAL-071', "name": 'Suspicious use of certutil to decode a base64 payload (LOLBin abuse)', "category": 'Living-off-the-Land',
+     "severity": 'High',
+     "pattern": 'certutil\\.exe\\s+-decode\\b',
+     "explanation": "certutil's undocumented -decode flag is commonly abused to decode a base64-encoded payload using a signed, trusted Windows binary, evading tools that only flag known encoder/decoder utilities.",
+     "recommendation": 'Investigate the encoded input and decoded output; treat as likely malicious staging.'},
+    {"id": 'MAL-072', "name": 'Suspicious PowerShell execution policy bypass', "category": 'Living-off-the-Land',
+     "severity": 'Medium',
+     "pattern": '-ExecutionPolicy\\s+Bypass\\b',
+     "explanation": "Bypassing the execution policy is frequently paired with running an otherwise-blocked malicious script; it's not inherently malicious alone, but is a strong contextual signal worth correlating with what script is actually being run.",
+     "recommendation": "Review the script being executed with the bypassed policy; if it's not a known, reviewed internal tool, treat as suspicious."},
+    {"id": 'MAL-073', "name": 'Golden Ticket / Kerberos ticket forgery indicator', "category": 'Credential Theft',
+     "severity": 'Critical',
+     "pattern": 'mimikatz|kerberos::golden',
+     "explanation": 'References to Mimikatz or a Golden Ticket attack (forging Kerberos TGTs using the krbtgt account hash) indicate advanced Active Directory compromise tooling.',
+     "recommendation": 'Treat as a critical incident -- Golden Ticket attacks typically indicate full domain compromise and require krbtgt password reset (twice) to fully remediate.'},
+    {"id": 'MAL-074', "name": 'Suspicious use of PsExec-style remote execution', "category": 'Persistence',
+     "severity": 'Medium',
+     "pattern": '\\\\\\\\\\\\\\\\[\\w.-]+\\\\\\\\ADMIN\\$',
+     "explanation": "Writing to a remote host's ADMIN$ share is the mechanism PsExec (and its many malware clones) use for lateral movement.",
+     "recommendation": 'Confirm this is an authorized administrative tool being used for legitimate remote administration, not lateral movement by an attacker.'},
+    {"id": 'MAL-075', "name": 'Suspicious download cradle via certutil combined with rundll32 execution', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'certutil[\\s\\S]{0,150}rundll32',
+     "explanation": 'Chaining certutil (download) with rundll32 (execution) is a common two-stage living-off-the-land payload delivery pattern using only signed Windows binaries.',
+     "recommendation": 'Remove immediately and investigate the full chain -- both the download source and what rundll32 was made to execute.'},
+    {"id": 'MAL-076', "name": 'Suspicious use of vssadmin resize to shrink shadow storage (indirect shadow copy destruction)', "category": 'Ransomware',
+     "severity": 'High',
+     "pattern": 'vssadmin\\s+resize\\s+shadowstorage\\s+.*maxsize\\s*=\\s*(?:401MB|[0-9]{1,3}MB)',
+     "explanation": "Shrinking shadow storage to a small size forces Windows to delete existing shadow copies to comply, a stealthier alternative to the more obviously-suspicious 'vssadmin delete shadows'.",
+     "recommendation": 'Treat as a ransomware precursor indicator equivalent to direct shadow copy deletion.'},
+    {"id": 'MAL-077', "name": 'Suspicious disabling of Windows Firewall via netsh', "category": 'Anti-Analysis',
+     "severity": 'High',
+     "pattern": 'netsh\\s+advfirewall\\s+set\\s+allprofiles\\s+state\\s+off',
+     "explanation": 'Disabling the host firewall removes a layer of defense and is commonly done immediately before establishing an outbound C2 channel or accepting inbound connections.',
+     "recommendation": 'Treat as a compromise indicator; re-enable the firewall and audit what network activity occurred while it was disabled.'},
+    {"id": 'MAL-078', "name": 'Suspicious enumeration of installed security products via WMI', "category": 'Anti-Analysis',
+     "severity": 'Medium',
+     "pattern": 'SELECT\\s+\\*\\s+FROM\\s+AntiVirusProduct',
+     "explanation": 'Querying the AntiVirusProduct WMI class is a common reconnaissance step malware uses to tailor its evasion technique to whatever security software is actually installed.',
+     "recommendation": 'Investigate the calling process and what it does with the enumerated product list.'},
+    {"id": 'MAL-079', "name": 'Suspicious use of PowerShell to download and load a .NET assembly directly into memory', "category": 'Fileless Execution',
+     "severity": 'Critical',
+     "pattern": '\\[Reflection\\.Assembly\\]::Load\\s*\\(\\s*\\(New-Object\\s+Net\\.WebClient\\)\\.DownloadData',
+     "explanation": "Downloading a .NET assembly's bytes and loading it directly via Reflection.Assembly.Load never writes a file to disk, evading file-based antivirus scanning entirely.",
+     "recommendation": 'Remove immediately. This is one of the most common fileless-malware delivery patterns in current use.'},
+    {"id": 'MAL-080', "name": "Suspicious modification of the hosts file to redirect a security vendor's domain", "category": 'Anti-Analysis',
+     "severity": 'High',
+     "pattern": '127\\.0\\.0\\.1\\s+.*(?:symantec|mcafee|kaspersky|windowsupdate|microsoft)\\.com',
+     "explanation": "Redirecting a security vendor's or Windows Update's domain to localhost in the hosts file blocks that service from reaching its update/telemetry servers, a technique used to prevent detection/remediation.",
+     "recommendation": 'Check the hosts file for unauthorized entries and remove them; investigate what added them.'},
+    {"id": 'MAL-081', "name": "Suspicious use of an AppleScript to request the user's password via a fake system dialog", "category": 'Credential Theft',
+     "severity": 'Critical',
+     "pattern": 'display\\s+dialog[\\s\\S]{0,100}with\\s+hidden\\s+answer',
+     "explanation": "A dialog requesting a password with a fake system-looking prompt (via AppleScript's 'with hidden answer') is a common macOS credential-phishing technique.",
+     "recommendation": 'Remove immediately unless this is a deliberately-built, clearly-branded (non-deceptive) internal tool.'},
+    {"id": 'MAL-082', "name": 'Suspicious use of crontab to establish a reverse shell beacon', "category": 'Persistence',
+     "severity": 'Critical',
+     "pattern": 'crontab[\\s\\S]{0,100}(?:nc|ncat|bash)\\s+-[a-z]*[ei][a-z]*\\s',
+     "explanation": 'A cron entry that periodically re-establishes a reverse shell connection is a resilient persistence + C2 combination.',
+     "recommendation": 'Remove immediately and treat the host as compromised; check for additional persistence mechanisms.'},
+    {"id": 'MAL-083', "name": 'Suspicious use of an npm postinstall script that exfiltrates environment variables', "category": 'Supply Chain',
+     "severity": 'Critical',
+     "pattern": 'postinstall[\\"\']\\s*:\\s*[\\"\'][^\\"\']*process\\.env[^\\"\']*(?:curl|fetch|https?://)',
+     "explanation": 'A postinstall script that reads process.env and sends it to a remote URL exfiltrates CI/CD secrets (API keys, tokens) that are commonly exposed as environment variables during automated builds.',
+     "recommendation": 'Remove immediately. Rotate any secrets that may have been present in the environment during any past `npm install` of this package.'},
+    {"id": 'MAL-084', "name": 'Suspicious use of a git hook to execute an arbitrary payload on commit/checkout', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": '\\.git/hooks/(?:post-checkout|pre-commit|post-merge)[\\s\\S]{0,50}(?:curl|wget|bash)',
+     "explanation": 'A malicious git hook executes automatically for every developer who clones/checks out the repository, making it an effective way to compromise an entire development team.',
+     "recommendation": "Remove the hook immediately and audit .git/hooks/ across all clones; git hooks aren't distributed via the repository itself in vanilla git, so investigate how it was planted."},
+    {"id": 'MAL-085', "name": 'Suspicious process listing/enumeration immediately preceding a targeted kill', "category": 'Anti-Analysis',
+     "severity": 'Medium',
+     "pattern": 'tasklist[\\s\\S]{0,100}taskkill\\s+/[fF]\\s+/[iI][mM]\\s+(?:wireshark|procmon|processhacker|ollydbg)',
+     "explanation": 'Enumerating processes and then force-killing specific analysis/monitoring tools by name is a targeted evasion technique aimed at defeating manual incident response.',
+     "recommendation": 'Treat as a strong indicator of an actively-evasive, hands-on-keyboard intrusion rather than commodity malware.'},
+]
+
+# ---- batch 8 (session 8) ----
+MALWARE_PATTERNS += [
+    {"id": 'MAL-086', "name": 'Suspicious use of a Discord webhook as an exfiltration channel', "category": 'Data Exfiltration',
+     "severity": 'High',
+     "pattern": 'discord\\.com/api/webhooks/\\d+/[A-Za-z0-9_-]+',
+     "explanation": 'Sending data to a Discord webhook URL is a popular exfiltration channel for commodity infostealers, since Discord traffic is common and rarely blocked by corporate proxies.',
+     "recommendation": 'Investigate what data is being sent to the webhook; treat as likely exfiltration pending review.'},
+    {"id": 'MAL-087', "name": 'Suspicious use of a Telegram Bot API sendMessage call for exfiltration', "category": 'Data Exfiltration',
+     "severity": 'High',
+     "pattern": 'api\\.telegram\\.org/bot[0-9]+:[A-Za-z0-9_-]+/sendMessage',
+     "explanation": "Telegram's Bot API is a common exfiltration/C2 channel for infostealers and RATs, since it's HTTPS-based and blends in with legitimate traffic.",
+     "recommendation": 'Investigate what data is being sent via the bot; treat as likely exfiltration or C2 pending review.'},
+    {"id": 'MAL-088', "name": 'Suspicious credential harvesting from browser extension storage', "category": 'Credential Theft',
+     "severity": 'High',
+     "pattern": 'Local Extension Settings[\\s\\S]{0,100}(?:sqlite3\\.connect|shutil\\.copy)',
+     "explanation": 'Browser extension local storage can hold session tokens and API keys for web apps (e.g. crypto wallet extensions); directly copying/querying it is a targeted credential-theft technique.',
+     "recommendation": 'Remove immediately unless this is a deliberately-built, authorized data-migration tool with clear user consent.'},
+    {"id": 'MAL-089', "name": 'Suspicious use of WSL to escape a Windows security boundary', "category": 'Anti-Analysis',
+     "severity": 'Medium',
+     "pattern": 'wsl(?:\\.exe)?\\s+.*(?:curl|wget|bash)\\s+.*(?:http|\\|)',
+     "explanation": "Invoking WSL to run a download-and-execute chain can evade Windows-native security tooling that doesn't inspect inside the Linux subsystem.",
+     "recommendation": 'Investigate the command executed inside WSL; treat as suspicious if it involves downloading and running remote content.'},
+    {"id": 'MAL-090', "name": 'Suspicious use of an Excel/Office macro AutoOpen with a shell call', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'Sub\\s+AutoOpen\\s*\\(\\s*\\)[\\s\\S]{0,300}Shell\\s*\\(',
+     "explanation": 'AutoOpen macros run automatically when the document is opened; combined with a Shell() call, this is a classic malicious-document initial-access technique.',
+     "recommendation": 'Remove immediately. Treat any document containing this pattern as malicious regardless of its apparent source.'},
+    {"id": 'MAL-091', "name": 'Suspicious use of regsvr32 with an unusual /i: argument pointing to a URL', "category": 'Living-off-the-Land',
+     "severity": 'Critical',
+     "pattern": 'regsvr32(?:\\.exe)?\\s+/i:https?://',
+     "explanation": "Passing a URL to regsvr32's /i argument triggers the Squiblydoo technique (downloading and executing a remote scriptlet via a signed Windows binary).",
+     "recommendation": 'Remove immediately. This is almost never legitimate.'},
+    {"id": 'MAL-092', "name": 'Suspicious use of an SSH authorized_keys append (unauthorized key persistence)', "category": 'Persistence',
+     "severity": 'High',
+     "pattern": '>>\\s*~?/\\.ssh/authorized_keys\\b',
+     "explanation": 'Appending a key to authorized_keys grants passwordless SSH access to whoever holds the matching private key -- a common persistence mechanism after initial compromise.',
+     "recommendation": "Review the added key against your organization's known/authorized key inventory; remove any unrecognized entries immediately."},
+    {"id": 'MAL-093', "name": 'Suspicious use of setuid bit added to an unexpected binary', "category": 'Privilege Escalation',
+     "severity": 'Critical',
+     "pattern": 'chmod\\s+u\\+s\\s+(?!/usr/bin/(?:passwd|sudo|su)\\b)',
+     "explanation": 'Setting the setuid bit on a binary outside the small, well-known set that legitimately needs it (passwd, sudo, su) creates a privilege-escalation path for anyone who can execute that binary.',
+     "recommendation": "Investigate why the setuid bit was added to this specific binary; remove it unless there's a clear, documented, minimal-privilege justification."},
+    {"id": 'MAL-094', "name": 'Suspicious use of a Cron job disguised with a misleading comment/name', "category": 'Persistence',
+     "severity": 'Medium',
+     "pattern": '#\\s*(?:system|kernel)\\s+update[\\s\\S]{0,50}\\n[^#\\n]*(?:curl|wget|nc)\\s',
+     "explanation": 'A cron entry commented to look like a routine system update, paired with a network tool invocation, is a common technique to make malicious persistence blend in with legitimate scheduled maintenance.',
+     "recommendation": 'Verify the actual command against what the comment claims; investigate any mismatch.'},
+    {"id": 'MAL-095', "name": "Suspicious use of an npm package.json 'scripts.install' hook (runs even without explicit npm run)", "category": 'Supply Chain',
+     "severity": 'High',
+     "pattern": '[\\"\']install[\\"\']\\s*:\\s*[\\"\'][^\\"\']*(?:curl|wget|nc)\\s',
+     "explanation": "The 'install' script (distinct from 'postinstall') runs during `npm install` for the package itself, including as a transitive dependency, making it a stealthy supply-chain execution point.",
+     "recommendation": 'Audit this dependency closely; a network call from an install hook is a strong red flag for a compromised or malicious package.'},
+    {"id": 'MAL-096', "name": 'Suspicious use of a Slack incoming webhook combined with system info gathering', "category": 'Data Exfiltration',
+     "severity": 'High',
+     "pattern": 'hooks\\.slack\\.com/services/[\\s\\S]{0,300}(?:platform\\.system\\(\\)|socket\\.gethostname\\(\\))',
+     "explanation": 'Sending system/host information to a Slack webhook is a common lightweight C2 check-in / exfiltration pattern for commodity malware and red-team implants alike.',
+     "recommendation": 'Investigate what information is being sent and to which workspace; treat as suspicious pending review.'},
+    {"id": 'MAL-097', "name": 'Suspicious use of an ngrok tunnel for inbound C2', "category": 'Command and Control',
+     "severity": 'High',
+     "pattern": 'ngrok\\.io|ngrok-free\\.app',
+     "explanation": 'ngrok tunnels expose a local service to the internet through a legitimate, widely-trusted service, making it a popular way to stand up a C2 listener that blends in with normal developer traffic.',
+     "recommendation": 'Confirm this is an authorized development/testing tunnel; if not, treat as a potential live C2 channel.'},
+    {"id": 'MAL-098', "name": "Suspicious use of Python's ctypes to call VirtualProtect (memory permission change)", "category": 'Fileless Execution',
+     "severity": 'Critical',
+     "pattern": 'ctypes[\\s\\S]{0,100}VirtualProtect\\s*\\(',
+     "explanation": "Changing a memory region's protection to executable via VirtualProtect is a common step in shellcode execution and reflective loading techniques.",
+     "recommendation": 'Investigate immediately -- legitimate use cases for this from a Python script are extremely rare.'},
+    {"id": 'MAL-099', "name": 'Suspicious use of a webshell password gate pattern', "category": 'Webshell',
+     "severity": 'Critical',
+     "pattern": 'if\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)\\[[\\"\'](?:pass|pwd|key|auth)[\\"\']\\]\\s*==\\s*[\\"\'][a-zA-Z0-9]{4,16}[\\"\']\\s*\\)\\s*\\{[\\s\\S]{0,50}(?:eval|system|exec|passthru)',
+     "explanation": 'A hardcoded password gate immediately followed by a code-execution function is the standard structure of a password-protected webshell, letting only the attacker (who knows the password) trigger it.',
+     "recommendation": 'Remove immediately. This grants remote code execution to anyone who knows (or brute-forces) the hardcoded password.'},
+    {"id": 'MAL-100', "name": 'Suspicious use of a .htaccess file to enable script execution in an upload directory', "category": 'Webshell',
+     "severity": 'High',
+     "pattern": 'AddType\\s+application/x-httpd-php\\s+\\.(?:jpg|png|gif|txt)',
+     "explanation": 'Configuring the web server to execute image/text files as PHP is a technique to make an uploaded webshell run even if it was given a non-.php extension to bypass upload filters.',
+     "recommendation": 'Remove this .htaccess directive; it defeats the purpose of any file-extension-based upload restriction elsewhere in the application.'},
+]
+
+# ---- batch 9 (session 9) ----
+MALWARE_PATTERNS += [
+    {"id": 'MAL-101', "name": 'Suspicious use of a Python one-liner reverse shell (os.dup2 pattern)', "category": 'Reverse Shell',
+     "severity": 'Critical',
+     "pattern": 'os\\.dup2\\s*\\(\\s*s\\.fileno\\s*\\(\\s*\\)\\s*,\\s*[012]\\s*\\)',
+     "explanation": "Duplicating a socket's file descriptor onto stdin/stdout/stderr is the standard Python one-liner reverse-shell technique, redirecting an interactive shell's I/O over the network.",
+     "recommendation": 'Remove immediately. Investigate the destination address/port and how this code was introduced.'},
+    {"id": 'MAL-102', "name": 'Suspicious use of a PHP one-liner reverse shell via fsockopen', "category": 'Reverse Shell',
+     "severity": 'Critical',
+     "pattern": 'fsockopen\\s*\\([^)]+\\)[\\s\\S]{0,100}proc_open\\s*\\(\\s*[\\"\'](?:/bin/sh|/bin/bash|sh|bash)',
+     "explanation": 'Opening a raw socket and piping it into a shell process is the standard PHP reverse-shell pattern.',
+     "recommendation": 'Remove immediately. Investigate the destination address/port and how this code was introduced.'},
+    {"id": 'MAL-103', "name": 'Suspicious use of a Node.js one-liner reverse shell via net.connect + child_process', "category": 'Reverse Shell',
+     "severity": 'Critical',
+     "pattern": 'net\\.connect\\s*\\([^)]+\\)[\\s\\S]{0,150}spawn\\s*\\(\\s*[\\"\'](?:/bin/sh|/bin/bash|sh|bash)',
+     "explanation": 'Connecting a raw socket and piping it into a spawned shell is the standard Node.js reverse-shell pattern.',
+     "recommendation": 'Remove immediately. Investigate the destination address/port and how this code was introduced.'},
+    {"id": 'MAL-104', "name": 'Suspicious use of a Java reverse shell via ProcessBuilder + Socket', "category": 'Reverse Shell',
+     "severity": 'Critical',
+     "pattern": 'new\\s+Socket\\s*\\([^)]+\\)[\\s\\S]{0,150}ProcessBuilder\\s*\\(\\s*\\"(?:/bin/sh|/bin/bash|sh|bash)\\"',
+     "explanation": 'Connecting a raw socket and piping it into a spawned shell via ProcessBuilder is the standard Java reverse-shell pattern.',
+     "recommendation": 'Remove immediately. Investigate the destination address/port and how this code was introduced.'},
+    {"id": 'MAL-105', "name": 'Suspicious use of an Nginx/Apache config modification to add a hidden admin location', "category": 'Persistence',
+     "severity": 'Medium',
+     "pattern": 'location\\s*(?:~|=)\\s*/[a-zA-Z0-9_]{1,6}\\s*\\{[\\s\\S]{0,100}(?:fastcgi_pass|proxy_pass)',
+     "explanation": "A short, cryptic location block added to a web server config can serve as a hidden backdoor endpoint that doesn't appear in the application's own routing.",
+     "recommendation": "Review all location/route blocks against your known, documented application routes; investigate any that aren't accounted for."},
+    {"id": 'MAL-106', "name": 'Suspicious use of a base64-encoded PowerShell command (-EncodedCommand)', "category": 'Obfuscation',
+     "severity": 'High',
+     "pattern": '-(?:e|enc|EncodedCommand)\\s+[A-Za-z0-9+/=]{40,}',
+     "explanation": "PowerShell's -EncodedCommand flag runs a base64-encoded script, a very common technique for evading command-line logging/detection that looks for plaintext malicious keywords.",
+     "recommendation": 'Decode the command (powershell -e accepts UTF-16LE base64) and inspect it before concluding this is benign.'},
+    {"id": 'MAL-107', "name": 'Suspicious use of a Windows Registry Image File Execution Options debugger hijack', "category": 'Persistence',
+     "severity": 'Critical',
+     "pattern": 'Image File Execution Options\\\\\\\\[\\w.]+\\.exe.*Debugger',
+     "explanation": "Setting a 'Debugger' value under a program's Image File Execution Options key causes Windows to launch the specified program instead, whenever the target is run -- a stealthy persistence and process-hijacking technique (often targeting accessibility tools like sethc.exe for a 'sticky keys' backdoor).",
+     "recommendation": 'Treat as a strong compromise indicator; review and remove any unauthorized IFEO Debugger values.'},
+]
+
 
 class MalwarePatternScanner:
     """
@@ -6178,11 +9063,17 @@ class MalwarePatternScanner:
     def __init__(self, rules: Optional[List[Dict[str, Any]]] = None):
         self.rules = rules or MALWARE_PATTERNS
         self._compiled = []
+        # Previously a rule with an invalid regex was dropped here with no
+        # trace at all — it just silently never fired, on every scan,
+        # forever, with nothing anywhere telling the user their rule
+        # (built-in or custom) wasn't actually running. Now it's recorded
+        # so the gap is visible instead of invisible.
+        self.compile_errors: List[Dict[str, str]] = []
         for rule in self.rules:
             try:
                 self._compiled.append((rule, re.compile(rule["pattern"], re.MULTILINE | re.DOTALL)))
-            except re.error:
-                pass
+            except re.error as e:
+                self.compile_errors.append({"id": rule.get("id", "?"), "error": str(e)})
 
     def scan(self, file_name: str, content: str) -> List[MalwareFinding]:
         findings: List[MalwareFinding] = []
@@ -6338,6 +9229,70 @@ DOCKERFILE_CHECKS += [
      "rec": "Keep database containers on an internal network not exposed to the host/internet; only expose the application tier's port."},
 ]
 
+# ---- batch 6 (session 6) ----
+DOCKERFILE_CHECKS += [
+    {"id": 'DCK-023', "title": 'No USER instruction (runs as root by default)', "severity": 'High', "category": 'Privilege',
+     "pattern": None, "check_fn": lambda c: "USER " not in c and "USER\t" not in c,
+     "detail": "Without a USER instruction, the container's default process runs as root, so any code-execution vulnerability in the app gets root inside the container for free.",
+     "rec": 'Add USER <non-root-uid> after installing dependencies and before the final CMD/ENTRYPOINT.'},
+    {"id": 'DCK-024', "title": 'Secret passed via a build ARG', "severity": 'High', "category": 'Secrets',
+     "pattern": 'ARG\\s+(?:.*_)?(?:PASSWORD|SECRET|TOKEN|API_?KEY)\\b',
+     "detail": "Build ARGs are visible in the image's build history (docker history) even if never used in a RUN command's final layer, permanently leaking the secret to anyone with pull access to the image.",
+     "rec": "Use Docker BuildKit's --secret mount (or a runtime secret) instead of a build ARG for any credential."},
+    {"id": 'DCK-025', "title": 'Package manager cache not cleaned up', "severity": 'Low', "category": 'Hygiene',
+     "pattern": 'apt-get\\s+install(?![\\s\\S]{0,200}rm\\s+-rf\\s+/var/lib/apt/lists)',
+     "detail": 'Leaving the apt cache in place unnecessarily grows the image size.',
+     "rec": 'Add && rm -rf /var/lib/apt/lists/* at the end of the same RUN instruction that runs apt-get install.'},
+    {"id": 'DCK-026', "title": 'ADD used instead of COPY for a local file (unnecessary auto-extraction risk)', "severity": 'Low', "category": 'Hygiene',
+     "pattern": '^ADD\\s+[^h]',
+     "detail": "ADD auto-extracts local tar archives and can fetch remote URLs, both surprising behaviors that COPY doesn't have; using ADD for a plain local file is unnecessary and slightly increases the chance of unexpected extraction behavior.",
+     "rec": 'Use COPY for plain files/directories; reserve ADD only for the specific cases that need its extra behavior.'},
+    {"id": 'DCK-027', "title": 'Base image pinned to a mutable major-version tag only', "severity": 'Low', "category": 'Hygiene',
+     "pattern": '^FROM\\s+[\\w./-]+:\\d+\\s*$',
+     "detail": 'A tag like `:18` (rather than `:18.4.2` or a digest) can silently change to a new minor/patch version on rebuild, making builds non-reproducible.',
+     "rec": 'Pin to a specific version tag or (better) a content digest for fully reproducible builds.'},
+    {"id": 'DCK-028', "title": 'Container runs with --privileged-equivalent SYS_ADMIN capability added at build reference', "severity": 'Medium', "category": 'Privilege',
+     "pattern": 'LABEL\\s+.*cap-add=SYS_ADMIN',
+     "detail": 'A label documenting a required SYS_ADMIN capability signals the image expects to run with elevated privileges -- worth confirming this is genuinely necessary.',
+     "rec": "Confirm SYS_ADMIN is actually required (it often isn't); if it's not, remove the requirement rather than documenting it as expected."},
+]
+
+# ---- batch 7 (session 7) ----
+DOCKERFILE_CHECKS += [
+    {"id": 'DCK-029', "title": 'COPY with a wildcard source that may include unintended files (e.g. .env, .git)', "severity": 'Medium', "category": 'Secrets',
+     "pattern": '^COPY\\s+\\.\\s+',
+     "detail": 'Copying the entire build context (COPY . .) with no .dockerignore can bake in .env files, .git history, and other files never meant to ship in the image.',
+     "rec": 'Add a .dockerignore excluding .env, .git, node_modules, and other sensitive/unnecessary paths before using a broad COPY.'},
+    {"id": 'DCK-030', "title": 'Insecure use of --no-check-certificate / -k with curl or wget', "severity": 'High', "category": 'Crypto',
+     "pattern": '(?:curl\\s+.*-k\\b|wget\\s+.*--no-check-certificate)',
+     "detail": 'Disabling certificate verification for a download exposes it to a machine-in-the-middle substituting a malicious payload.',
+     "rec": 'Fix the underlying certificate issue (e.g. update the CA bundle) instead of disabling verification.'},
+    {"id": 'DCK-031', "title": 'Base image from an unofficial/unverified registry with no digest pin', "severity": 'Low', "category": 'Hygiene',
+     "pattern": '^FROM\\s+(?!(?:docker\\.io/)?(?:library/)?[\\w.-]+:)[\\w./-]+/[\\w.-]+\\s*$',
+     "detail": "Pulling from a third-party registry path with no version pin makes it hard to know exactly what's running and increases exposure if that registry/account is ever compromised.",
+     "rec": 'Pin to a specific digest, and prefer official/verified publisher images where a suitable one exists.'},
+]
+
+# ---- batch 8 (session 8) ----
+DOCKERFILE_CHECKS += [
+    {"id": 'DCK-032', "title": 'STOPSIGNAL not set for an application expecting graceful shutdown', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "STOPSIGNAL" not in c,
+     "detail": "Without an explicit STOPSIGNAL, Docker sends SIGTERM by default, which some runtimes/frameworks don't handle gracefully without extra configuration, leading to abrupt connection drops on container stop.",
+     "rec": 'Set STOPSIGNAL explicitly if your application needs a signal other than SIGTERM (or confirm SIGTERM is handled) for graceful shutdown.'},
+    {"id": 'DCK-033', "title": 'Insecure use of curl to fetch and pipe a script with no TLS certificate verification', "severity": 'Critical', "category": 'Crypto',
+     "pattern": 'curl\\s+.*-k\\s+.*\\|\\s*(?:bash|sh)',
+     "detail": 'Combining disabled certificate verification with piping straight into a shell removes both integrity checks a downloaded script would normally have.',
+     "rec": "Fix the certificate issue, download to a file, verify its checksum, and inspect it before executing -- don't do either insecure practice, let alone both together."},
+]
+
+# ---- batch 9 (session 9) ----
+DOCKERFILE_CHECKS += [
+    {"id": 'DCK-034', "title": 'Insecure use of an ADD instruction with a remote URL (no integrity check)', "severity": 'Medium', "category": 'Supply Chain',
+     "pattern": '^ADD\\s+https?://',
+     "detail": 'ADD can fetch a remote URL directly into the image with no way to verify its integrity/authenticity at build time.',
+     "rec": 'Use a RUN instruction with curl/wget plus explicit checksum verification instead of ADD with a bare URL.'},
+]
+
 COMPOSE_CHECKS: List[Dict[str, Any]] = [
     {"id": "CMP-001", "title": "Privileged container mode", "severity": "Critical", "category": "Privilege",
      "pattern": r"privileged:\s*true",
@@ -6395,6 +9350,54 @@ COMPOSE_CHECKS += [
      "pattern": None, "check_fn": lambda c: bool(re.search(r"stdin_open:\s*true", c)) and bool(re.search(r"tty:\s*true", c)),
      "detail": 'stdin_open + tty together are typically a debugging leftover (equivalent to `docker run -it`) and have no purpose in a service definition meant to run unattended.',
      "rec": "Remove stdin_open/tty from service definitions that aren't meant for interactive debugging."},
+]
+
+# ---- batch 6 (session 6) ----
+COMPOSE_CHECKS += [
+    {"id": 'CMP-014', "title": "Environment file referenced without being gitignored (can't verify, flagged for review)", "severity": 'Low', "category": 'Secrets',
+     "pattern": 'env_file:\\s*[\\s\\S]{0,30}\\.env\\b',
+     "detail": "A .env file is referenced for environment variables; this is fine operationally, but confirm it's excluded from version control (.gitignore) since it commonly holds secrets.",
+     "rec": 'Add .env to .gitignore if not already, and consider committing a .env.example with placeholder values instead.'},
+    {"id": 'CMP-015', "title": 'depends_on without a healthcheck-based condition', "severity": 'Low', "category": 'Resilience',
+     "pattern": 'depends_on:\\s*\\n\\s*-\\s*\\w+\\s*$',
+     "detail": "Plain depends_on only waits for the dependency container to *start*, not to actually be *ready* -- a database container that's still initializing can cause the dependent service to fail on startup.",
+     "rec": 'Use the long-form depends_on with condition: service_healthy, paired with a healthcheck: on the dependency.'},
+    {"id": 'CMP-016', "title": 'Service exposes the Docker socket into the container', "severity": 'Critical', "category": 'Privilege',
+     "pattern": '/var/run/docker\\.sock',
+     "detail": 'Mounting the Docker socket into a container gives it root-equivalent control over the entire host (it can start new privileged containers, mount the host filesystem, etc.).',
+     "rec": 'Avoid mounting the Docker socket into application containers; if Docker-in-Docker is genuinely needed, use a properly sandboxed approach (e.g. a rootless DinD sidecar with no other privileges).'},
+    {"id": 'CMP-017', "title": 'No explicit resource limits (mem_limit/cpus) set', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "mem_limit" not in c and "cpus:" not in c and "resources:" not in c,
+     "detail": 'Without resource limits, a single misbehaving container can consume all host resources and starve its neighbors.',
+     "rec": 'Set mem_limit and cpus (or the long-form deploy.resources.limits) for every service.'},
+]
+
+# ---- batch 7 (session 7) ----
+COMPOSE_CHECKS += [
+    {"id": 'CMP-018', "title": 'Service uses network_mode: host (bypasses network isolation entirely)', "severity": 'High', "category": 'Network',
+     "pattern": 'network_mode:\\s*[\\"\']?host',
+     "detail": "host networking gives the container full access to the host's network stack, bypassing Docker's network isolation and port mapping entirely.",
+     "rec": 'Use the default bridge network with explicit port mappings unless host networking is genuinely required (e.g. certain monitoring agents).'},
+    {"id": 'CMP-019', "title": 'Privileged build-time secret leaked via a plain build arg default value', "severity": 'Medium', "category": 'Secrets',
+     "pattern": 'args:\\s*\\n\\s*[A-Z_]*(?:PASSWORD|SECRET|TOKEN|KEY)[A-Z_]*:\\s*[\\"\'][^\\"\']+[\\"\']',
+     "detail": 'A default value for a secret-shaped build argument is committed directly in the compose file.',
+     "rec": "Don't set a real default for a secret-shaped build arg; require it to be supplied via environment or a .env file that's gitignored."},
+]
+
+# ---- batch 8 (session 8) ----
+COMPOSE_CHECKS += [
+    {"id": 'CMP-020', "title": 'Service depends on the default bridge network with no explicit custom network defined', "severity": 'Low', "category": 'Network',
+     "pattern": None, "check_fn": lambda c: "networks:" not in c and c.count("services:") > 0,
+     "detail": 'All services sharing the default bridge network can reach each other on every port with no segmentation, even ones that should never talk to each other.',
+     "rec": 'Define explicit custom networks and only attach each service to the networks it actually needs to communicate over.'},
+]
+
+# ---- batch 9 (session 9) ----
+COMPOSE_CHECKS += [
+    {"id": 'CMP-021', "title": 'Service restart policy set to always with no failure-rate limiting (potential crash-loop resource drain)', "severity": 'Low', "category": 'Resilience',
+     "pattern": 'restart:\\s*always',
+     "detail": 'restart: always with no backoff can rapidly consume host resources if the service is stuck in a crash loop.',
+     "rec": 'Consider restart: unless-stopped combined with proper healthchecks, or on-failure with a max retry count for one-shot tasks.'},
 ]
 
 K8S_CHECKS: List[Dict[str, Any]] = [
@@ -6479,6 +9482,102 @@ K8S_CHECKS += [
      "rec": "Add livenessProbe and readinessProbe (HTTP, TCP, or exec) appropriate to the workload."},
 ]
 
+# ---- batch 6 (session 6) ----
+K8S_CHECKS += [
+    {"id": 'K8S-019', "title": 'allowPrivilegeEscalation not explicitly disabled', "severity": 'Medium', "category": 'Privilege',
+     "pattern": None, "check_fn": lambda c: "allowPrivilegeEscalation" not in c,
+     "detail": 'Without an explicit allowPrivilegeEscalation: false, a container can gain more privileges than its parent process (e.g. via setuid binaries).',
+     "rec": 'Set securityContext.allowPrivilegeEscalation: false unless the workload specifically needs otherwise.'},
+    {"id": 'K8S-020', "title": 'hostPath volume mounted read-write', "severity": 'High', "category": 'Privilege',
+     "pattern": 'hostPath:[\\s\\S]{0,150}(?!readOnly:\\s*true)',
+     "detail": "A hostPath volume gives the container direct access to the node's filesystem; without readOnly: true it can also modify host files.",
+     "rec": "Set readOnly: true on any hostPath mount that doesn't specifically need write access, and avoid hostPath entirely where possible."},
+    {"id": 'K8S-021', "title": 'Ingress defined with no TLS block', "severity": 'Medium', "category": 'Network',
+     "pattern": None, "check_fn": lambda c: "kind: Ingress" in c and "tls:" not in c,
+     "detail": 'An Ingress with no tls: section serves traffic over plain HTTP.',
+     "rec": 'Add a tls: block referencing a valid certificate Secret, and consider redirecting HTTP to HTTPS.'},
+    {"id": 'K8S-022', "title": 'No resource requests defined (only limits, or neither)', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "requests:" not in c,
+     "detail": "Without resource requests, the scheduler can't make good bin-packing decisions and the pod has no QoS guarantee.",
+     "rec": 'Set resources.requests for cpu/memory alongside any limits.'},
+    {"id": 'K8S-023', "title": 'Wildcard namespace selector in a NetworkPolicy', "severity": 'Medium', "category": 'Network',
+     "pattern": 'namespaceSelector:\\s*\\{\\s*\\}',
+     "detail": 'An empty namespaceSelector ({}) matches all namespaces in the cluster, defeating the purpose of namespace-scoped network segmentation.',
+     "rec": 'Scope the selector to specific, named namespaces (via labels) that genuinely need access.'},
+    {"id": 'K8S-024', "title": 'Wildcard subject in a RoleBinding/ClusterRoleBinding', "severity": 'High', "category": 'Privilege',
+     "pattern": 'kind:\\s*(?:User|Group)\\s*\\n\\s*name:\\s*[\\"\']?\\*',
+     "detail": 'A wildcard subject name matches every user/group, granting the bound role to literally everyone.',
+     "rec": 'Bind to specific, named subjects (users, groups, or service accounts) instead of a wildcard.'},
+    {"id": 'K8S-025', "title": 'Pod with no resource limits and no LimitRange in the namespace (informational)', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "limits:" not in c,
+     "detail": 'Without either pod-level limits or a namespace LimitRange, a single misbehaving pod can consume all available node resources.',
+     "rec": 'Set resources.limits at the pod level, or define a namespace-wide LimitRange as a backstop.'},
+    {"id": 'K8S-026', "title": 'PodDisruptionBudget missing for a workload with multiple replicas', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "replicas:" in c and "PodDisruptionBudget" not in c,
+     "detail": 'Without a PodDisruptionBudget, a voluntary disruption (node drain, cluster upgrade) can take down all replicas of a workload simultaneously.',
+     "rec": "Define a PodDisruptionBudget with minAvailable/maxUnavailable appropriate to the workload's replica count."},
+    {"id": 'K8S-027', "title": 'Secret mounted as an environment variable rather than a file', "severity": 'Medium', "category": 'Secrets',
+     "pattern": 'secretKeyRef:',
+     "detail": 'Environment variables are more likely to leak (via crash dumps, /proc/<pid>/environ, child-process inheritance, or accidental logging of the environment) than a file mounted with restrictive permissions.',
+     "rec": 'Mount secrets as files via a volume where practical, especially for high-value credentials.'},
+    {"id": 'K8S-028', "title": "Namespace not specified (defaults to 'default')", "severity": 'Low', "category": 'Hygiene',
+     "pattern": None, "check_fn": lambda c: "namespace:" not in c,
+     "detail": "Deploying without an explicit namespace lands everything in 'default', making it harder to apply namespace-scoped policies (quotas, network policies, RBAC) meaningfully.",
+     "rec": 'Specify an explicit, purpose-named namespace for every deployment.'},
+]
+
+# ---- batch 7 (session 7) ----
+K8S_CHECKS += [
+    {"id": 'K8S-029', "title": 'Container image pulled with imagePullPolicy: Always missing on a mutable tag', "severity": 'Low', "category": 'Hygiene',
+     "pattern": None, "check_fn": lambda c: ":latest" in c and "imagePullPolicy" not in c,
+     "detail": "Without imagePullPolicy: Always, a mutable tag like ':latest' may run a stale cached image on some nodes and the current one on others, causing inconsistent behavior across the cluster.",
+     "rec": 'Set imagePullPolicy: Always for any image referenced by a mutable tag, or better, pin to an immutable digest.'},
+    {"id": 'K8S-030', "title": 'Pod security context missing entirely', "severity": 'Medium', "category": 'Privilege',
+     "pattern": None, "check_fn": lambda c: "kind: Pod" in c and "securityContext:" not in c,
+     "detail": 'Without any pod-level securityContext, the pod inherits permissive container-runtime defaults rather than an explicit, reviewed security posture.',
+     "rec": 'Define securityContext at the pod level with, at minimum, runAsNonRoot: true and a seccompProfile.'},
+    {"id": 'K8S-031', "title": 'Secret volume mounted with default (world-readable-ish) permissions', "severity": 'Medium', "category": 'Secrets',
+     "pattern": 'secret:\\s*\\n\\s*secretName:.*(?!defaultMode)',
+     "detail": 'Without an explicit defaultMode, secret files are mounted with mode 0644 by default -- readable by any process in the container, not just the one that needs it.',
+     "rec": 'Set defaultMode: 0400 (or as restrictive as the consuming application allows) on the secret volume.'},
+    {"id": 'K8S-032', "title": 'Anti-affinity not set for a multi-replica deployment', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "replicas:" in c and "podAntiAffinity" not in c,
+     "detail": 'Without pod anti-affinity, the scheduler may place every replica on the same node, so a single node failure takes down the entire workload.',
+     "rec": 'Add a podAntiAffinity rule to spread replicas across nodes/zones for any workload with more than one replica.'},
+    {"id": 'K8S-033', "title": 'Startup probe missing for a slow-starting container type indicator', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "livenessProbe" in c and "startupProbe" not in c,
+     "detail": 'Without a startupProbe, a slow-initializing container can be killed by the liveness probe before it finishes starting up.',
+     "rec": 'Add a startupProbe with a generous failureThreshold for any workload with a non-trivial startup time.'},
+]
+
+# ---- batch 8 (session 8) ----
+K8S_CHECKS += [
+    {"id": 'K8S-034', "title": 'Init container missing a securityContext of its own', "severity": 'Low', "category": 'Privilege',
+     "pattern": None, "check_fn": lambda c: "initContainers:" in c and c.count("securityContext:") < 2,
+     "detail": "Init containers run before the main container's security context is relevant and are easy to overlook; without their own restrictive securityContext, they may run with more privilege than the workload actually needs.",
+     "rec": 'Set an explicit, restrictive securityContext on every initContainer, not just the main containers.'},
+    {"id": 'K8S-035', "title": 'Service account token explicitly requested with no expiration bound', "severity": 'Low', "category": 'Secrets',
+     "pattern": 'serviceAccountToken:\\s*\\n(?!\\s*expirationSeconds)',
+     "detail": "A projected service account token with no expirationSeconds uses the (long) default, increasing the value of that token if it's ever leaked.",
+     "rec": "Set a short expirationSeconds appropriate to the workload's actual token lifetime needs."},
+    {"id": 'K8S-036', "title": 'CronJob with concurrencyPolicy not set to Forbid or Replace', "severity": 'Low', "category": 'Resilience',
+     "pattern": None, "check_fn": lambda c: "kind: CronJob" in c and "concurrencyPolicy" not in c,
+     "detail": 'The default concurrencyPolicy (Allow) lets overlapping runs pile up if a job takes longer than its schedule interval, which can cause resource exhaustion or duplicate side effects.',
+     "rec": "Set concurrencyPolicy: Forbid (or Replace, depending on the job's idempotency) unless concurrent runs are specifically intended."},
+]
+
+# ---- batch 9 (session 9) ----
+K8S_CHECKS += [
+    {"id": 'K8S-037', "title": 'Container port bound without a corresponding Service (potential direct pod access assumption)', "severity": 'Low', "category": 'Network',
+     "pattern": None, "check_fn": lambda c: "containerPort:" in c and "kind: Service" not in c,
+     "detail": "Exposing a containerPort with no Service to front it means anything reaching the pod's IP directly can connect, bypassing any Service-level access control expectations.",
+     "rec": "Define a Service (even a headless one, if that's the intent) for every containerPort that's meant to be reachable."},
+    {"id": 'K8S-038', "title": 'Volume mount marked readOnly: false where the container likely only needs read access (ConfigMap)', "severity": 'Low', "category": 'Privilege',
+     "pattern": 'configMap:[\\s\\S]{0,100}readOnly:\\s*false',
+     "detail": "ConfigMaps are typically read-only configuration; explicitly mounting one as writable is usually unintentional and has no effect (Kubernetes doesn't actually support writable ConfigMap mounts), suggesting copy-pasted or misunderstood configuration.",
+     "rec": 'Remove the readOnly: false override, or reconsider whether a ConfigMap is the right resource type for what this workload needs.'},
+]
+
 
 class ContainerSecurityAnalyzer:
     """
@@ -6486,6 +9585,12 @@ class ContainerSecurityAnalyzer:
     (YAML) for 40+ security issues covering privilege escalation, secrets,
     network exposure, supply-chain risks, and resilience.
     """
+
+    def __init__(self) -> None:
+        # Records any check whose pattern/check_fn raised instead of
+        # silently dropping it (see _run_checks) — reset once per
+        # analyze_files() call so it reflects only the most recent scan.
+        self.check_errors: List[str] = []
 
     def _run_checks(self, file_name: str, content: str,
                     checks: List[Dict[str, Any]], prefix: str) -> List[ContainerFinding]:
@@ -6508,8 +9613,11 @@ class ContainerSecurityAnalyzer:
                             recommendation=check["rec"],
                         ))
                         break  # one finding per check per file
-                except re.error:
-                    pass
+                except re.error as e:
+                    # Was silently dropped forever with no trace — a
+                    # broken check pattern would never fire again and
+                    # nothing would ever say so.
+                    self.check_errors.append(f"{check.get('id', '?')}: {e}")
             elif check_fn:
                 try:
                     if check_fn(content):
@@ -6520,8 +9628,8 @@ class ContainerSecurityAnalyzer:
                             severity=check["severity"], category=check["category"],
                             detail=check["detail"], recommendation=check["rec"],
                         ))
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.check_errors.append(f"{check.get('id', '?')}: {e}")
         return findings
 
     def analyze(self, file_name: str, content: str) -> List[ContainerFinding]:
@@ -6539,6 +9647,7 @@ class ContainerSecurityAnalyzer:
         return []
 
     def analyze_files(self, files: Dict[str, str]) -> List[ContainerFinding]:
+        self.check_errors = []  # reset per scan run
         findings: List[ContainerFinding] = []
         for name, content in files.items():
             findings.extend(self.analyze(name, content))
@@ -7778,6 +10887,8 @@ class SwarmOrchestrator:
         ".php": "php", ".java": "java", ".go": "go", ".c": "c", ".h": "c", ".cpp": "c",
         ".cs": "csharp", ".rb": "ruby", ".rs": "rust", ".kt": "kotlin", ".kts": "kotlin",
         ".swift": "swift", ".scala": "scala", ".sc": "scala",  # added: extended_rules.py batch 1
+        ".pl": "perl", ".pm": "perl", ".m": "objc", ".mm": "objc",  # added: batch 6
+        ".ex": "elixir", ".exs": "elixir", ".lua": "lua", ".dart": "dart", ".ps1": "powershell",
     }
 
     def __init__(self, auth_manager: AuthorizationManager, max_workers: int = 16):
@@ -9923,6 +13034,1018 @@ PATTERN_RULES += [
 ]
 
 
+# ---- batch 6 (session 6): large expansion toward 600+ rules ----
+PATTERN_RULES += [
+    PatternRule(id='PH-019', title='Local/remote file inclusion via dynamic include/require', pattern='(?:include|require)(?:_once)?\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-98', 'A03:2021-Injection', 'ASVS 5.2.3', 'CAPEC-193', 'PW.5.1'),
+                remediation='Never pass request data to include/require; map allowed values to a fixed allow-list of file paths instead.'),
+    PatternRule(id='PH-020', title='Type-juggling auth bypass via loose comparison', pattern='==\\s*\\$_(?:GET|POST|REQUEST|COOKIE)\\[[^\\]]+\\]\\s*\\)\\s*\\{', language='php',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-697', 'A07:2021-Identification and Authentication Failures', 'ASVS 6.2.4', 'CAPEC-201', 'PW.5.1'),
+                remediation="Use strict comparison (===) or hash_equals() for any comparison involving credentials/tokens/hashes -- PHP's loose == treats '0e123' as equal to '0e456'."),
+    PatternRule(id='PH-021', title='Predictable temp filename via tempnam() pattern reuse', pattern='tempnam\\s*\\(\\s*sys_get_temp_dir\\(\\)\\s*,\\s*[\\"\'][a-zA-Z]{1,3}[\\"\']\\s*\\)', language='php',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-377', '', '', '', 'PW.5.1'),
+                remediation="Use a longer, less-guessable prefix and always check tempnam()'s return value; consider tmpfile() when the handle alone is sufficient."),
+    PatternRule(id='PH-022', title='Header injection via header() with unsanitized newline-bearing input', pattern='header\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*\\.\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-113', '', '', '', 'PW.5.1'),
+                remediation="Strip CR/LF from any request-derived value before using it in header(); PHP blocks embedded newlines by default since 5.1.2 but don't rely on that alone."),
+    PatternRule(id='JS-020', title='Prototype pollution via Object.assign/merge with request data', pattern='(?:Object\\.assign|_\\.merge|\\$\\.extend)\\s*\\(\\s*\\{?\\s*\\}?\\s*,\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-1321', 'A08:2021-Software and Data Integrity Failures', 'ASVS 5.1.4', 'CAPEC-138', 'PW.5.1'),
+                remediation='Validate/allowlist keys before merging request data into an object, or use a merge utility with prototype-pollution protection (e.g. Object.create(null) targets, or a library patched against __proto__ injection).'),
+    PatternRule(id='JS-021', title='RegExp constructed directly from request data', pattern='new\\s+RegExp\\s*\\(\\s*req(?:uest)?\\.(?:body|query|params)', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-1333', 'A05:2021-Security Misconfiguration', 'ASVS 5.1.3', 'CAPEC-492', 'PW.5.1'),
+                remediation='Never let external input become a regex pattern -- an attacker-controlled pattern can hang the process (ReDoS) independent of any bug in your own regexes.'),
+    PatternRule(id='JS-022', title='JWT verified with verification explicitly disabled', pattern='jwt\\.verify\\([^)]*ignoreExpiration\\s*:\\s*true[^)]*\\)|jwt\\.decode\\(', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-347', 'A02:2021-Cryptographic Failures', 'ASVS 3.5.3', 'CAPEC-475', 'PW.5.1'),
+                remediation='Use jwt.verify() (not jwt.decode(), which performs no signature check) and never set ignoreExpiration: true in production code paths.'),
+    PatternRule(id='JS-023', title='Dynamic require() of a request-influenced module path', pattern='require\\s*\\(\\s*req(?:uest)?\\.(?:body|query|params)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-98', 'A03:2021-Injection', 'ASVS 5.2.3', 'CAPEC-193', 'PW.5.1'),
+                remediation='Never pass request data to require(); map allowed values to a fixed allow-list of module names instead.'),
+    PatternRule(id='JV-016', title='JNDI lookup with request-influenced name (Log4Shell-shaped)', pattern='(?:InitialContext\\(\\)\\.lookup|JndiManager\\.getObjectFactoryBuilder)\\s*\\([^)]*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', 'A08:2021-Software and Data Integrity Failures', 'ASVS 5.5.3', 'CAPEC-586', 'PW.5.1'),
+                remediation='Never pass request data into a JNDI lookup; if remote object lookups are required at all, disable JNDI remote class loading and pin an allow-list of lookup names.'),
+    PatternRule(id='JV-017', title='SAXParser instantiated without disabling external entities', pattern='SAXParserFactory\\.newInstance\\(\\)\\.newSAXParser\\(\\)', language='java',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-611', 'A05:2021-Security Misconfiguration', 'ASVS 5.5.2', 'CAPEC-221', 'PW.5.1'),
+                remediation='Call setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) on the factory before creating the parser.'),
+    PatternRule(id='JV-018', title='LDAP search filter built with string concatenation', pattern='\\.search\\s*\\(\\s*[^,]+,\\s*[\\"\'][^\\"\']*\\"\\s*\\+\\s*\\w', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-90', '', '', '', 'PW.5.1'),
+                remediation='Escape special LDAP filter characters in any user-supplied value before building the search filter.'),
+    PatternRule(id='JV-019', title='Random UUID used where a security token was likely intended', pattern='UUID\\.randomUUID\\(\\)\\.toString\\(\\)\\.replace', language='java',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation="UUIDv4 is generally fine for tokens (122 bits of randomness from a CSPRNG), but stripping/reformatting it (this pattern) often signals treating it as a short id -- if it's used for anything security-sensitive, use SecureRandom-derived bytes sized for the actual purpose."),
+    PatternRule(id='GO-014', title='math/rand used to generate key material', pattern='math/rand[\\s\\S]{0,300}(?:key|token|secret)\\s*:?=', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', 'A02:2021-Cryptographic Failures', 'ASVS 6.3.1', 'CAPEC-112', 'PW.5.1'),
+                remediation='Use crypto/rand, never math/rand, for anything security-sensitive.'),
+    PatternRule(id='GO-015', title='Outbound HTTP request built with a request-controlled host', pattern='http\\.NewRequest\\s*\\([^)]*r\\.URL\\.Query\\(\\)', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-918', 'A10:2021-Server-Side Request Forgery', 'ASVS 5.2.6', 'CAPEC-664', 'PW.5.1'),
+                remediation='Validate/allowlist the destination host before making an outbound request derived from request data.'),
+    PatternRule(id='GO-016', title='File opened with a path built from request data', pattern='os\\.Open\\s*\\([^)]*r\\.URL\\.Query\\(\\)', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-22', '', '', '', 'PW.5.1'),
+                remediation='Use filepath.Clean() and verify the resolved path stays inside the intended base directory before opening a request-derived path.'),
+    PatternRule(id='GO-017', title='XML decoded without a token-count/entity-expansion limit', pattern='xml\\.NewDecoder\\([^)]*\\)\\.Decode\\(', language='go',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-611', '', '', '', 'PW.5.1'),
+                remediation="Go's encoding/xml doesn't resolve external entities by default (unlike libxml2-based parsers), so this is lower risk than classic XXE -- but still validate input size to avoid resource-exhaustion from deeply nested/huge documents."),
+    PatternRule(id='RB-012', title='SSRF via open-uri with request-controlled URL', pattern='open\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-918', 'A10:2021-Server-Side Request Forgery', 'ASVS 5.2.6', 'CAPEC-664', 'PW.5.1'),
+                remediation='Validate/allowlist destination hosts before opening a URL built from request data; open-uri will happily fetch file:// and other unexpected schemes too.'),
+    PatternRule(id='RB-013', title='Command injection via backticks with string interpolation', pattern='`[^`]*#\\{(?:params|request)', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-78', 'A03:2021-Injection', 'ASVS 5.2.8', 'CAPEC-88', 'PW.5.1'),
+                remediation='Use Open3.capture2/3 with an argument array instead of backtick/interpolated shell commands.'),
+    PatternRule(id='RB-014', title='Nokogiri XML parsed without NONET/NOENT protection', pattern='Nokogiri::XML\\s*\\(\\s*[^,)]+\\)(?!.*NONET)', language='ruby',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-611', '', '', '', 'PW.5.1'),
+                remediation='Pass Nokogiri::XML::ParseOptions::NONET (and avoid DTDLOAD/NOENT) when parsing untrusted XML.'),
+    PatternRule(id='RB-015', title='ERB template rendered with request data in the template source itself', pattern='ERB\\.new\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-1336', 'A03:2021-Injection', 'ASVS 5.2.5', 'CAPEC-242', 'PW.5.1'),
+                remediation="Never use request data as the ERB template source itself (as opposed to a template variable) -- that's full server-side template injection, equivalent to eval()."),
+    PatternRule(id='KT-007', title='Hardcoded encryption key in a SecretKeySpec', pattern='SecretKeySpec\\s*\\(\\s*[\\"\'][^\\"\']{8,}[\\"\']\\.toByteArray', language='kotlin',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-321', 'A02:2021-Cryptographic Failures', 'ASVS 6.4.1', 'CAPEC-37', 'PW.5.1'),
+                remediation='Never hardcode encryption keys; derive them from Android Keystore-backed material or a secrets manager.'),
+    PatternRule(id='KT-008', title='SharedPreferences used to store data that looks like a credential', pattern='putString\\s*\\(\\s*[\\"\'](?:password|token|secret|api_?key)[\\"\']', language='kotlin',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-312', 'A02:2021-Cryptographic Failures', 'ASVS 8.1.1', 'CAPEC-150', 'PW.5.1'),
+                remediation='SharedPreferences is plaintext on rooted/backed-up devices; use EncryptedSharedPreferences (Jetpack Security) or the Android Keystore for anything sensitive.'),
+    PatternRule(id='KT-009', title='Exported Android component with no permission required', pattern='android:exported\\s*=\\s*[\\"\']true[\\"\'](?![\\s\\S]{0,150}android:permission)', language='kotlin',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-926', '', '', '', 'PW.5.1'),
+                remediation="Require a signature-level permission on exported components unless they're genuinely meant to be callable by any app on the device."),
+    PatternRule(id='RS-005', title='unsafe block present (review required, not inherently a bug)', pattern='\\bunsafe\\s*\\{', language='rust',
+                severity=Severity('Info'), confidence=Confidence('Low'),
+                standards=_std('CWE-119', 'A06:2021-Vulnerable and Outdated Components', 'ASVS 14.2.1', 'CAPEC-100', 'PW.5.1'),
+                remediation="unsafe blocks opt out of Rust's memory-safety guarantees -- each one warrants a manual review to confirm the invariants the compiler would normally check are actually upheld."),
+    PatternRule(id='RS-006', title='Command built and executed with shell interpretation', pattern='Command::new\\s*\\(\\s*[\\"\'](?:sh|bash|cmd)[\\"\']\\)\\s*\\.arg\\s*\\(\\s*[\\"\']-c[\\"\']', language='rust',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', 'A03:2021-Injection', 'ASVS 5.2.8', 'CAPEC-88', 'PW.5.1'),
+                remediation='Run the target program directly via Command::new(program).args([...]) instead of invoking a shell with -c and an interpolated string.'),
+    PatternRule(id='C-007', title='printf-family call with a non-literal format string', pattern='(?:printf|fprintf|sprintf|snprintf)\\s*\\([^,)]*,\\s*\\w+\\s*\\)', language='c',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-134', 'A03:2021-Injection', 'ASVS 5.3.7', 'CAPEC-135', 'PW.5.1'),
+                remediation='Never pass a variable directly as the format argument; use printf("%s", user_string) so user data is always treated as data, never as a format specifier.'),
+    PatternRule(id='C-008', title='Unbounded string copy (strcpy/strcat/gets)', pattern='\\b(?:strcpy|strcat|gets)\\s*\\(', language='c',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-120', '', '', '', 'PW.5.1'),
+                remediation='Use strncpy/strncat with an explicit bound, or better, a safer string-handling library; never use gets() at all -- it has no way to bound its input and was removed from the C standard.'),
+    PatternRule(id='C-009', title='rand() used to generate a value used for anything security-sensitive', pattern='(?:token|password|key|nonce)\\s*=.*\\brand\\s*\\(\\)', language='c',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use a CSPRNG appropriate to your platform (getrandom()/arc4random_buf() on Linux/BSD, BCryptGenRandom on Windows) instead of rand().'),
+    PatternRule(id='CS-008', title='XmlDocument loaded without disabling DTD processing', pattern='new\\s+XmlDocument\\s*\\(\\s*\\)\\.Load(?:Xml)?\\s*\\(', language='csharp',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-611', 'A05:2021-Security Misconfiguration', 'ASVS 5.5.2', 'CAPEC-221', 'PW.5.1'),
+                remediation='Set XmlDocument.XmlResolver = null (or use XmlReaderSettings with DtdProcessing.Prohibit) before loading untrusted XML.'),
+    PatternRule(id='CS-009', title='BinaryFormatter used to deserialize data', pattern='BinaryFormatter\\s*\\(\\s*\\)\\.Deserialize\\s*\\(', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-502', 'A08:2021-Software and Data Integrity Failures', 'ASVS 5.5.3', 'CAPEC-586', 'PW.5.1'),
+                remediation='BinaryFormatter is officially deprecated by Microsoft specifically because it cannot be made safe for untrusted input -- use System.Text.Json or another data-only format instead.'),
+    PatternRule(id='CS-010', title='System.Random used to generate a security-sensitive value', pattern='new\\s+Random\\s*\\(\\s*\\)[\\s\\S]{0,150}(?:token|password|key)', language='csharp',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use System.Security.Cryptography.RandomNumberGenerator instead of System.Random for anything security-sensitive.'),
+    PatternRule(id='SW-008', title='Legacy C random function used for a security-sensitive value', pattern='(?:token|password|key)\\s*=.*\\b(?:random\\(\\)|drand48\\(\\))', language='swift',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation="Use SecRandomCopyBytes or CryptoKit's random generation instead of the legacy C random()/drand48() functions."),
+    PatternRule(id='SW-009', title='Realm database configured without encryption', pattern='Realm\\.Configuration\\s*\\((?![\\s\\S]{0,200}encryptionKey)', language='swift',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-311', '', '', '', 'PW.5.1'),
+                remediation='Set encryptionKey on the Realm.Configuration for any database that may hold sensitive data -- Realm supports transparent AES-256+SHA2 encryption.'),
+    PatternRule(id='SC-006', title='CSRF check explicitly bypassed in a Play controller', pattern='@CSRFAddToken\\.bypass|nocheck\\s*=\\s*true', language='scala',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-352', '', '', '', 'PW.5.1'),
+                remediation="Confirm the bypassed action doesn't perform a state-changing operation reachable from an authenticated browser session before disabling CSRF protection."),
+    PatternRule(id='SC-007', title='XML parsed via scala.xml.XML.loadString on external input', pattern='scala\\.xml\\.XML\\.load(?:String|File)?\\s*\\(', language='scala',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-611', '', '', '', 'PW.5.1'),
+                remediation="scala.xml delegates to the JVM's default (unprotected) SAX parser -- configure it to disable DOCTYPE/external entities, or use a hardened parser, before loading untrusted XML."),
+    PatternRule(id='PL-001', title='Command injection via backticks/system with interpolation', pattern='(?:system|exec)\\s*\\(\\s*[\\"\'][^\\"\']*\\$', language='perl',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', 'A03:2021-Injection', 'ASVS 5.2.8', 'CAPEC-88', 'PW.5.1'),
+                remediation='Pass arguments as a list (system($cmd, @args)) instead of a single interpolated string, so the shell never re-parses the arguments.'),
+    PatternRule(id='PL-002', title='eval() of a string built from CGI parameter data', pattern='eval\\s*\\(\\s*(?:\\$cgi->param|\\$q->param)', language='perl',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-95', 'A03:2021-Injection', 'ASVS 5.2.4', 'CAPEC-242', 'PW.5.1'),
+                remediation='Never eval() request data; parse it with an explicit, restrictive grammar instead.'),
+    PatternRule(id='PL-003', title='SQL query built with string concatenation', pattern='->(?:do|prepare)\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*\\.\\s*\\$', language='perl',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', 'A03:2021-Injection', 'ASVS 5.3.4', 'CAPEC-66', 'PW.5.1'),
+                remediation='Use DBI placeholders (?) with bound parameters instead of concatenating values into the query string.'),
+    PatternRule(id='PL-004', title='Insecure temp file via a predictable path in /tmp', pattern='open\\s*\\([^,]+,\\s*[\\"\']>\\s*/tmp/', language='perl',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-377', '', '', '', 'PW.5.1'),
+                remediation='Use File::Temp instead of a hardcoded /tmp path, to avoid symlink/race-condition attacks on a predictable filename.'),
+    PatternRule(id='OC-001', title='ATS disabled via NSAllowsArbitraryLoads', pattern='NSAllowsArbitraryLoads.{0,20}YES', language='objc',
+                severity=Severity('High'), confidence=Confidence('High'),
+                standards=_std('CWE-295', 'A02:2021-Cryptographic Failures', 'ASVS 9.1.1', 'CAPEC-94', 'PW.5.1'),
+                remediation='Remove the ATS exception, or scope it to a specific, justified domain instead of allowing arbitrary insecure loads app-wide.'),
+    PatternRule(id='OC-002', title='Format string vulnerability via non-literal NSString format', pattern='stringWithFormat\\s*:\\s*\\w+\\s*\\]', language='objc',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-134', '', '', '', 'PW.5.1'),
+                remediation='Never pass a variable directly as the format argument; use stringWithFormat:@"%@", userString so user data is always treated as data.'),
+    PatternRule(id='OC-003', title='Keychain item stored with an always-accessible attribute', pattern='kSecAttrAccessibleAlways\\b', language='objc',
+                severity=Severity('Medium'), confidence=Confidence('High'),
+                standards=_std('CWE-922', '', '', '', 'PW.5.1'),
+                remediation='Use kSecAttrAccessibleWhenUnlockedThisDeviceOnly (or another *ThisDeviceOnly variant) unless the item genuinely needs to be readable before device unlock.'),
+    PatternRule(id='OC-004', title='SQL query built with string concatenation (sqlite3)', pattern='sqlite3_exec\\s*\\([^,]+,\\s*\\[\\s*NSString\\s+stringWithFormat', language='objc',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation='Use sqlite3_prepare_v2 with bound parameters (sqlite3_bind_*) instead of building the SQL string with stringWithFormat.'),
+    PatternRule(id='PH-023', title='Weak session ID entropy configuration', pattern='session\\.hash_function\\s*=\\s*0', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use a stronger session hash function (sha256/sha512) rather than the legacy MD5-based default (0).'),
+    PatternRule(id='PH-024', title='Insecure PHAR deserialization via file operations on user path', pattern='file_(?:exists|get_contents)\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='A phar:// stream wrapper deserialization gadget chain can be triggered by ANY file-operation function (not just include/require) receiving a request-controlled path ending in .phar -- validate and reject phar:// paths explicitly.'),
+    PatternRule(id='PH-025', title='Insecure random used for a CSRF token', pattern='csrf_token\\s*=.*\\brand\\(\\)', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use random_bytes()/bin2hex(random_bytes()) for CSRF tokens, not rand().'),
+    PatternRule(id='PH-026', title='Extract() used on request data (variable injection)', pattern='extract\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-621', '', '', '', 'PW.5.1'),
+                remediation='extract() on request data lets an attacker define/overwrite arbitrary variables in the current scope, potentially bypassing later logic that assumes those variables are unset.'),
+    PatternRule(id='PH-027', title='Insecure regular expression with /e modifier (legacy code execution)', pattern='preg_replace\\s*\\([^,]*/e[\\"\']', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='The /e modifier (removed in PHP 7) evaluates the replacement as PHP code -- if still present in legacy code running under an old interpreter, this is arbitrary code execution.'),
+    PatternRule(id='JS-024', title='Insecure postMessage with wildcard target origin', pattern='postMessage\\s*\\([^,]+,\\s*[\\"\']\\*[\\"\']', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-346', '', '', '', 'PW.5.1'),
+                remediation="A wildcard target origin means any frame/window can receive the message; specify the exact expected origin instead of '*'."),
+    PatternRule(id='JS-025', title='Insecure message listener with no origin check', pattern='addEventListener\\s*\\(\\s*[\\"\']message[\\"\']\\s*,\\s*(?:function|\\([^)]*\\)\\s*=>)\\s*\\{(?![\\s\\S]{0,150}\\.origin)', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-346', '', '', '', 'PW.5.1'),
+                remediation='A postMessage listener with no event.origin check will process messages from any origin, including a malicious page the user has open in another tab.'),
+    PatternRule(id='JS-026', title='Insecure dependency install script (postinstall running a remote script)', pattern='[\\"\']postinstall[\\"\']\\s*:\\s*[\\"\'][^\\"\']*curl[^\\"\']*\\|\\s*(?:sh|bash)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-494', '', '', '', 'PW.5.1'),
+                remediation='A postinstall script that pipes a curl download directly into a shell executes arbitrary remote code on every `npm install`, a common supply-chain attack vector.'),
+    PatternRule(id='JS-027', title='innerHTML assigned from a template literal with unescaped interpolation', pattern='\\.innerHTML\\s*=\\s*`[^`]*\\$\\{(?!.*(?:escape|sanitize|DOMPurify))', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-79', '', '', '', 'PW.5.1'),
+                remediation="Interpolating a variable into innerHTML via a template literal is the same DOM-XSS risk as string concatenation -- sanitize with DOMPurify or use textContent if HTML isn't actually needed."),
+    PatternRule(id='JS-028', title='Insecure WebSocket connection (ws:// instead of wss://)', pattern='new\\s+WebSocket\\s*\\(\\s*[\\"\']ws://', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-319', '', '', '', 'PW.5.1'),
+                remediation='Plain ws:// sends all WebSocket traffic unencrypted; use wss:// in any context handling sensitive data.'),
+    PatternRule(id='JV-020', title='Insecure XStream deserialization', pattern='XStream\\s*\\(\\s*\\)\\.fromXML\\s*\\(', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Default XStream configuration allows arbitrary class instantiation from XML, a well-documented RCE vector (multiple public CVEs). Configure an explicit type allow-list (XStream.addPermission) before calling fromXML on untrusted input.'),
+    PatternRule(id='JV-021', title='Insecure random used for a session identifier', pattern='session[Ii]d\\s*=.*new\\s+Random\\s*\\(\\s*\\)', language='java',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use java.security.SecureRandom, not java.util.Random, for session identifiers.'),
+    PatternRule(id='JV-022', title='Struts OGNL expression evaluated from request data', pattern='ognl\\.Ognl\\.getValue\\s*\\([^)]*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-917', '', '', '', 'PW.5.1'),
+                remediation='Evaluating an OGNL expression built from request data is remote code execution (the root cause of several major Apache Struts CVEs). Never evaluate an expression language against untrusted input.'),
+    PatternRule(id='JV-023', title='Insecure XPath evaluation from request data', pattern='XPath\\.compile\\s*\\(\\s*[^)]*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-643', '', '', '', 'PW.5.1'),
+                remediation='Use parameterized XPath (XPathVariableResolver) instead of compiling an expression built from request data.'),
+    PatternRule(id='JV-024', title='Deserialization with no ObjectInputFilter configured', pattern='new\\s+ObjectInputStream\\s*\\([^)]*\\)(?![\\s\\S]{0,150}setObjectInputFilter)', language='java',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Since JEP 290 (Java 9+), ObjectInputStream supports setObjectInputFilter() to restrict which classes can be deserialized -- configure one for any stream that might read untrusted data.'),
+    PatternRule(id='GO-018', title='Insecure gob deserialization of untrusted data', pattern='gob\\.NewDecoder\\([^)]*\\)\\.Decode\\(', language='go',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation="encoding/gob is designed for trusted Go-to-Go communication and has had DoS-class issues with malformed input; don't decode gob data from an untrusted network source without strict size/timeout limits."),
+    PatternRule(id='GO-019', title='Command built with exec.Command and a shell interpreter', pattern='exec\\.Command\\s*\\(\\s*[\\"\'](?:sh|bash)[\\"\']\\s*,\\s*[\\"\']-c[\\"\']', language='go',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Call exec.Command(program, args...) directly instead of invoking a shell with -c and an interpolated string.'),
+    PatternRule(id='GO-020', title='Insecure random used for a CSRF/session token', pattern='math/rand[\\s\\S]{0,200}(?:csrf|session)', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use crypto/rand for CSRF tokens and session identifiers, never math/rand.'),
+    PatternRule(id='GO-021', title='JWT parsed with no algorithm allow-list (alg confusion risk)', pattern='jwt\\.Parse\\s*\\(\\s*\\w+\\s*,\\s*func', language='go',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-347', '', '', '', 'PW.5.1'),
+                remediation='Explicitly check token.Method matches the expected signing algorithm inside the keyfunc -- without this check, an attacker can switch algorithms (e.g. RS256 to HS256) to forge a valid-looking signature.'),
+    PatternRule(id='RB-016', title='Insecure Marshal.load on untrusted data', pattern='Marshal\\.load\\s*\\(', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Marshal.load can instantiate arbitrary Ruby objects (including ones with dangerous side effects in their initializers) from untrusted input -- use JSON for any data crossing a trust boundary.'),
+    PatternRule(id='RB-017', title='Insecure send() with a request-controlled method name', pattern='\\.send\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Calling .send with a method name taken from request data lets an attacker invoke any method on the object, including private/dangerous ones. Use an explicit allow-list of permitted method names.'),
+    PatternRule(id='RB-018', title='Open redirect via request.referer used unchecked', pattern='redirect_to\\s+request\\.referer\\b', language='ruby',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-601', '', '', '', 'PW.5.1'),
+                remediation='The Referer header is fully attacker-controlled; validate it against an allow-list before using it as a redirect target, the same as any other request data.'),
+    PatternRule(id='RB-019', title='Insecure YAML deserialization via Psych.unsafe_load', pattern='Psych\\.unsafe_load\\s*\\(', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Psych.unsafe_load is the explicitly-named dangerous loader (equivalent to the pre-Psych-4 default) -- use Psych.safe_load unless arbitrary object construction from trusted-only YAML is genuinely required.'),
+    PatternRule(id='KT-010', title='Insecure WebView with JavaScript enabled loading arbitrary URLs', pattern='settings\\.javaScriptEnabled\\s*=\\s*true(?![\\s\\S]{0,300}shouldOverrideUrlLoading)', language='kotlin',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-79', '', '', '', 'PW.5.1'),
+                remediation='Enabling JavaScript in a WebView that can navigate to arbitrary URLs (with no shouldOverrideUrlLoading restriction) exposes the app to script-injection attacks from any site it loads.'),
+    PatternRule(id='KT-011', title='Insecure certificate pinning bypass (trusts all certs)', pattern='object\\s*:\\s*X509TrustManager\\s*\\{[\\s\\S]{0,200}\\}\\s*(?!.*throw)', language='kotlin',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation="A custom X509TrustManager whose check methods don't throw on failure accepts every certificate, defeating TLS validation entirely."),
+    PatternRule(id='KT-012', title='Room database not encrypted (SQLCipher not used)', pattern='Room\\.databaseBuilder\\([^)]*\\)\\.build\\(\\)(?![\\s\\S]{0,100}SupportFactory)', language='kotlin',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-311', '', '', '', 'PW.5.1'),
+                remediation='For databases holding sensitive data, use SQLCipher (via a SupportFactory) to encrypt the Room database at rest.'),
+    PatternRule(id='RS-007', title='Insecure deserialization via serde with untyped Value from untrusted input feeding eval-like use', pattern='serde_json::from_str::<serde_json::Value>\\s*\\(', language='rust',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Deserializing into a fully untyped Value is memory-safe in Rust (unlike Python/Java/PHP equivalents) but still worth noting if the resulting Value is later used to drive dynamic behavior -- prefer a typed struct with #[derive(Deserialize)] when the shape is known.'),
+    PatternRule(id='RS-008', title='Hardcoded encryption key in source', pattern='(?:Key|key)::from_slice\\s*\\(\\s*b[\\"\'][^\\"\']{16,}[\\"\']\\)', language='rust',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-321', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode encryption keys; load them from a secrets manager or environment configuration.'),
+    PatternRule(id='RS-009', title='Panic-based error handling on untrusted input (potential DoS)', pattern='\\.parse\\(\\)\\.unwrap\\(\\)', language='rust',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-248', '', '', '', 'PW.5.1'),
+                remediation='unwrap() on a Result derived from external input panics (crashing the process/thread) on malformed data -- handle the Err case explicitly for anything parsed from untrusted input.'),
+    PatternRule(id='C-010', title='Format string passed directly to syslog', pattern='syslog\\s*\\(\\s*\\w+\\s*,\\s*\\w+\\s*\\)', language='c',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-134', '', '', '', 'PW.5.1'),
+                remediation='Passing a variable directly as syslog\'s format argument has the same format-string injection risk as printf; use syslog(priority, "%s", user_string).'),
+    PatternRule(id='C-011', title='Use-after-free risk: pointer used after free() with no reassignment', pattern='free\\s*\\(\\s*(\\w+)\\s*\\)\\s*;\\s*(?!\\1\\s*=\\s*NULL)', language='c',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-416', '', '', '', 'PW.5.1'),
+                remediation='Set the pointer to NULL immediately after free() to make any accidental later use a clean crash rather than an exploitable use-after-free.'),
+    PatternRule(id='C-012', title='Insecure temp file via tmpnam()', pattern='\\btmpnam\\s*\\(', language='c',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-377', '', '', '', 'PW.5.1'),
+                remediation='tmpnam() generates a predictable filename subject to race conditions; use mkstemp() instead, which creates and opens the file atomically.'),
+    PatternRule(id='CS-011', title='Insecure LDAP query built with string concatenation', pattern='new\\s+DirectorySearcher\\s*\\(\\s*[^,)]+\\)\\s*\\.Filter\\s*=\\s*[\\"\'][^\\"\']*\\"\\s*\\+', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-90', '', '', '', 'PW.5.1'),
+                remediation='Escape special LDAP filter characters in any user-supplied value before building the search filter.'),
+    PatternRule(id='CS-012', title='Insecure Process.Start with shell interpretation of concatenated input', pattern='Process\\.Start\\s*\\(\\s*[\\"\']cmd(?:\\.exe)?[\\"\']\\s*,\\s*[\\"\']/c\\s*\\"\\s*\\+', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Call Process.Start with the target executable and an explicit ProcessStartInfo.ArgumentList instead of invoking cmd /c with a concatenated string.'),
+    PatternRule(id='CS-013', title='ViewState MAC validation disabled', pattern='EnableViewStateMac\\s*=\\s*[\\"\']?false', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-345', '', '', '', 'PW.5.1'),
+                remediation='Disabling ViewState MAC validation allows an attacker to tamper with serialized ViewState data (and, combined with a known key, achieve deserialization RCE via ysoserial.net-style payloads).'),
+    PatternRule(id='SW-010', title='Certificate pinning bypass via always-trust delegate', pattern='didReceiveChallenge[\\s\\S]{0,200}\\.useCredential\\([\\s\\S]{0,50}URLCredential\\(trust:', language='swift',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation='Confirm the trust object is validated (e.g. compared against a pinned certificate/public key) before calling useCredential -- an unconditional call accepts any server certificate.'),
+    PatternRule(id='SW-011', title='Core Data / SQLite store with no file protection class set', pattern='NSPersistentStoreDescription\\(\\)(?![\\s\\S]{0,200}NSFileProtectionKey)', language='swift',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-311', '', '', '', 'PW.5.1'),
+                remediation='Set NSFileProtectionKey (e.g. to complete-until-first-unlock or better) on the persistent store options for any data that should stay encrypted while the device is locked.'),
+    PatternRule(id='SC-008', title='Insecure random used for a token via scala.util.Random', pattern='scala\\.util\\.Random[\\s\\S]{0,100}(?:token|password)', language='scala',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='Use java.security.SecureRandom, not scala.util.Random, for anything security-sensitive.'),
+    PatternRule(id='PL-005', title='Insecure Storable::thaw deserialization', pattern='Storable::thaw\\s*\\(', language='perl',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Storable::thaw can instantiate arbitrary blessed objects from untrusted input, similar to Python pickle or Java deserialization -- never call it on data from an untrusted source.'),
+    PatternRule(id='PL-006', title='Insecure open() with a two-argument form and unsanitized data', pattern='open\\s*\\(\\s*\\w+\\s*,\\s*[\\"\']>?\\s*[\\"\']\\s*\\.\\s*\\$', language='perl',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation="Perl's two-argument open() interprets shell metacharacters (|, >, <) in the filename -- use the three-argument form (open($fh, '>', $path)) to treat the path as a literal filename."),
+    PatternRule(id='OC-005', title='Insecure random via arc4random() for a value that should be uniformly bounded', pattern='arc4random\\s*\\(\\s*\\)\\s*%', language='objc',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='arc4random() % n introduces modulo bias for non-power-of-two n; use arc4random_uniform(n) instead, which corrects for this.'),
+    PatternRule(id='OC-006', title='NSURLConnection allows all certificates via delegate override', pattern='connection:[\\s\\S]{0,50}canAuthenticateAgainstProtectionSpace[\\s\\S]{0,50}return\\s+YES', language='objc',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation="Unconditionally returning YES here disables server trust evaluation entirely for this connection; validate the protection space's authentication method and the server trust instead."),
+    PatternRule(id='EX-001', title='Command injection via System.cmd with shell interpretation', pattern='System\\.cmd\\s*\\(\\s*[\\"\']sh[\\"\']\\s*,\\s*\\[\\s*[\\"\']-c[\\"\']', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Call System.cmd(program, args) directly with an argument list instead of invoking a shell with -c.'),
+    PatternRule(id='EX-002', title='Insecure atom creation from external input (memory exhaustion / DoS)', pattern='String\\.to_atom\\s*\\(\\s*(?:conn\\.params|params)', language='elixir',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-400', '', '', '', 'PW.5.1'),
+                remediation='Atoms are never garbage-collected in the BEAM VM; creating one per request from external input lets an attacker exhaust the atom table and crash the node. Use String.to_existing_atom/1 instead.'),
+    PatternRule(id='EX-003', title='SQL query built with string interpolation (Ecto raw query)', pattern='Ecto\\.Adapters\\.SQL\\.query!?\\s*\\(\\s*\\w+\\s*,\\s*[\\"\'][^\\"\']*#\\{', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation="Use Ecto's parameterized query syntax ($1, $2, ...) instead of interpolating values into the raw SQL string."),
+    PatternRule(id='EX-004', title='Insecure deserialization via :erlang.binary_to_term without safe options', pattern=':erlang\\.binary_to_term\\s*\\(\\s*\\w+\\s*\\)(?!.*\\[:safe\\])', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='binary_to_term/1 without the :safe option can create arbitrary atoms and reconstruct arbitrary terms from untrusted binary data. Pass [:safe] as a second argument when decoding external input.'),
+    PatternRule(id='LU-001', title='loadstring/load used on externally-influenced data', pattern='(?:loadstring|load)\\s*\\(\\s*(?:ngx\\.var|request)', language='lua',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='loadstring/load compiles and can execute arbitrary Lua code -- never call it with request-influenced data.'),
+    PatternRule(id='LU-002', title='Command injection via os.execute with concatenation', pattern='os\\.execute\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*\\.\\.', language='lua',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Avoid building shell commands with string concatenation; if a subprocess must run, use io.popen with carefully validated, allow-listed arguments.'),
+    PatternRule(id='LU-003', title='Insecure random used for a token (math.random without proper seeding)', pattern='(?:token|password)\\s*=.*math\\.random\\s*\\(', language='lua',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation="Lua's math.random is not cryptographically secure and is easy to predict if the seed is known/guessable; use a CSPRNG appropriate to your platform (e.g. OpenSSL bindings) for security-sensitive values."),
+    PatternRule(id='DT-001', title='Insecure HTTP client with certificate validation bypassed', pattern='badCertificateCallback\\s*=\\s*\\([^)]*\\)\\s*(?:=>|\\{)\\s*true', language='dart',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation='Unconditionally returning true from badCertificateCallback accepts any certificate, including expired, self-signed, or attacker-controlled ones.'),
+    PatternRule(id='DT-002', title='SQL query built with string interpolation', pattern='rawQuery\\s*\\(\\s*[\\"\'][^\\"\']*\\$\\{', language='dart',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation='Use parameterized queries (rawQuery(sql, [args]) with ? placeholders) instead of interpolating values into the SQL string.'),
+    PatternRule(id='DT-003', title='Insecure storage of sensitive data in SharedPreferences', pattern='SharedPreferences[\\s\\S]{0,100}setString\\s*\\(\\s*[\\"\'](?:password|token|secret)', language='dart',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-312', '', '', '', 'PW.5.1'),
+                remediation='SharedPreferences is unencrypted plaintext storage; use flutter_secure_storage (backed by Keychain/Keystore) for credentials and tokens.'),
+    PatternRule(id='PS-001', title='Invoke-Expression on external/downloaded content', pattern='Invoke-Expression\\s*\\(?\\s*(?:New-Object\\s+Net\\.WebClient|\\$input)', language='powershell',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Invoke-Expression executes its argument as PowerShell code -- never use it on downloaded content or external input; parse and validate data as data instead.'),
+    PatternRule(id='PS-002', title='Certificate validation disabled for the whole session', pattern='\\[System\\.Net\\.ServicePointManager\\]::ServerCertificateValidationCallback\\s*=\\s*\\{\\s*\\$true\\s*\\}', language='powershell',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation='This disables TLS certificate validation for every subsequent request in the session; fix the underlying certificate trust issue instead.'),
+    PatternRule(id='PS-003', title='Plaintext credential passed on the command line', pattern='-Credential\\s+.*-Password\\s+[\\"\'][^\\"\']+[\\"\']', language='powershell',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-522', '', '', '', 'PW.5.1'),
+                remediation='Passing a plaintext password as a command-line argument exposes it in process listings and shell history; use Get-Credential or a SecureString read from a protected source instead.'),
+    PatternRule(id='PH-028', title='Insecure comparison of password hash with ==', pattern='==\\s*password_hash\\(|password_hash\\([^)]*\\)\\s*==', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-697', '', '', '', 'PW.5.1'),
+                remediation='Use password_verify() to check a password against a hash, never a direct == comparison of hash strings.'),
+    PatternRule(id='PH-029', title='SOAP client with WSDL caching disabled insecurely (SSRF-adjacent)', pattern='new\\s+SoapClient\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-918', '', '', '', 'PW.5.1'),
+                remediation='Never construct a SoapClient with a request-controlled WSDL URL; an attacker-supplied WSDL can trigger SSRF or XXE depending on libxml configuration.'),
+    PatternRule(id='PH-030', title='Insecure use of assert() with a string argument (legacy code execution)', pattern='assert\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Prior to PHP 8, assert() evaluates a string argument as PHP code -- never pass request data to it.'),
+    PatternRule(id='JS-029', title='Insecure use of Function constructor on request data', pattern='new\\s+Function\\s*\\(\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='The Function constructor compiles and executes its argument as JavaScript, the same risk as eval() -- never call it with request data.'),
+    PatternRule(id='JS-030', title='GraphQL resolver executes a raw DB query with string concatenation', pattern='resolve\\s*:\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>\\s*\\{[\\s\\S]{0,150}query\\s*\\(\\s*[\\"\'][^\\"\']*\\"\\s*\\+', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation="Use parameterized queries inside GraphQL resolvers, exactly as you would in a REST handler -- the resolver boundary doesn't sanitize anything."),
+    PatternRule(id='JS-031', title='Insecure CORS reflecting the request Origin header unconditionally', pattern='res\\.setHeader\\s*\\(\\s*[\\"\']Access-Control-Allow-Origin[\\"\']\\s*,\\s*req\\.headers\\.origin\\s*\\)', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-942', '', '', '', 'PW.5.1'),
+                remediation='Reflecting any Origin back is equivalent to a wildcard for practical purposes; validate the origin against an explicit allow-list before echoing it.'),
+    PatternRule(id='JV-025', title='Insecure Runtime.exec with a single command-line string', pattern='Runtime\\.getRuntime\\(\\)\\.exec\\s*\\(\\s*[\\"\'][^\\"\']*\\"\\s*\\+', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Use the String[] overload of exec() (or ProcessBuilder with a list of arguments) instead of a single concatenated command-line string.'),
+    PatternRule(id='JV-026', title='Insecure EL (Expression Language) evaluation from request data', pattern='ExpressionFactory[\\s\\S]{0,100}createValueExpression\\s*\\([^)]*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-917', '', '', '', 'PW.5.1'),
+                remediation='Evaluating an EL expression built from request data is remote code execution; never pass untrusted input to an EL expression factory.'),
+    PatternRule(id='GO-022', title='Insecure text/template used for HTML output (no auto-escaping)', pattern='text/template[\\s\\S]{0,200}\\.Execute\\s*\\(\\s*w\\s*,', language='go',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-79', '', '', '', 'PW.5.1'),
+                remediation='text/template performs no HTML-context escaping; use html/template for anything rendered as HTML, which auto-escapes based on output context.'),
+    PatternRule(id='GO-023', title='TLS MinVersion not set (allows legacy TLS 1.0/1.1)', pattern='tls\\.Config\\{(?![\\s\\S]{0,150}MinVersion)', language='go',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-327', '', '', '', 'PW.5.1'),
+                remediation='Set MinVersion: tls.VersionTLS12 (or 1.3) explicitly -- the zero-value default allows negotiating down to TLS 1.0.'),
+    PatternRule(id='RB-020', title='Insecure XML entity expansion via REXML with no protection', pattern='REXML::Document\\.new\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-776', '', '', '', 'PW.5.1'),
+                remediation="Older REXML versions are vulnerable to entity-expansion DoS ('billion laughs'); ensure you're on a patched REXML version and consider a size limit before parsing untrusted XML."),
+    PatternRule(id='RB-021', title='Insecure use of instance_variable_set with request-controlled name', pattern='instance_variable_set\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation="Setting an instance variable whose name comes from request data can overwrite internal state the application didn't intend to expose; use an explicit allow-list of permitted attribute names."),
+    PatternRule(id='PH-031', title='Insecure cookie set without SameSite attribute', pattern='setcookie\\s*\\([^)]{0,150}\\)(?!.*samesite)', language='php',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-1004', '', '', '', 'PW.5.1'),
+                remediation='Without SameSite, the cookie defaults to Lax in modern browsers (better than nothing) but explicit is better -- set it to Strict or Lax deliberately, and Secure alongside it.'),
+    PatternRule(id='JS-032', title='Insecure use of child_process.exec with template literal', pattern='child_process\\.exec\\s*\\(\\s*`[^`]*\\$\\{', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Use execFile/spawn with an argument array instead of exec() with an interpolated template literal, so the shell never re-parses the arguments.'),
+    PatternRule(id='JV-027', title='Insecure Cipher instantiation without an explicit mode/padding', pattern='Cipher\\.getInstance\\s*\\(\\s*[\\"\']AES[\\"\']\\s*\\)', language='java',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-327', '', '', '', 'PW.5.1'),
+                remediation='"AES" alone resolves to a provider-specific default (often ECB) -- always specify the full transformation, e.g. "AES/GCM/NoPadding".'),
+    PatternRule(id='GO-024', title='Insecure use of html/template with a raw HTML type bypassing escaping', pattern='template\\.HTML\\s*\\(\\s*\\w+\\s*\\)', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-79', '', '', '', 'PW.5.1'),
+                remediation="Wrapping a value in template.HTML tells Go's auto-escaping to trust it completely -- only do this for content you've explicitly sanitized, never for raw request data."),
+    PatternRule(id='RB-022', title='Insecure use of Kernel#open with a pipe-prefixed string', pattern='(?:Kernel#)?open\\s*\\(\\s*[\\"\']\\|', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation="Ruby's Kernel#open treats a leading pipe character as a command to run through the shell -- if any part of the argument is influenced by external input, use File.open instead, which has no such special-casing."),
+    PatternRule(id='KT-013', title='Insecure use of Cipher with ECB mode', pattern='Cipher\\.getInstance\\s*\\(\\s*[\\"\'].*ECB', language='kotlin',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-327', '', '', '', 'PW.5.1'),
+                remediation='Use GCM (authenticated) mode instead of ECB, which leaks patterns in the plaintext.'),
+    PatternRule(id='CS-014', title='Insecure use of DES/TripleDES cipher', pattern='TripleDESCryptoServiceProvider|DESCryptoServiceProvider', language='csharp',
+                severity=Severity('Medium'), confidence=Confidence('High'),
+                standards=_std('CWE-327', '', '', '', 'PW.5.1'),
+                remediation='DES and 3DES are both considered weak by modern standards; use Aes.Create() instead.'),
+    PatternRule(id='SW-012', title='Insecure use of CommonCrypto DES', pattern='kCCAlgorithmDES\\b', language='swift',
+                severity=Severity('Medium'), confidence=Confidence('High'),
+                standards=_std('CWE-327', '', '', '', 'PW.5.1'),
+                remediation="Use kCCAlgorithmAES128 (or CryptoKit's AES.GCM) instead of DES."),
+    PatternRule(id='PL-007', title='Insecure use of qw() constructed from external input (indirect code injection risk)', pattern='eval\\s*\\{\\s*.*\\$ENV\\{', language='perl',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation="Evaluating a block that references environment variables you don't fully control can be manipulated if an attacker can influence the process environment (e.g. via a CGI header-derived variable)."),
+    PatternRule(id='GO-025', title='Insecure use of net/http with no client Timeout set', pattern='http\\.Client\\{\\s*\\}(?!.*Timeout)', language='go',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-400', '', '', '', 'PW.5.1'),
+                remediation='An http.Client with no Timeout can hang indefinitely on a slow/malicious server, tying up goroutines and resources (a resource-exhaustion risk under load).'),
+]
+
+
+# ---- batch 7 (session 7): push toward 1000+ ----
+PATTERN_RULES += [
+    PatternRule(id='PH-032', title='Insecure TLS verification disabled via stream context', pattern='stream_context_create\\s*\\(\\s*\\[\\s*[\\"\']ssl[\\"\']\\s*=>\\s*\\[\\s*[\\"\']verify_peer[\\"\']\\s*=>\\s*false', language='php',
+                severity=Severity('High'), confidence=Confidence('High'),
+                standards=_std('CWE-295', '', '', '', 'PW.5.1'),
+                remediation='Remove the override; fix the underlying certificate trust issue instead of disabling verification.'),
+    PatternRule(id='PH-033', title='Insecure random used for a password reset token', pattern='reset_token\\s*=.*\\buniqid\\(\\)', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-330', '', '', '', 'PW.5.1'),
+                remediation='uniqid() is based on the system clock and is guessable; use random_bytes()/bin2hex(random_bytes()) for reset tokens.'),
+    PatternRule(id='PH-034', title='SSRF via file_get_contents on a request-controlled URL', pattern='file_get_contents\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-918', '', '', '', 'PW.5.1'),
+                remediation='Validate/allowlist destination hosts before fetching a URL built from request data.'),
+    PatternRule(id='PH-035', title='Insecure use of create_function (legacy code execution)', pattern='create_function\\s*\\(', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='create_function() internally uses eval() and was removed in PHP 8; never call it with any request-influenced argument.'),
+    PatternRule(id='PH-036', title='Race condition: file existence check before use (TOCTOU)', pattern='file_exists\\s*\\(\\s*\\$\\w+\\s*\\)\\s*\\)\\s*\\{\\s*[\\s\\S]{0,50}fopen\\s*\\(', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-367', '', '', '', 'PW.5.1'),
+                remediation='The file can change between the check and the use; open the file directly and handle the failure case instead of checking existence first.'),
+    PatternRule(id='JS-033', title='Insecure use of vm.runInNewContext with request data', pattern='vm\\.runInNewContext\\s*\\(\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='vm.runInNewContext still allows escaping the sandbox in many Node versions; never run request-derived code with it.'),
+    PatternRule(id='JS-034', title='Insecure use of Buffer.from with a request-controlled encoding argument', pattern='Buffer\\.from\\s*\\(\\s*req(?:uest)?\\.(?:body|query)[^,]*,\\s*req', language='javascript',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-20', '', '', '', 'PW.5.1'),
+                remediation='Validate the encoding argument against an explicit allow-list rather than passing request data directly.'),
+    PatternRule(id='JS-035', title='Insecure use of fs.readFile with a request-controlled path and no containment check', pattern='fs\\.readFile\\s*\\(\\s*(?:path\\.join\\s*\\([^)]*req(?:uest)?\\.(?:body|query|params)|req(?:uest)?\\.(?:body|query|params))', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-22', '', '', '', 'PW.5.1'),
+                remediation='Resolve the path and verify it stays inside the intended base directory before reading a request-derived path.'),
+    PatternRule(id='JS-036', title='Insecure use of child_process.fork with a request-controlled module path', pattern='child_process\\.fork\\s*\\(\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-94', '', '', '', 'PW.5.1'),
+                remediation='Never fork a child process running a module path taken from request data; map allowed values to a fixed allow-list.'),
+    PatternRule(id='JS-037', title='Insecure logging of the full request object (may leak auth headers/cookies)', pattern='console\\.log\\s*\\(\\s*req(?:uest)?\\s*\\)', language='javascript',
+                severity=Severity('Low'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Log only the specific fields you need (method, path, a request id) rather than the entire request object, which typically includes Authorization headers and cookies.'),
+    PatternRule(id='JV-028', title='Insecure use of ScriptEngine.eval with request data', pattern='ScriptEngine\\w*\\.eval\\s*\\(\\s*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Never evaluate a script engine expression built from request data; this is equivalent to eval() on untrusted input.'),
+    PatternRule(id='JV-029', title='Insecure use of Class.forName with a request-controlled class name', pattern='Class\\.forName\\s*\\(\\s*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Loading a class whose name comes from request data lets an attacker instantiate arbitrary classes on the classpath; use an explicit allow-list.'),
+    PatternRule(id='JV-030', title='Insecure logging of a password field via toString()', pattern='log\\.\\w+\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*\\+\\s*\\w*[Pp]assword', language='java',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Never log a value derived from a password/credential field, even for debugging.'),
+    PatternRule(id='JV-031', title='Insecure use of Files.readAllBytes with a request-controlled path', pattern='Files\\.readAllBytes\\s*\\(\\s*Paths\\.get\\s*\\(\\s*request\\.', language='java',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-22', '', '', '', 'PW.5.1'),
+                remediation='Resolve and verify the path stays inside the intended base directory before reading a request-derived path.'),
+    PatternRule(id='GO-026', title='Insecure use of unsafe.Pointer for type conversion outside a documented-safe pattern', pattern='unsafe\\.Pointer\\s*\\(', language='go',
+                severity=Severity('Info'), confidence=Confidence('Low'),
+                standards=_std('CWE-704', '', '', '', 'PW.5.1'),
+                remediation="unsafe.Pointer bypasses Go's type safety; each use warrants a manual review to confirm the conversion is actually sound."),
+    PatternRule(id='GO-027', title='Insecure use of os/exec with LookPath skipped (relative binary name)', pattern='exec\\.Command\\s*\\(\\s*[\\"\'][a-zA-Z0-9_-]+[\\"\']\\s*\\)', language='go',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-427', '', '', '', 'PW.5.1'),
+                remediation='A bare relative command name is resolved via PATH at runtime; use an absolute path or exec.LookPath explicitly to avoid PATH-hijacking.'),
+    PatternRule(id='GO-028', title='Insecure logging of the full HTTP request', pattern='log\\.Print(?:f|ln)?\\s*\\(\\s*r\\s*\\)', language='go',
+                severity=Severity('Low'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Log only specific fields (method, path, a request id) rather than the entire *http.Request, which can include Authorization headers and cookies.'),
+    PatternRule(id='RB-023', title='Insecure use of Kernel#eval with request data', pattern='eval\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Never eval() request data; parse it with an explicit, restrictive grammar instead.'),
+    PatternRule(id='RB-024', title='Insecure logging of request parameters including auth', pattern='logger\\.\\w+\\s*\\(\\s*params\\s*\\)', language='ruby',
+                severity=Severity('Low'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Log only the specific parameters you need rather than the entire params hash, which can include passwords and tokens submitted in the same request.'),
+    PatternRule(id='RB-025', title='Insecure use of File.read with a request-controlled path', pattern='File\\.read\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-22', '', '', '', 'PW.5.1'),
+                remediation='Resolve and verify the path stays inside the intended base directory before reading a request-derived path.'),
+    PatternRule(id='KT-014', title='Insecure logging of a token/password field', pattern='Log\\.\\w\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*,\\s*\\w*(?:token|password|secret)', language='kotlin',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Never log a value derived from a token/password/secret field, even for debugging -- Android logs are readable by other apps with the READ_LOGS permission on older OS versions and are often captured in bug reports.'),
+    PatternRule(id='KT-015', title='Insecure use of PendingIntent without FLAG_IMMUTABLE', pattern='PendingIntent\\.get(?:Activity|Service|Broadcast)\\s*\\([^)]*\\)(?!.*FLAG_IMMUTABLE)', language='kotlin',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-927', '', '', '', 'PW.5.1'),
+                remediation='Add FLAG_IMMUTABLE (or FLAG_MUTABLE with explicit justification) -- a mutable PendingIntent can be modified by a malicious app to redirect the action.'),
+    PatternRule(id='RS-010', title='Insecure use of std::mem::transmute', pattern='std::mem::transmute', language='rust',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-704', '', '', '', 'PW.5.1'),
+                remediation="transmute bypasses Rust's type system entirely; each use warrants a manual review to confirm the memory layouts genuinely match."),
+    PatternRule(id='C-013', title='Insecure use of system() for command execution', pattern='\\bsystem\\s*\\(\\s*\\w', language='c',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Use exec family functions (execv/execvp) with an explicit argument array instead of system(), which always invokes a shell.'),
+    PatternRule(id='C-014', title='Integer overflow in a size calculation feeding realloc', pattern='realloc\\s*\\(\\s*\\w+\\s*,\\s*\\w+\\s*\\*\\s*\\w+\\s*\\)', language='c',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-190', '', '', '', 'PW.5.1'),
+                remediation="Validate that count * size doesn't overflow before calling realloc(), or use reallocarray() where available (it checks for you)."),
+    PatternRule(id='CS-015', title='Insecure use of Assembly.Load with request-controlled bytes', pattern='Assembly\\.Load\\s*\\(\\s*request\\.', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Loading an assembly built from request data is remote code execution; never do this with untrusted input.'),
+    PatternRule(id='CS-016', title='Insecure logging of a connection string (may contain credentials)', pattern='(?:Console\\.WriteLine|_logger\\.\\w+)\\s*\\(\\s*.*ConnectionString', language='csharp',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Connection strings frequently embed credentials; never log them directly, even for debugging.'),
+    PatternRule(id='SW-013', title='Insecure use of NSKeyedUnarchiver without a secure coding requirement', pattern='NSKeyedUnarchiver\\.unarchiveObject\\s*\\(', language='swift',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-502', '', '', '', 'PW.5.1'),
+                remediation='Use unarchivedObject(ofClass:from:) (requiring NSSecureCoding) instead of the deprecated unarchiveObject(with:), which can instantiate arbitrary classes.'),
+    PatternRule(id='SC-009', title='Insecure use of Class.forName with a request-controlled class name', pattern='Class\\.forName\\s*\\(\\s*request\\.', language='scala',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Loading a class whose name comes from request data lets an attacker instantiate arbitrary classes on the classpath.'),
+    PatternRule(id='PL-008', title='Insecure use of require with a dynamic module name', pattern='require\\s+\\$', language='perl',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Loading a module whose name is a variable lets an attacker influence which code gets loaded if that variable is ever tainted; use an explicit allow-list.'),
+    PatternRule(id='PL-009', title='Insecure logging of CGI parameters', pattern='print\\s+STDERR\\s+.*\\$cgi->param', language='perl',
+                severity=Severity('Low'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Log only the specific parameters you need rather than raw CGI param dumps, which can include passwords submitted in the same request.'),
+    PatternRule(id='OC-007', title='Insecure use of NSTemporaryDirectory with a predictable filename', pattern='NSTemporaryDirectory\\(\\)\\s*stringByAppendingPathComponent:\\s*@\\"[a-zA-Z]{1,4}\\"', language='objc',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-377', '', '', '', 'PW.5.1'),
+                remediation='Use a longer, less-guessable filename (e.g. incorporating a UUID) for files written to the temp directory.'),
+    PatternRule(id='OC-008', title='Insecure use of respondsToSelector combined with performSelector on request-controlled data', pattern='performSelector\\s*:\\s*NSSelectorFromString\\s*\\(\\s*\\w*[Rr]equest', language='objc',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Invoking a selector built from request data lets an attacker call arbitrary methods; use an explicit allow-list of permitted selector names.'),
+    PatternRule(id='EX-005', title='Insecure use of Code.eval_string with external input', pattern='Code\\.eval_string\\s*\\(\\s*conn\\.params', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Code.eval_string compiles and executes arbitrary Elixir code; never call it with request-influenced data.'),
+    PatternRule(id='EX-006', title='Insecure logging of the full connection struct', pattern='Logger\\.\\w+\\s*\\(\\s*conn\\s*\\)', language='elixir',
+                severity=Severity('Low'), confidence=Confidence('Medium'),
+                standards=_std('CWE-532', '', '', '', 'PW.5.1'),
+                remediation='Log only the specific fields you need rather than the entire connection struct, which can include auth headers and session data.'),
+    PatternRule(id='LU-004', title='Insecure use of dofile with a request-controlled path', pattern='dofile\\s*\\(\\s*ngx\\.var', language='lua',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-98', '', '', '', 'PW.5.1'),
+                remediation='dofile executes the target file as Lua code; never call it with a path influenced by request data.'),
+    PatternRule(id='DT-004', title='Insecure use of dart:mirrors to invoke a request-controlled method name', pattern='reflect\\s*\\([^)]*\\)\\.invoke\\s*\\(\\s*Symbol\\s*\\(\\s*request', language='dart',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Invoking a method whose name comes from request data lets an attacker call arbitrary methods; use an explicit allow-list.'),
+    PatternRule(id='PS-004', title='Insecure use of Add-Type to compile and load inline C# from external input', pattern='Add-Type\\s+-TypeDefinition\\s+\\$', language='powershell',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Compiling and loading a type definition built from a variable is equivalent to eval() if that variable can ever hold external/downloaded content.'),
+    PatternRule(id='PH-037', title='Insecure use of extract() with EXTR_OVERWRITE on request data', pattern='extract\\s*\\([^,]+,\\s*EXTR_OVERWRITE', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-621', '', '', '', 'PW.5.1'),
+                remediation='EXTR_OVERWRITE lets extracted request variables silently replace existing ones in scope; never use it with request data.'),
+    PatternRule(id='PH-038', title='Insecure use of move_uploaded_file into a web-accessible directory with no extension check', pattern='move_uploaded_file\\s*\\([^,]+,\\s*[\\"\'][^\\"\']*(?:public|www|htdocs)[^\\"\']*\\$_FILES', language='php',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-434', '', '', '', 'PW.5.1'),
+                remediation='Uploading a file with an attacker-chosen name/extension directly into a web-served directory can lead to executing an uploaded script (e.g. a .php shell).'),
+    PatternRule(id='PH-039', title='Insecure use of array_merge on request data feeding a config array (mass assignment)', pattern='array_merge\\s*\\(\\s*\\$config\\s*,\\s*\\$_(?:GET|POST|REQUEST)\\s*\\)', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-915', '', '', '', 'PW.5.1'),
+                remediation='Merging request data directly into a configuration array lets an attacker override any config key; explicitly whitelist which keys are user-settable.'),
+    PatternRule(id='JS-038', title='Insecure use of Object.defineProperty to override a security-relevant getter with tainted data', pattern='Object\\.defineProperty\\s*\\(\\s*\\w+\\s*,\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-1321', '', '', '', 'PW.5.1'),
+                remediation='Using request data as a property name/descriptor target for defineProperty can be abused similarly to prototype pollution; validate the key against an allow-list.'),
+    PatternRule(id='JS-039', title='Insecure use of require.resolve with request-controlled input (path disclosure)', pattern='require\\.resolve\\s*\\(\\s*req(?:uest)?\\.(?:body|query)', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-200', '', '', '', 'PW.5.1'),
+                remediation='require.resolve with request data can be used to probe the filesystem for installed packages/paths; validate against an allow-list.'),
+    PatternRule(id='JS-040', title='Insecure use of a hardcoded HMAC secret for signing tokens', pattern='createHmac\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\s*,\\s*[\\"\'][a-zA-Z0-9]{8,}[\\"\']\\s*\\)', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-321', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an HMAC signing secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='JV-032', title='Insecure use of Runtime.exec with an array built partially from request data with no validation', pattern='Runtime\\.getRuntime\\(\\)\\.exec\\s*\\(\\s*new\\s+String\\[\\]\\s*\\{[^}]*request\\.', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-78', '', '', '', 'PW.5.1'),
+                remediation='Even the array form of exec() is unsafe if any element is unvalidated request data that happens to be interpreted as a flag/option by the target program; validate each argument against an allow-list.'),
+    PatternRule(id='JV-033', title='Insecure use of a hardcoded JWT signing key', pattern='Keys\\.hmacShaKeyFor\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\.getBytes', language='java',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-321', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a JWT signing key; load it from a secrets manager or environment configuration.'),
+    PatternRule(id='GO-029', title='Insecure use of a hardcoded JWT signing key', pattern='jwt\\.NewWithClaims\\([^)]*\\)\\.SignedString\\(\\s*\\[\\]byte\\s*\\(\\s*os\\.Getenv', language='go',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Loading the key from an environment variable (rather than a literal) is the right pattern -- flagged at Low/informational severity to confirm the env var is actually populated from a secrets manager in production, not a default value in a committed .env file.'),
+    PatternRule(id='GO-030', title='Insecure use of filepath.Join without cleaning a request-controlled segment', pattern='filepath\\.Join\\s*\\([^)]*r\\.URL\\.Query\\(\\)', language='go',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-22', '', '', '', 'PW.5.1'),
+                remediation="filepath.Join cleans '..' segments in the RESULT but a request-controlled segment can still escape the intended base if not verified against it afterward; check the resolved path is still within the base directory."),
+    PatternRule(id='RB-026', title='Insecure use of a hardcoded Rails secret_key_base', pattern='secret_key_base\\s*[:=]\\s*[\\"\'][0-9a-f]{40,}[\\"\']', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode secret_key_base (used to sign/encrypt sessions and cookies); load it from Rails credentials or an environment variable.'),
+    PatternRule(id='RB-027', title='Insecure use of Object#instance_eval with request data', pattern='instance_eval\\s*\\(\\s*(?:params|request)\\[', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation="instance_eval compiles and executes its argument as Ruby code in the object's context; never call it with request data."),
+    PatternRule(id='KT-016', title='Insecure use of a hardcoded Firebase database URL with public rules assumption', pattern='FirebaseDatabase\\.getInstance\\s*\\(\\s*[\\"\']https://[^\\"\']*firebaseio\\.com[\\"\']\\s*\\)', language='kotlin',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-284', '', '', '', 'PW.5.1'),
+                remediation="Hardcoding the database URL isn't itself a vulnerability, but confirm the Firebase security rules for this project actually restrict read/write access -- Firebase's historical default rules were fully public."),
+    PatternRule(id='RS-011', title='Insecure use of a hardcoded JWT signing secret', pattern='EncodingKey::from_secret\\s*\\(\\s*b[\\"\'][^\\"\']+[\\"\']\\s*\\)', language='rust',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a JWT signing secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='C-015', title='Insecure use of scanf with an unbounded %s specifier', pattern='scanf\\s*\\(\\s*[\\"\'][^\\"\']*%s[^\\"\']*[\\"\']', language='c',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-120', '', '', '', 'PW.5.1'),
+                remediation='An unbounded %s in scanf can overflow the destination buffer; specify a field width (e.g. %63s for a 64-byte buffer) or use fgets instead.'),
+    PatternRule(id='CS-017', title='Insecure use of a hardcoded JWT signing key', pattern='new\\s+SymmetricSecurityKey\\s*\\(\\s*Encoding\\.\\w+\\.GetBytes\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a JWT signing key; load it from configuration backed by a secrets manager.'),
+    PatternRule(id='SW-014', title='Insecure use of a hardcoded API key in an Info.plist-style string', pattern='static\\s+let\\s+apiKey\\s*=\\s*\\"[A-Za-z0-9_-]{16,}\\"', language='swift',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation="Never hardcode an API key in source; load it from a build configuration that's excluded from version control, or fetch it from your backend at runtime."),
+    PatternRule(id='SC-010', title='Insecure use of a hardcoded Akka HTTP basic auth credential', pattern='BasicHttpCredentials\\s*\\(\\s*\\"[^\\"]+\\"\\s*,\\s*\\"[^\\"]+\\"\\s*\\)', language='scala',
+                severity=Severity('High'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode basic auth credentials; load them from configuration backed by a secrets manager.'),
+    PatternRule(id='PH-040', title='Insecure use of a hardcoded JWT secret in firebase/php-jwt', pattern='JWT::encode\\s*\\([^,]+,\\s*[\\"\'][^\\"\']{8,}[\\"\']\\s*\\)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a JWT signing secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='PH-041', title='Insecure CORS header allowing all origins with credentials', pattern='header\\s*\\(\\s*[\\"\']Access-Control-Allow-Credentials:\\s*true[\\"\']\\s*\\)[\\s\\S]{0,150}Access-Control-Allow-Origin:\\s*\\*', language='php',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-942', '', '', '', 'PW.5.1'),
+                remediation='Never combine a wildcard origin with credentials; echo back a specific allow-listed origin instead.'),
+    PatternRule(id='JS-041', title='Insecure use of a hardcoded encryption key with crypto.createDecipheriv', pattern='createDecipheriv\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\s*,\\s*[\\"\'][a-zA-Z0-9]{8,}[\\"\']', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an encryption key; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='JS-042', title='Insecure use of Sequelize raw query with template literal interpolation', pattern='sequelize\\.query\\s*\\(\\s*`[^`]*\\$\\{', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation="Use Sequelize's replacements/bind parameters instead of interpolating values into the raw query template literal."),
+    PatternRule(id='JV-034', title='Insecure use of a hardcoded encryption key with Cipher.init', pattern='Cipher\\.init\\s*\\([^,]+,\\s*new\\s+SecretKeySpec\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\.getBytes', language='java',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an encryption key; derive/load it from a key management service or secrets manager.'),
+    PatternRule(id='JV-035', title='Insecure use of Hibernate createQuery with string concatenation (HQL injection)', pattern='createQuery\\s*\\(\\s*[\\"\'][^\\"\']*\\"\\s*\\+\\s*\\w', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-89', '', '', '', 'PW.5.1'),
+                remediation='Use named/positional parameters (setParameter) instead of concatenating values into the HQL string.'),
+    PatternRule(id='GO-031', title='Insecure use of a hardcoded encryption key with aes.NewCipher', pattern='aes\\.NewCipher\\s*\\(\\s*\\[\\]byte\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\s*\\)\\s*\\)', language='go',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an AES key; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='RB-028', title='Insecure use of a hardcoded encryption key with OpenSSL::Cipher', pattern='cipher\\.key\\s*=\\s*[\\"\'][^\\"\']{8,}[\\"\']', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an encryption key; load it from Rails credentials, environment configuration, or a secrets manager.'),
+    PatternRule(id='KT-017', title='Insecure use of a hardcoded encryption key with a Cipher instance', pattern='SecretKeySpec\\s*\\(\\s*[\\"\'][^\\"\']{8,}[\\"\']\\.toByteArray\\(\\),\\s*[\\"\']AES[\\"\']\\s*\\)', language='kotlin',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an AES key; derive it from Android Keystore-backed material.'),
+    PatternRule(id='CS-018', title='Insecure use of a hardcoded encryption key with Aes.Create', pattern='aes\\.Key\\s*=\\s*Encoding\\.\\w+\\.GetBytes\\s*\\(\\s*[\\"\'][^\\"\']+[\\"\']\\s*\\)', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an AES key; load it from a secrets manager (e.g. Azure Key Vault) or protected configuration.'),
+]
+
+
+# ---- batch 8 (session 8): push toward 1000+ ----
+PATTERN_RULES += [
+    PatternRule(id='PH-042', title='Insecure use of a hardcoded database password in a DSN string', pattern='new\\s+PDO\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*,\\s*[\\"\'][^\\"\']+[\\"\']\\s*,\\s*[\\"\'][a-zA-Z0-9!@#$%^&*]{6,}[\\"\']\\s*\\)', language='php',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='PH-043', title='Insecure use of preg_match with unbounded quantifier nesting (ReDoS)', pattern='preg_match\\s*\\(\\s*[\\"\'][^\\"\']*\\([^)]*[+*]\\)[+*]', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-1333', '', '', '', 'PW.5.1'),
+                remediation='Rewrite the pattern to avoid nested unbounded quantifiers, or validate/limit input length before matching.'),
+    PatternRule(id='JS-043', title='Insecure use of a hardcoded database password in a connection config object', pattern='password\\s*:\\s*[\\"\'][a-zA-Z0-9!@#$%^&*]{6,}[\\"\']\\s*[,}]', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='JS-044', title='Insecure use of eval-like Function constructor for JSON-ish parsing instead of JSON.parse', pattern='new\\s+Function\\s*\\(\\s*[\\"\']return\\s+[\\"\']\\s*\\+', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-95', '', '', '', 'PW.5.1'),
+                remediation='Use JSON.parse() for parsing JSON data; the Function-constructor trick executes the input as JavaScript, not just JSON, allowing code execution for malformed/malicious input.'),
+    PatternRule(id='JV-036', title='Insecure use of a hardcoded database password in a JDBC URL', pattern='DriverManager\\.getConnection\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*,\\s*[\\"\'][^\\"\']+[\\"\']\\s*,\\s*[\\"\'][a-zA-Z0-9!@#$%^&*]{6,}[\\"\']', language='java',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from a secrets manager or environment configuration.'),
+    PatternRule(id='JV-037', title='Insecure use of Pattern.compile with unbounded quantifier nesting (ReDoS)', pattern='Pattern\\.compile\\s*\\(\\s*[\\"\'][^\\"\']*\\([^)]*[+*]\\)[+*]', language='java',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-1333', '', '', '', 'PW.5.1'),
+                remediation='Rewrite the pattern to avoid nested unbounded quantifiers, or validate/limit input length before matching.'),
+    PatternRule(id='GO-032', title='Insecure use of a hardcoded database password in a DSN string', pattern='sql\\.Open\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*,\\s*[\\"\'][^\\"\']*:[a-zA-Z0-9!@#$%^&*]{6,}@', language='go',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='RB-029', title='Insecure use of a hardcoded database password in database.yml-style config', pattern='password:\\s*[a-zA-Z0-9!@#$%^&*]{6,}\\s*$', language='ruby',
+                severity=Severity('Low'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from Rails credentials or an environment variable (ERB interpolation in database.yml).'),
+    PatternRule(id='KT-018', title='Insecure use of a hardcoded database password in a JDBC connection', pattern='DriverManager\\.getConnection\\s*\\(\\s*\\"[^\\"]*\\"\\s*,\\s*\\"[^\\"]+\\"\\s*,\\s*\\"[a-zA-Z0-9!@#$%^&*]{6,}\\"', language='kotlin',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from a secrets manager or environment configuration.'),
+    PatternRule(id='RS-012', title='Insecure use of a hardcoded database password in a connection string', pattern='PgConnection::establish\\s*\\(\\s*\\"[^\\"]*:[a-zA-Z0-9!@#$%^&*]{6,}@', language='rust',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='CS-019', title='Insecure use of a hardcoded database password in a connection string', pattern='[\\"\']Server=[^\\"\']*Password=[a-zA-Z0-9!@#$%^&*]{6,}', language='csharp',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load the connection string from a secrets manager (e.g. Azure Key Vault) or protected configuration.'),
+    PatternRule(id='SW-015', title='Insecure use of a hardcoded API secret in a URLRequest header', pattern='setValue\\s*\\(\\s*\\"[A-Za-z0-9_-]{20,}\\"\\s*,\\s*forHTTPHeaderField:\\s*\\"Authorization\\"', language='swift',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an API secret/bearer token in source; fetch it from your backend at runtime or a secure configuration source.'),
+    PatternRule(id='SC-011', title='Insecure use of a hardcoded database password in a Slick config', pattern='[\\"\']password[\\"\']\\s*:\\s*[\\"\'][a-zA-Z0-9!@#$%^&*]{6,}[\\"\']', language='scala',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='PL-010', title='Insecure use of a hardcoded database password in a DBI connect string', pattern='DBI->connect\\s*\\(\\s*[\\"\'][^\\"\']*[\\"\']\\s*,\\s*[\\"\'][^\\"\']+[\\"\']\\s*,\\s*[\\"\'][a-zA-Z0-9!@#$%^&*]{6,}[\\"\']', language='perl',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a database password; load it from environment configuration.'),
+    PatternRule(id='OC-009', title='Insecure use of a hardcoded API secret in an NSURLRequest header', pattern='setValue:@\\"[A-Za-z0-9_-]{20,}\\"\\s+forHTTPHeaderField:@\\"Authorization\\"', language='objc',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an API secret/bearer token in source; fetch it from your backend at runtime.'),
+    PatternRule(id='PH-044', title='Insecure session fixation: session ID not regenerated after login', pattern='session_start\\s*\\(\\s*\\)[\\s\\S]{0,100}\\$_SESSION\\[[\\"\']user(?:_id)?[\\"\']\\]\\s*=(?![\\s\\S]{0,50}session_regenerate_id)', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-384', '', '', '', 'PW.5.1'),
+                remediation='Call session_regenerate_id(true) immediately after a successful login to prevent session fixation attacks.'),
+    PatternRule(id='PH-045', title='Insecure use of a hardcoded encryption IV', pattern='openssl_encrypt\\s*\\([^,]+,[^,]+,[^,]+,\\s*0\\s*,\\s*[\\"\'][0-9a-fA-F]{16,32}[\\"\']\\s*\\)', language='php',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV for every encryption (openssl_random_pseudo_bytes) rather than a fixed literal.'),
+    PatternRule(id='JS-045', title='Insecure session fixation: session ID not regenerated after login (Express)', pattern='req\\.session\\.(?:user|userId)\\s*=(?![\\s\\S]{0,80}regenerate)', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-384', '', '', '', 'PW.5.1'),
+                remediation='Call req.session.regenerate() before setting session data on login to prevent session fixation.'),
+    PatternRule(id='JS-046', title='Insecure use of a hardcoded encryption IV', pattern='createCipheriv\\s*\\([^,]+,[^,]+,\\s*Buffer\\.from\\s*\\(\\s*[\\"\'][0-9a-fA-F]{16,32}[\\"\']', language='javascript',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV for every encryption (crypto.randomBytes) rather than a fixed literal.'),
+    PatternRule(id='JV-038', title='Insecure session fixation: session not invalidated/regenerated after login', pattern='HttpSession\\s+\\w+\\s*=\\s*request\\.getSession\\s*\\([^)]*\\)(?![\\s\\S]{0,150}changeSessionId)', language='java',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-384', '', '', '', 'PW.5.1'),
+                remediation='Call request.changeSessionId() (Servlet 3.1+) after successful authentication to prevent session fixation.'),
+    PatternRule(id='JV-039', title='Insecure use of a hardcoded encryption IV', pattern='IvParameterSpec\\s*\\(\\s*[\\"\'][0-9a-fA-F]{16,32}[\\"\']\\.getBytes', language='java',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV (SecureRandom) for every encryption rather than a fixed literal.'),
+    PatternRule(id='GO-033', title='Insecure use of a hardcoded encryption IV', pattern='cipher\\.NewCBCEncrypter\\s*\\([^,]+,\\s*\\[\\]byte\\s*\\(\\s*[\\"\'][0-9a-fA-F]{16,32}[\\"\']', language='go',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV (crypto/rand) for every encryption rather than a fixed literal.'),
+    PatternRule(id='RB-030', title='Insecure session fixation: session ID not reset after login', pattern='session\\[:user_id\\]\\s*=(?![\\s\\S]{0,80}reset_session)', language='ruby',
+                severity=Severity('Medium'), confidence=Confidence('Low'),
+                standards=_std('CWE-384', '', '', '', 'PW.5.1'),
+                remediation='Call reset_session before setting session data on login to prevent session fixation.'),
+    PatternRule(id='KT-019', title='Insecure use of a hardcoded encryption IV', pattern='IvParameterSpec\\s*\\(\\s*\\"[0-9a-fA-F]{16,32}\\"\\.toByteArray', language='kotlin',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV for every encryption rather than a fixed literal.'),
+    PatternRule(id='CS-020', title='Insecure use of a hardcoded encryption IV', pattern='aes\\.IV\\s*=\\s*Encoding\\.\\w+\\.GetBytes\\s*\\(\\s*\\"[0-9a-fA-F]{16,32}\\"\\)', language='csharp',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV for every encryption (aes.GenerateIV()) rather than a fixed literal.'),
+    PatternRule(id='SW-016', title='Insecure use of a hardcoded encryption IV', pattern='CCCrypt\\s*\\([^,]*,[^,]*,[^,]*,\\s*\\"[0-9a-fA-F]{16,32}\\"', language='swift',
+                severity=Severity('Medium'), confidence=Confidence('Medium'),
+                standards=_std('CWE-329', '', '', '', 'PW.5.1'),
+                remediation='Generate a fresh random IV for every encryption rather than a fixed literal.'),
+    PatternRule(id='DT-005', title='Insecure use of a hardcoded encryption key', pattern='encrypt\\.Key\\.fromUtf8\\s*\\(\\s*[\\"\'][a-zA-Z0-9]{16,}[\\"\']\\s*\\)', language='dart',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an encryption key; load it from a secure configuration source or derive it at runtime from a user-provided secret.'),
+    PatternRule(id='EX-007', title='Insecure use of a hardcoded Phoenix secret_key_base', pattern='secret_key_base:\\s*\\"[0-9a-zA-Z+/=]{40,}\\"', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('High'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode secret_key_base; load it from runtime configuration (System.get_env) backed by a secrets manager.'),
+    PatternRule(id='PH-046', title='Insecure webshell password gate pattern', pattern='\\$_(?:GET|POST)\\[[\\"\'](?:pass|pwd|cmd)[\\"\']\\][\\s\\S]{0,30}(?:eval|system|exec|passthru|shell_exec)\\s*\\(', language='php',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-506', '', '', '', 'PW.5.1'),
+                remediation="This structure matches a webshell command interface; if found in production code rather than a security tool's own test fixtures, treat as an active compromise indicator."),
+    PatternRule(id='JS-047', title='Insecure use of a hardcoded basic-auth credential in an axios default header', pattern='axios\\.defaults\\.headers\\.common\\[[\\"\']Authorization[\\"\']\\]\\s*=\\s*[\\"\']Basic\\s+[A-Za-z0-9+/=]{10,}[\\"\']', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a Basic auth credential; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='JV-040', title='Insecure use of a hardcoded basic-auth credential in an OkHttp interceptor', pattern='Credentials\\.basic\\s*\\(\\s*\\"[^\\"]+\\"\\s*,\\s*\\"[^\\"]+\\"\\s*\\)', language='java',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode Basic auth credentials; load them from a secrets manager or environment configuration.'),
+]
+
+
+# ---- batch 9 (session 9): crossing 1000+ ----
+PATTERN_RULES += [
+    PatternRule(id='PH-047', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret[\\"\']?\\s*[=:]\\s*[\\"\'][A-Za-z0-9_-]{20,}[\\"\']', language='php',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='PH-048', title='Insecure use of array_walk with request-controlled callback name', pattern='array_walk\\s*\\(\\s*\\$\\w+\\s*,\\s*\\$_(?:GET|POST|REQUEST)', language='php',
+                severity=Severity('Critical'), confidence=Confidence('Medium'),
+                standards=_std('CWE-470', '', '', '', 'PW.5.1'),
+                remediation='Calling array_walk with a callback function name taken from request data lets an attacker invoke arbitrary functions; use an explicit allow-list.'),
+    PatternRule(id='JS-048', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret[\\"\']?\\s*:\\s*[\\"\'][A-Za-z0-9_-]{20,}[\\"\']', language='javascript',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='JS-049', title='Insecure use of a MongoDB query operator taken directly from request body', pattern='\\.find\\s*\\(\\s*req(?:uest)?\\.body\\s*\\)', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-943', '', '', '', 'PW.5.1'),
+                remediation='Passing the entire request body as a MongoDB query lets an attacker inject operators like $where or $gt to bypass intended query logic (NoSQL injection); explicitly whitelist the queryable fields.'),
+    PatternRule(id='JV-041', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret\\s*=\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='java',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from a secrets manager or environment configuration.'),
+    PatternRule(id='JV-042', title="Insecure use of Spring's @Value with a hardcoded default secret", pattern='@Value\\s*\\(\\s*\\"\\\\\\$\\{[^}]*(?:secret|password|key)[^}]*:\\s*[A-Za-z0-9]{6,}\\}\\"\\s*\\)', language='java',
+                severity=Severity('High'), confidence=Confidence('Medium'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation="A hardcoded default value for a secret-shaped @Value property means the application silently runs with a known, insecure default whenever the real property isn't set."),
+    PatternRule(id='GO-034', title='Insecure use of a hardcoded OAuth client secret', pattern='ClientSecret:\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='go',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='RB-031', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret:\\s*[\\"\'][A-Za-z0-9_-]{20,}[\\"\']', language='ruby',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from Rails credentials or an environment variable.'),
+    PatternRule(id='KT-020', title='Insecure use of a hardcoded OAuth client secret', pattern='clientSecret\\s*=\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='kotlin',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from a secure configuration source.'),
+    PatternRule(id='CS-021', title='Insecure use of a hardcoded OAuth client secret', pattern='ClientSecret\\s*=\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='csharp',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from a secrets manager (e.g. Azure Key Vault) or protected configuration.'),
+    PatternRule(id='RS-013', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret\\s*\\(\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='rust',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='SW-017', title='Insecure use of a hardcoded OAuth client secret', pattern='clientSecret\\s*=\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='swift',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation="Never hardcode an OAuth client secret in a mobile app -- it can be extracted from the binary; use PKCE instead, which doesn't require a client secret for public clients."),
+    PatternRule(id='SC-012', title='Insecure use of a hardcoded OAuth client secret', pattern='clientSecret\\s*=\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='scala',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration or a secrets manager.'),
+    PatternRule(id='PL-011', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret\\s*=>\\s*[\\"\'][A-Za-z0-9_-]{20,}[\\"\']', language='perl',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from environment configuration.'),
+    PatternRule(id='OC-010', title='Insecure use of a hardcoded OAuth client secret', pattern='clientSecret\\s*=\\s*@\\"[A-Za-z0-9_-]{20,}\\"', language='objc',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation="Never hardcode an OAuth client secret in a mobile app; use PKCE instead, which doesn't require a client secret for public clients."),
+    PatternRule(id='EX-008', title='Insecure use of a hardcoded OAuth client secret', pattern='client_secret:\\s*\\"[A-Za-z0-9_-]{20,}\\"', language='elixir',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret; load it from runtime configuration backed by a secrets manager.'),
+    PatternRule(id='DT-006', title='Insecure use of a hardcoded OAuth client secret', pattern='clientSecret:\\s*[\\"\'][A-Za-z0-9_-]{20,}[\\"\']', language='dart',
+                severity=Severity('Critical'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode an OAuth client secret in a mobile app; use PKCE instead.'),
+    PatternRule(id='PH-049', title='Insecure use of a hardcoded webhook signing secret', pattern='hash_hmac\\s*\\([^,]+,[^,]+,\\s*[\\"\'][A-Za-z0-9_-]{16,}[\\"\']\\s*\\)', language='php',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from environment configuration.'),
+    PatternRule(id='JS-050', title='Insecure use of a hardcoded webhook signing secret', pattern='createHmac\\s*\\([^,]+,\\s*[\\"\'][A-Za-z0-9_-]{16,}[\\"\']\\s*\\)\\.update', language='javascript',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from environment configuration.'),
+    PatternRule(id='JV-043', title='Insecure use of a hardcoded webhook signing secret', pattern='Mac\\.getInstance\\s*\\(\\s*\\"HmacSHA256\\"\\s*\\)[\\s\\S]{0,100}\\"[A-Za-z0-9_-]{16,}\\"\\.getBytes', language='java',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from a secrets manager.'),
+    PatternRule(id='GO-035', title='Insecure use of a hardcoded webhook signing secret', pattern='hmac\\.New\\s*\\(\\s*sha256\\.New\\s*,\\s*\\[\\]byte\\s*\\(\\s*\\"[A-Za-z0-9_-]{16,}\\"\\s*\\)\\s*\\)', language='go',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from environment configuration.'),
+    PatternRule(id='RB-032', title='Insecure use of a hardcoded webhook signing secret', pattern='OpenSSL::HMAC\\.hexdigest\\s*\\([^,]+,\\s*[\\"\'][A-Za-z0-9_-]{16,}[\\"\']', language='ruby',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from Rails credentials or an environment variable.'),
+    PatternRule(id='CS-022', title='Insecure use of a hardcoded webhook signing secret', pattern='new\\s+HMACSHA256\\s*\\(\\s*Encoding\\.\\w+\\.GetBytes\\s*\\(\\s*\\"[A-Za-z0-9_-]{16,}\\"', language='csharp',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from a secrets manager.'),
+    PatternRule(id='KT-021', title='Insecure use of a hardcoded webhook signing secret', pattern='Mac\\.getInstance\\s*\\(\\s*\\"HmacSHA256\\"\\s*\\)[\\s\\S]{0,100}\\"[A-Za-z0-9_-]{16,}\\"\\.toByteArray', language='kotlin',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from a secure configuration source.'),
+    PatternRule(id='SW-018', title='Insecure use of a hardcoded webhook signing secret', pattern='HMAC<SHA256>\\.authenticationCode\\s*\\([^,]+,\\s*using:\\s*SymmetricKey\\s*\\(\\s*data:\\s*\\"[A-Za-z0-9_-]{16,}\\"', language='swift',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; fetch it from a secure configuration source.'),
+    PatternRule(id='RS-014', title='Insecure use of a hardcoded webhook signing secret', pattern='Hmac<Sha256>::new_from_slice\\s*\\(\\s*b\\"[A-Za-z0-9_-]{16,}\\"', language='rust',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from environment configuration.'),
+    PatternRule(id='PL-012', title='Insecure use of a hardcoded webhook signing secret', pattern='hmac_sha256\\s*\\(\\s*[\\"\'][A-Za-z0-9_-]{16,}[\\"\']', language='perl',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from environment configuration.'),
+    PatternRule(id='SC-013', title='Insecure use of a hardcoded webhook signing secret', pattern='Mac\\.getInstance\\s*\\(\\s*\\"HmacSHA256\\"\\s*\\)[\\s\\S]{0,100}\\"[A-Za-z0-9_-]{16,}\\"\\.getBytes', language='scala',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from a secrets manager.'),
+    PatternRule(id='EX-009', title='Insecure use of a hardcoded webhook signing secret', pattern=':crypto_mac\\.hmac\\s*\\(\\s*:sha256\\s*,\\s*\\"[A-Za-z0-9_-]{16,}\\"', language='elixir',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from runtime configuration.'),
+    PatternRule(id='DT-007', title='Insecure use of a hardcoded webhook signing secret', pattern='Hmac\\s*\\(\\s*sha256\\s*,\\s*utf8\\.encode\\s*\\(\\s*[\\"\'][A-Za-z0-9_-]{16,}[\\"\']', language='dart',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; load it from a secure configuration source.'),
+    PatternRule(id='OC-011', title='Insecure use of a hardcoded webhook signing secret', pattern='CCHmac\\s*\\([^,]+,\\s*\\"[A-Za-z0-9_-]{16,}\\"', language='objc',
+                severity=Severity('High'), confidence=Confidence('Low'),
+                standards=_std('CWE-798', '', '', '', 'PW.5.1'),
+                remediation='Never hardcode a webhook signing secret; fetch it from a secure configuration source.'),
+]
+
+
 # Curated, illustrative evasion TECHNIQUES (not live exploit payloads — each
 # is a minimal, self-contained demonstration of a named obfuscation
 # category already documented in malware-analysis literature) used only to
@@ -11325,7 +15448,12 @@ if "asset_inventory" not in st.session_state:
     st.session_state.asset_inventory.bulk_seed([Asset(**a) for a in DEFAULT_ASSET_SEED])
 
 if "scan_history" not in st.session_state:
-    st.session_state.scan_history = []
+    # Restore from disk first (SentinelPersistence.load_scan_history()) so
+    # trend history survives an app restart — mirrors how adaptive_feedback
+    # already restores itself a few blocks below. Previously this table was
+    # written to (save_scan_record existed) but never read back, so every
+    # restart silently lost all prior scan history.
+    st.session_state.scan_history = st.session_state.sentinel_persistence.load_scan_history()
 
 if "semantic_scanner" not in st.session_state:
     st.session_state.semantic_scanner = SemanticVulnerabilityScanner()
@@ -11534,6 +15662,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ---- Rule engine health (surfaces regex rules that failed to compile,
+# instead of leaving them silently dropped with zero trace — see
+# PatternScanner.__init__ / MalwarePatternScanner.__init__) ----
+_rule_compile_errors = list(getattr(semantic_scanner.pattern_scanner, "compile_errors", [])) + \
+                       list(getattr(malware_scanner, "compile_errors", []))
+if _rule_compile_errors:
+    with st.expander(f"⚠️ {len(_rule_compile_errors)} detection rule(s) failed to load — click to see which", expanded=False):
+        for _err in _rule_compile_errors:
+            st.caption(f"`{_err['id']}` — {_err['error']}")
+
 # ---- Sidebar ----
 st.sidebar.markdown("<h2 class='neon-cyan'>⚙️ System Control</h2>", unsafe_allow_html=True)
 
@@ -11586,6 +15724,16 @@ events = engine.get_all_events()
 df_events = pd.DataFrame([e.model_dump() for e in events]) if events else pd.DataFrame()
 findings = st.session_state.last_findings
 dep_findings = st.session_state.last_dep_findings
+
+# BaselineManager.suppress() was previously write-only: a user could
+# suppress a finding and see it recorded under Baseline Manager, but
+# nothing ever removed it from the findings actually shown in metrics,
+# tables, exports, or the red-team tab — filter_active() existed but was
+# never called. Applying it here, right where findings/semantic_findings
+# become the values every tab below reads, makes suppression actually
+# take effect app-wide.
+findings = baseline_manager.filter_active(findings)
+semantic_findings = baseline_manager.filter_active(semantic_findings)
 
 m1, m2, m3, m4, m5, m6 = st.columns(6)
 m1.metric("Telemetry Events", len(events))
@@ -11882,13 +16030,22 @@ with tab_code:
         with st.spinner("Scanning against Sentinel rule set..."):
             new_findings = code_scanner.scan_files(files_to_scan)
             st.session_state.last_findings = new_findings
-            findings = new_findings
+            findings = baseline_manager.filter_active(new_findings)
+            _scan_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _scan_risk = code_scanner.risk_score(new_findings)
+            _scan_critical = len([f for f in new_findings if f.severity == "Critical"])
             st.session_state.scan_history.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": _scan_ts,
                 "total_findings": len(new_findings),
-                "risk_score": code_scanner.risk_score(new_findings),
-                "critical": len([f for f in new_findings if f.severity == "Critical"]),
+                "risk_score": _scan_risk,
+                "critical": _scan_critical,
             })
+            # Persist alongside the in-memory record so this run survives
+            # a restart (save_scan_record was previously defined but never
+            # called anywhere — history only ever lived in session_state).
+            st.session_state.sentinel_persistence.save_scan_record(
+                _scan_ts, len(new_findings), _scan_risk, _scan_critical
+            )
             # Evasion detection runs alongside the regular scan on every
             # Python file — a separate detection surface (see the module
             # docstring above EvasionDetector) that looks for code
@@ -12013,7 +16170,7 @@ def safe_handler(request):
         with st.spinner("Building symbol table, call graph, and running interprocedural taint analysis..."):
             new_sem_findings = semantic_scanner.analyze_files(sem_files, parallel=True)
             st.session_state.semantic_findings = new_sem_findings
-            semantic_findings = new_sem_findings
+            semantic_findings = baseline_manager.filter_active(new_sem_findings)
 
     if semantic_findings:
         st.markdown(f"#### Results — {len(semantic_findings)} finding(s)")
@@ -12180,6 +16337,9 @@ with tab_ai:
                     provider=llm_provider, api_key=api_key, model_name=model_choice, local_host=local_host,
                 )
                 report = orchestrator.execute_triage(context_label, payload_text, risk_score)
+                if getattr(orchestrator, "last_error", None):
+                    st.warning(f"⚠️ {llm_provider} call did not succeed ({orchestrator.last_error}) — "
+                              f"showing the offline heuristic fallback below instead of live AI analysis.")
 
                 st.markdown("<div class='sentinel-card'>", unsafe_allow_html=True)
                 st.markdown(f"#### Threat Level: <span class='neon-red'>{report.threat_level}</span>", unsafe_allow_html=True)
@@ -12961,6 +17121,21 @@ with tab_livedef:
             for uf in sbom_uploaded:
                 sbom_files[uf.name] = uf.read().decode("utf-8", errors="ignore")
 
+        use_live_cve = st.checkbox(
+            "🌐 Check live vulnerability data via OSV.dev for Python/npm packages",
+            value=False, key="use_osv_live",
+            help="Sends only each package's name and version to osv.dev (never your source "
+                 "code). Off by default so this tool never makes an outbound call you didn't "
+                 "ask for. When off, or for anything OSV can't resolve (Docker base images), "
+                 "results come from the built-in demo CVE set instead.",
+        )
+        if use_live_cve:
+            if "osv_feed_client" not in st.session_state:
+                st.session_state.osv_feed_client = OSVFeedClient()
+            sbom_gen.osv_client = st.session_state.osv_feed_client
+        else:
+            sbom_gen.osv_client = None
+
         if st.button("📦 Generate SBOM", type="primary", key="run_sbom"):
             with st.spinner("Parsing manifests and cross-referencing CVEs..."):
                 report = sbom_gen.generate(sbom_files, project_name=sbom_project)
@@ -12973,11 +17148,15 @@ with tab_livedef:
             sb2.metric("Vulnerable", sbom_report.vulnerable_count)
             sb3.metric("Overall Risk", sbom_report.overall_risk)
 
+            if getattr(sbom_report, "parse_errors", None):
+                st.warning("⚠️ " + " | ".join(sbom_report.parse_errors))
+
             if sbom_report.components:
                 sbom_df = pd.DataFrame([
                     {"Component": c.name, "Version": c.version, "Type": c.package_type,
                      "Source": c.source_file, "CVEs": ", ".join(c.known_cves) or "None",
-                     "Highest Severity": c.highest_severity}
+                     "Highest Severity": c.highest_severity,
+                     "CVE Data": "🌐 Live (osv.dev)" if c.cve_source == "osv.dev" else "Demo set"}
                     for c in sbom_report.components
                 ])
                 st.dataframe(sbom_df, use_container_width=True, height=340)
@@ -13139,6 +17318,10 @@ with tab_advanced:
                 new_cont_findings = container_analyzer.analyze_files(cont_files)
             st.session_state.container_findings = new_cont_findings
             container_findings = new_cont_findings
+            st.session_state.container_check_errors = list(container_analyzer.check_errors)
+
+        if st.session_state.get("container_check_errors"):
+            st.warning("⚠️ " + " | ".join(st.session_state.container_check_errors))
 
         if container_findings:
             st.markdown(f"**{len(container_findings)} finding(s):**")
@@ -14284,6 +18467,13 @@ with tab_report:
     st.download_button(
         "⬇️ Download JSON Report", data=json_report,
         file_name=f"{report_name}.json", mime="application/json",
+    )
+
+    sarif_report = ReportGenerator.build_sarif_report(findings, container_findings)
+    st.download_button(
+        "⬇️ Download SARIF Report (.sarif)", data=sarif_report,
+        file_name=f"{report_name}.sarif", mime="application/json",
+        help="SARIF 2.1.0 — upload as a GitHub code scanning result, or feed into any SARIF-aware CI gate or IDE.",
     )
 
     if semantic_findings:
