@@ -23,6 +23,7 @@ import argparse
 import base64 as _base64
 import concurrent.futures
 import difflib
+import shlex
 import hashlib
 import io
 import json
@@ -4036,6 +4037,14 @@ class CrossFileCandidate:
     caller_function: str
     per_arg_taint: List[Set[str]]  # index-aligned with the call's positional args
     path_so_far: List[PropagationStep]
+    # module.func names already hopped THROUGH to reach this candidate —
+    # i.e. this candidate's own ancestry chain, not a global visited set.
+    # Lets analyze_project() detect a genuine cross-file CYCLE (A calls B
+    # calls A) without also suppressing two unrelated call sites that
+    # happen to reach the same shared helper by different, non-cyclic
+    # paths — a global "seen once, skip forever" guard would silently
+    # drop real findings in that second, legitimate case.
+    visited_targets: FrozenSet[str] = frozenset()
 
 
 @dataclass
@@ -4443,6 +4452,66 @@ class CallGraph:
         return not any(name in callees for callees in self.edges.values())
 
 
+class InlineSuppressionIndex:
+    """
+    Recognizes '# nosemgrep' / '# nosemgrep: rule-id[,rule-id...]' (the
+    de facto industry convention — also what Semgrep itself uses) and this
+    tool's own '# sentinelai-ignore[: rule-id[,...]]' alias, so a
+    developer can silence a specific finding at its exact line, reviewed
+    in the same PR/commit as the code it's next to. This did not exist
+    before — the only suppression mechanism was BaselineManager, which is
+    stateful (lives in a local SQLite file via SentinelPersistence) and
+    therefore doesn't travel with the code: clone the repo fresh, run in
+    a different CI job/container, or hand the file to someone else, and
+    every suppression is gone. BaselineManager's expiry-by-default design
+    is genuinely valuable and is NOT being replaced — this is additive,
+    for the very common case of "this exact line is a known non-issue,
+    and that fact should live in the file, not in a side database."
+
+    Checked on the finding's own line AND the line directly above it
+    (matches Semgrep's own convention — keeps a long flagged line from
+    forcing an awkward trailing same-line comment).
+
+    Deliberately text/line based, matching how nosemgrep itself works —
+    NOT string-literal-aware, so a `#` that happens to appear inside a
+    string containing the literal text "nosemgrep" would also match.
+    Accepted as a rare, disclosed false-suppression edge case rather than
+    building a full tokenizer for it.
+
+    Deliberately NOT wired into malware/threat-signature detection
+    (MalwarePatternScanner): that engine's premise is "this content may
+    be adversarial", and a suppression comment sitting next to injected
+    malicious code is exactly what an attacker could add themselves to
+    hide it. Inline suppression here is for a trusted developer silencing
+    a noisy rule on their OWN authored code — a materially different
+    threat model from scanning for foreign/injected payloads.
+    """
+    _DIRECTIVE_RE = re.compile(r"#\s*(?:nosemgrep|sentinelai-ignore)\b\s*(?::\s*([\w\-,\s]+))?",
+                               re.IGNORECASE)
+
+    def __init__(self, content: str):
+        # line number (1-based) -> None (suppress every rule on this line)
+        # or a set of specific rule ids to suppress.
+        self._directives: Dict[int, Optional[Set[str]]] = {}
+        for i, line in enumerate(content.splitlines(), start=1):
+            m = self._DIRECTIVE_RE.search(line)
+            if not m:
+                continue
+            rule_ids_raw = m.group(1)
+            if rule_ids_raw and rule_ids_raw.strip():
+                self._directives[i] = {r.strip() for r in rule_ids_raw.split(",") if r.strip()}
+            else:
+                self._directives[i] = None
+
+    def is_suppressed(self, line_number: int, rule_id: str) -> bool:
+        for candidate_line in (line_number, line_number - 1):
+            if candidate_line in self._directives:
+                allowed = self._directives[candidate_line]
+                if allowed is None or rule_id in allowed:
+                    return True
+        return False
+
+
 # ==============================================================================
 # SECTION 7: CONTROL FLOW GRAPH + CYCLOMATIC COMPLEXITY
 # ==============================================================================
@@ -4736,7 +4805,9 @@ class TaintWalker:
                  self_attr_seed: Optional[Dict[str, Dict[str, Set[str]]]] = None,
                  global_seed: Optional[Dict[str, Set[str]]] = None,
                  self_attr_sink: Optional[Dict[str, Set[str]]] = None,
-                 global_sink: Optional[Dict[str, Set[str]]] = None):
+                 global_sink: Optional[Dict[str, Set[str]]] = None,
+                 hop_ancestry: FrozenSet[str] = frozenset(),
+                 suppression_index: Optional["InlineSuppressionIndex"] = None):
         self.functions = functions
         self.aliases = aliases
         self.file_name = file_name
@@ -4753,6 +4824,13 @@ class TaintWalker:
         # read by SemanticVulnerabilityScanner.analyze_project()'s optional
         # cross-file follow-up pass, and ignored entirely by analyze_python().
         self.cross_file_candidates: List[CrossFileCandidate] = []
+        # This walker's own ancestry when it was itself spun up as a
+        # cross-file hop target (empty for a normal single-file analysis).
+        # Threaded onto every CrossFileCandidate this walker records, so
+        # analyze_project()'s multi-hop loop can detect a real cycle
+        # (A -> B -> A) instead of only ever following one hop.
+        self.hop_ancestry: FrozenSet[str] = hop_ancestry
+        self.suppression_index = suppression_index
 
         # Cross-method / cross-function taint persistence (item: found missing
         # via adversarial testing — self.attribute state set in one method and
@@ -5185,6 +5263,7 @@ class TaintWalker:
                 self.cross_file_candidates.append(CrossFileCandidate(
                     resolved_name=resolved, call_line=node.lineno, caller_file=self.file_name,
                     caller_function=func_name, per_arg_taint=per_arg, path_so_far=list(path),
+                    visited_targets=self.hop_ancestry,
                 ))
 
         return arg_taint
@@ -5239,6 +5318,9 @@ class TaintWalker:
             if key in self._seen:
                 continue
             self._seen.add(key)
+
+            if self.suppression_index and self.suppression_index.is_suppressed(call_node.lineno, rule.id):
+                continue  # e.g. '# nosemgrep: SEC-003' or '# sentinelai-ignore' on this line or the one above
 
             complexity = self.complexity_of(func_name)
             confidence = score_confidence(
@@ -5741,11 +5823,14 @@ class PatternScanner:
     def scan(self, file_name: str, content: str, language: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
         lines = content.splitlines()
+        suppression_index = InlineSuppressionIndex(content)
         for rule, compiled in self._compiled:
             if language and rule.language != language:
                 continue
             for match in compiled.finditer(content):
                 line_no = content[: match.start()].count("\n") + 1
+                if suppression_index.is_suppressed(line_no, rule.id):
+                    continue  # e.g. '# nosemgrep: PH-001' or '# sentinelai-ignore' on this line or the one above
                 snippet = lines[line_no - 1].strip()[:160] if 0 < line_no <= len(lines) else match.group(0)
                 findings.append(Finding(
                     finding_id=f"{file_name}:{line_no}:{rule.id}",
@@ -5837,16 +5922,21 @@ class SemanticVulnerabilityScanner:
 
     def _analyze_python_internal(self, file_name: str, content: str
                                  ) -> Tuple[List[Finding], List[CrossFileCandidate],
-                                           Dict[str, ast.FunctionDef], Dict[str, str]]:
+                                           Dict[str, ast.FunctionDef], Dict[str, str],
+                                           Dict[str, Dict[str, Set[str]]], Dict[str, Set[str]]]:
         """The real single-file analysis — factored out so analyze_python()
         keeps its exact existing public contract (List[Finding], nothing
         else, zero behavior change) while analyze_project() can also get
-        at the walker's cross_file_candidates and this file's own
-        functions/aliases dicts, which it needs to resolve calls that
-        cross a file boundary."""
+        at the walker's cross_file_candidates, this file's own
+        functions/aliases dicts (needed to recurse correctly once inside a
+        hop target), and this file's self_attr_seed/global_seed (needed so
+        a cross-file hop into THIS file's functions gets the same
+        self.attribute / module-global taint persistence this file's own
+        entry points already get — otherwise a hop target's cross-method
+        state would silently be less accurate than analyzing it directly)."""
         tree = self._parse_cached(content)
         if tree is None:
-            return [], [], {}, {}
+            return [], [], {}, {}, {}, {}
 
         import_resolver = ImportResolver()
         import_resolver.visit(tree)
@@ -5861,7 +5951,8 @@ class SemanticVulnerabilityScanner:
         )
 
         walker = TaintWalker(functions, aliases, file_name,
-                              self_attr_seed=self_attr_seed, global_seed=global_seed)
+                              self_attr_seed=self_attr_seed, global_seed=global_seed,
+                              suppression_index=InlineSuppressionIndex(content))
 
         call_graph = CallGraph(functions, aliases)
         entry_candidates = [name for name in functions if call_graph.is_entry_point(name)] or list(functions.keys())
@@ -5875,32 +5966,39 @@ class SemanticVulnerabilityScanner:
             walker._unresolved_calls_in_current_path = 0
             walker.analyze_entry_function(functions[name], class_name=key_to_class.get(name))
 
-        return walker.findings, walker.cross_file_candidates, functions, aliases
+        return walker.findings, walker.cross_file_candidates, functions, aliases, self_attr_seed, global_seed
 
     def analyze_python(self, file_name: str, content: str) -> List[Finding]:
-        findings, _, _, _ = self._analyze_python_internal(file_name, content)
+        findings, _, _, _, _, _ = self._analyze_python_internal(file_name, content)
         return findings
 
     def analyze_project(self, files: Dict[str, str]) -> List[Finding]:
         """
         Cross-file taint analysis: runs single-file analysis on every file
         exactly as analyze_python() always has (same findings, same
-        engine, zero change), then makes ONE additional pass that follows
-        calls which couldn't be resolved within their own file across the
-        file boundary — the `from utils import run_it; run_it(tainted)`
-        case, where utils.py's run_it() passes straight to a sink.
+        engine, zero change), then follows calls that couldn't be
+        resolved within their own file across file boundaries — the
+        `from utils import run_it; run_it(tainted_cmd)` case — and keeps
+        following as far as the taint actually goes: A -> B -> C -> D all
+        in different files now resolves fully, not just A -> B.
 
-        Scope, stated honestly: this is single-hop file-boundary crossing
-        (once you're in the target file, normal full recursive analysis
-        applies — so a chain like A -> B -> C where B->C is in the SAME
-        file as B resolves fully; a chain that crosses A->B->C where all
-        three are DIFFERENT files needs another hop this doesn't attempt).
-        Import matching is a heuristic (module name == filename minus
-        .py), not real Python import-system resolution (no sys.path, no
-        packages, no relative-import dot-counting) — good enough for the
-        common single-directory-of-modules case a swarm/directory scan
-        actually sees, not a general-purpose import resolver.
+        Scope, stated honestly:
+        - Bounded by MAX_CROSS_FILE_HOPS below, mirroring TaintWalker's
+          own max_depth guard for in-file recursion — a real disclosed
+          cutoff, not an attempt at unbounded whole-program analysis.
+        - Cycle guard is ancestry-based per chain (has THIS chain already
+          passed through this exact function?), not a global "visited
+          once, skip forever" — two unrelated call sites reaching the
+          same shared helper by different, non-cyclic paths are each
+          still followed; only a genuine A -> B -> A cycle is cut off.
+        - Import matching is a heuristic (module name == filename minus
+          .py), not real Python import-system resolution (no sys.path, no
+          packages, no relative-import dot-counting) — good enough for
+          the common single-directory-of-modules case a swarm/directory
+          scan actually sees, not a general-purpose import resolver.
         """
+        MAX_CROSS_FILE_HOPS = 8
+
         all_findings: List[Finding] = []
         all_candidates: List[CrossFileCandidate] = []
         # module_name.func_name -> (file, FunctionDef, that file's own
@@ -5908,56 +6006,91 @@ class SemanticVulnerabilityScanner:
         # what let a fresh walker recurse correctly once inside the target
         # file, using that file's own (already-correct) local resolution.
         project_functions: Dict[str, Tuple[str, ast.FunctionDef, Dict[str, ast.FunctionDef], Dict[str, str]]] = {}
-        per_file_functions: Dict[str, Dict[str, ast.FunctionDef]] = {}
-        per_file_aliases: Dict[str, Dict[str, str]] = {}
+        per_file_self_attr_seed: Dict[str, Dict[str, Dict[str, Set[str]]]] = {}
+        per_file_global_seed: Dict[str, Dict[str, Set[str]]] = {}
+        per_file_suppression_index: Dict[str, InlineSuppressionIndex] = {}
 
         for file_name, content in files.items():
             if not file_name.endswith(".py"):
                 continue
-            findings, candidates, functions, aliases = self._analyze_python_internal(file_name, content)
+            (findings, candidates, functions, aliases,
+             self_attr_seed, global_seed) = self._analyze_python_internal(file_name, content)
             all_findings.extend(findings)
             all_candidates.extend(candidates)
-            per_file_functions[file_name] = functions
-            per_file_aliases[file_name] = aliases
+            per_file_self_attr_seed[file_name] = self_attr_seed
+            per_file_global_seed[file_name] = global_seed
+            per_file_suppression_index[file_name] = InlineSuppressionIndex(content)
             module_name = os.path.splitext(os.path.basename(file_name))[0]
             for bare_name, func_node in functions.items():
                 project_functions[f"{module_name}.{bare_name}"] = (file_name, func_node, functions, aliases)
 
         cross_file_findings: List[Finding] = []
         resolved_candidate_keys: Set[Tuple[str, int, str]] = set()  # dedupe: (caller_file, call_line, resolved_name)
-        for cand in all_candidates:
-            if cand.resolved_name not in project_functions:
-                continue
-            target_file, target_func, target_functions, target_aliases = project_functions[cand.resolved_name]
-            if target_file == cand.caller_file:
-                continue  # would already have resolved as a same-file call — not a real cross-file case
-            dedupe_key = (cand.caller_file, cand.call_line, cand.resolved_name)
-            if dedupe_key in resolved_candidate_keys:
-                continue
-            resolved_candidate_keys.add(dedupe_key)
+        frontier: List[CrossFileCandidate] = list(all_candidates)
+        hop = 0
+        while frontier and hop < MAX_CROSS_FILE_HOPS:
+            next_frontier: List[CrossFileCandidate] = []
+            for cand in frontier:
+                if cand.resolved_name not in project_functions:
+                    continue
+                target_file, target_func, target_functions, target_aliases = project_functions[cand.resolved_name]
+                if target_file == cand.caller_file:
+                    continue  # would already have resolved as a same-file call — not a real cross-file case
+                dedupe_key = (cand.caller_file, cand.call_line, cand.resolved_name)
+                if dedupe_key in resolved_candidate_keys:
+                    continue
+                resolved_candidate_keys.add(dedupe_key)
+                if cand.resolved_name in cand.visited_targets:
+                    continue  # genuine cycle in THIS chain (A -> B -> A) — stop, don't re-enter
 
-            regular_params = target_func.args.args
-            tainted_params: Dict[str, Set[str]] = {}
-            for i, param in enumerate(regular_params):
-                if i < len(cand.per_arg_taint) and cand.per_arg_taint[i]:
-                    tainted_params[param.arg] = cand.per_arg_taint[i]
-            if not tainted_params:
-                continue
+                regular_params = target_func.args.args
+                tainted_params: Dict[str, Set[str]] = {}
+                for i, param in enumerate(regular_params):
+                    if i < len(cand.per_arg_taint) and cand.per_arg_taint[i]:
+                        tainted_params[param.arg] = cand.per_arg_taint[i]
+                if not tainted_params:
+                    continue
 
-            hop_step = PropagationStep(
-                line=cand.call_line, function=cand.caller_function, kind="call",
-                code=f"{cand.resolved_name}(...) [CROSS-FILE: {cand.caller_file} -> {target_file}]",
-            )
-            target_walker = TaintWalker(target_functions, target_aliases, target_file)
-            target_walker.walk_function(target_func, tainted_params, path=list(cand.path_so_far) + [hop_step])
+                hop_step = PropagationStep(
+                    line=cand.call_line, function=cand.caller_function, kind="call",
+                    code=f"{cand.resolved_name}(...) [CROSS-FILE hop {hop + 1}: {cand.caller_file} -> {target_file}]",
+                )
+                new_ancestry = cand.visited_targets | {cand.resolved_name}
+                target_walker = TaintWalker(
+                    target_functions, target_aliases, target_file,
+                    self_attr_seed=per_file_self_attr_seed.get(target_file, {}),
+                    global_seed=per_file_global_seed.get(target_file, {}),
+                    hop_ancestry=new_ancestry,
+                    suppression_index=per_file_suppression_index.get(target_file),
+                )
+                new_path = list(cand.path_so_far) + [hop_step]
+                target_walker.walk_function(target_func, tainted_params, path=new_path)
 
-            for f in target_walker.findings:
-                f.finding_id = f"XFILE:{f.finding_id}"
-                f.propagation_path = list(cand.path_so_far) + [hop_step] + list(f.propagation_path)
-                f.evidence = (f"[Cross-file: reached from {cand.caller_file}:{cand.call_line} via "
-                             f"{cand.resolved_name}()] {f.evidence}")
-                f.engine = "semantic_cross_file"
-                cross_file_findings.append(f)
+                for f in target_walker.findings:
+                    f.finding_id = f"XFILE:{f.finding_id}"
+                    # NOT re-prepending cand.path_so_far + [hop_step] here: f.propagation_path
+                    # was captured inside _check_sinks as `path + [sink_step]`, and `path` was
+                    # THIS SAME new_path list — already seeded with cand.path_so_far + [hop_step]
+                    # before the walk began (that's how in-place path mutation is meant to work).
+                    # It's already the complete, correct, full multi-hop path; prepending the
+                    # prefix again here would double it (a real bug in the original single-hop
+                    # version of this code too — harmless-looking with one hop, since it just
+                    # duplicated a short prefix, but compounds badly once hops chain further).
+                    f.evidence = (f"[Cross-file, {hop + 1} hop(s): reached from {cand.caller_file}:"
+                                 f"{cand.call_line} via {cand.resolved_name}()] {f.evidence}")
+                    f.engine = "semantic_cross_file"
+                    cross_file_findings.append(f)
+
+                # THE multi-hop fix: previously target_walker.cross_file_candidates
+                # was discarded here, so a further unresolved call inside the hop
+                # target (reaching a THIRD file) silently went nowhere. Now it
+                # feeds the next round, each carrying its own correct ancestry
+                # (set via hop_ancestry above, threaded onto every candidate the
+                # walker records — see CrossFileCandidate/TaintWalker).
+                next_frontier.extend(target_walker.cross_file_candidates)
+
+            frontier = next_frontier
+            hop += 1
 
         return all_findings + cross_file_findings
 
@@ -6220,29 +6353,50 @@ class RemediationPatch:
     confidence: str
 
 
-class _VulnTransformer(ast.NodeTransformer):
+class _VulnFixCollector(ast.NodeVisitor):
     """
-    Real AST-level transformer that rewrites vulnerable call sites where a
-    safe, semantically-equivalent rewrite is possible WITHOUT domain
-    knowledge of the surrounding application:
-
-        yaml.load(x, ...)    →  yaml.safe_load(x)
-        hashlib.md5(x)       →  hashlib.sha256(x)
-        hashlib.sha1(x)      →  hashlib.sha256(x)
-        pickle.loads(x)      →  [comment injected — no safe auto-replacement]
-        subprocess(..., shell=True, str_cmd)
-                             →  [comment injected — splitting shell strings
-                                  requires execution context we don't have]
-
-    For SQL injection, path traversal, eval(), and other patterns where a
-    correct rewrite requires understanding the query/path/expression semantics,
-    the transformer injects a structured TODO comment at the call site instead
-    of silently producing broken code. Those cases are always flagged in
-    `patches_applied` so the UI can highlight them for manual review.
+    Walks the AST read-only and collects (start_offset, end_offset,
+    replacement_text) edits to splice directly into the ORIGINAL SOURCE
+    TEXT — this never reconstructs the file via ast.unparse() on the
+    whole tree. That distinction is the actual point of this class:
+    ast.unparse()-ing an entire file re-serializes it from the abstract
+    syntax alone, which has no memory of comments or original formatting
+    (quote style, spacing, blank lines) — so even a genuine one-line fix
+    would show as a whole-file rewrite in the diff, and every comment in
+    the file would silently disappear from the "patched" output handed
+    back to the user. (Verified empirically: parsing and immediately
+    re-unparsing a small file with no transformation applied at all still
+    changed 8 of its ~20 lines — deleted comments, "str='default'"
+    instead of "str = \"default\"", single-quoted f-strings.) Splicing
+    only the exact span that actually changed leaves everything else
+    byte-for-byte identical, which is what makes the diff and the
+    patched file both trustworthy to hand to a developer.
     """
 
-    def __init__(self) -> None:
-        self.patches_applied: List[str] = []
+    def __init__(self, source: str):
+        self.source = source
+        self._line_offsets = self._build_line_offsets(source)
+        self.edits: List[Tuple[int, int, str]] = []
+        self.notes: List[str] = []
+
+    @staticmethod
+    def _build_line_offsets(source: str) -> List[int]:
+        offsets = [0]
+        for line in source.splitlines(keepends=True):
+            offsets.append(offsets[-1] + len(line))
+        return offsets
+
+    def _span(self, node: ast.AST) -> Tuple[int, int]:
+        start = self._line_offsets[node.lineno - 1] + node.col_offset
+        end = self._line_offsets[node.end_lineno - 1] + node.end_col_offset
+        return start, end
+
+    def _text(self, node: ast.AST) -> str:
+        # Verbatim original text for this node — NOT ast.unparse(node),
+        # which would reformat even this small fragment (e.g. rewriting
+        # the quote style of a string argument the user isn't touching).
+        seg = ast.get_source_segment(self.source, node)
+        return seg if seg is not None else ast.unparse(node)  # only if position data is somehow missing
 
     def _resolved(self, node: ast.Call) -> str:
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
@@ -6251,87 +6405,115 @@ class _VulnTransformer(ast.NodeTransformer):
             return node.func.id
         return ""
 
-    def visit_Call(self, node: ast.Call) -> ast.AST:
+    def _kw_texts(self, keywords: List[ast.keyword]) -> List[str]:
+        return [f"{kw.arg}={self._text(kw.value)}" if kw.arg else f"**{self._text(kw.value)}"
+                for kw in keywords]
+
+    def _replace(self, node: ast.AST, new_text: str, description: str) -> None:
+        start, end = self._span(node)
+        self.edits.append((start, end, new_text))
+        self.notes.append(description)
+
+    def visit_Call(self, node: ast.Call) -> None:
         self.generic_visit(node)
         r = self._resolved(node)
 
         # ── yaml.load(x, ...) → yaml.safe_load(x) ─────────────────────────
-        if r == "yaml.load":
-            new_node = ast.Call(
-                func=ast.Attribute(
-                    value=ast.Name(id="yaml", ctx=ast.Load()),
-                    attr="safe_load", ctx=ast.Load(),
-                ),
-                args=node.args[:1],
-                keywords=[],
-            )
-            self.patches_applied.append(
-                f"Line {node.lineno}: yaml.load() → yaml.safe_load() [Loader kwarg removed]"
-            )
-            return ast.copy_location(ast.fix_missing_locations(new_node), node)
+        if r == "yaml.load" and node.args:
+            self._replace(node, f"yaml.safe_load({self._text(node.args[0])})",
+                          f"Line {node.lineno}: yaml.load() -> yaml.safe_load() [Loader kwarg removed]")
+            return
 
         # ── hashlib.md5 / sha1 → sha256 ────────────────────────────────────
         if r in ("hashlib.md5", "hashlib.sha1"):
             old_fn = node.func.attr  # type: ignore[union-attr]
-            new_node = ast.Call(
-                func=ast.Attribute(
-                    value=ast.Name(id="hashlib", ctx=ast.Load()),
-                    attr="sha256", ctx=ast.Load(),
-                ),
-                args=node.args,
-                keywords=node.keywords,
-            )
-            self.patches_applied.append(
-                f"Line {node.lineno}: hashlib.{old_fn}() → hashlib.sha256()"
-            )
-            return ast.copy_location(ast.fix_missing_locations(new_node), node)
+            all_args = ", ".join([self._text(a) for a in node.args] + self._kw_texts(node.keywords))
+            self._replace(node, f"hashlib.sha256({all_args})",
+                          f"Line {node.lineno}: hashlib.{old_fn}() -> hashlib.sha256()")
+            return
 
-        # ── subprocess with shell=True + string cmd → advisory comment ──────
-        if r in ("subprocess.run", "subprocess.call", "subprocess.Popen",
-                 "subprocess.check_output"):
-            has_shell_true = any(
-                kw.arg == "shell"
-                and isinstance(kw.value, ast.Constant)
-                and kw.value.value is True
-                for kw in node.keywords
-            )
-            first_is_str = (
-                node.args
-                and not isinstance(node.args[0], (ast.List, ast.Tuple))
-            )
-            if has_shell_true and first_is_str:
-                self.patches_applied.append(
-                    f"Line {node.lineno}: {r}(..., shell=True) with string cmd — "
-                    f"MANUAL FIX REQUIRED: split command into a list and use shell=False"
+        # ── requests.*(..., verify=False) → verify kwarg removed ───────────
+        if r in ("requests.get", "requests.post", "requests.put", "requests.delete",
+                 "requests.patch", "requests.request", "requests.head", "requests.options"):
+            verify_false = next((kw for kw in node.keywords if kw.arg == "verify"
+                                 and isinstance(kw.value, ast.Constant) and kw.value.value is False), None)
+            if verify_false is not None:
+                remaining = [kw for kw in node.keywords if kw is not verify_false]
+                all_args = ", ".join([self._text(a) for a in node.args] + self._kw_texts(remaining))
+                self._replace(node, f"{r}({all_args})",
+                              f"Line {node.lineno}: removed verify=False from {r}() "
+                              f"[TLS certificate validation restored to its secure default]")
+                return
+
+        # ── subprocess(..., shell=True) with a STATIC string command ───────
+        # Only auto-fixed when the command is a literal string (not an
+        # f-string/variable — that's the actual injection risk case and
+        # isn't touched) AND contains no shell-specific metacharacters
+        # (pipes, redirects, globbing, substitution) that splitting into
+        # an argument list would silently break. Anything else keeps the
+        # exact same "flag for manual review" behavior as before.
+        if r in ("subprocess.run", "subprocess.call", "subprocess.Popen", "subprocess.check_output"):
+            shell_true = next((kw for kw in node.keywords if kw.arg == "shell"
+                               and isinstance(kw.value, ast.Constant) and kw.value.value is True), None)
+            if shell_true is not None and node.args and isinstance(node.args[0], ast.Constant) \
+               and isinstance(node.args[0].value, str):
+                cmd_str = node.args[0].value
+                shell_metachars = set('|&;<>`$*?~[]{}()!#\n')
+                if not any(ch in cmd_str for ch in shell_metachars):
+                    try:
+                        parts = shlex.split(cmd_str)
+                    except ValueError:
+                        parts = None
+                    if parts:
+                        list_literal = "[" + ", ".join(repr(p) for p in parts) + "]"
+                        remaining = [kw for kw in node.keywords if kw is not shell_true]
+                        extra_args = [self._text(a) for a in node.args[1:]]
+                        all_args = ", ".join([list_literal] + extra_args
+                                             + self._kw_texts(remaining) + ["shell=False"])
+                        self._replace(node, f"{r}({all_args})",
+                                      f"Line {node.lineno}: {r}(...) split into an argument list, "
+                                      f"shell=True -> shell=False [static command, no shell metacharacters]")
+                        return
+            if shell_true is not None:
+                self.notes.append(
+                    f"Line {node.lineno}: {r}(..., shell=True) — MANUAL FIX REQUIRED: command is "
+                    f"dynamic or relies on shell features (pipes/redirects/globbing/substitution); "
+                    f"split into a list and use shell=False by hand once you've confirmed none of "
+                    f"those are actually needed"
                 )
+            return
 
-        # ── pickle.loads / pickle.load ───────────────────────────────────────
+        # ── pickle.loads / pickle.load — no safe mechanical rewrite ─────────
         if r in ("pickle.loads", "pickle.load"):
-            self.patches_applied.append(
+            self.notes.append(
                 f"Line {node.lineno}: pickle deserialization — "
                 f"MANUAL FIX REQUIRED: replace with json.loads() or verify HMAC before unpickling"
             )
+            return
 
-        # ── eval() / exec() ─────────────────────────────────────────────────
+        # ── eval() / exec() — no safe mechanical rewrite ────────────────────
         if r in ("eval", "exec"):
-            self.patches_applied.append(
+            self.notes.append(
                 f"Line {node.lineno}: {r}() — "
                 f"MANUAL FIX REQUIRED: use ast.literal_eval() for data or explicit dispatch for logic"
             )
 
-        return node
-
 
 class AutoRemediationEngine:
     """
-    Takes any Python source file (as a string), runs the AST transformer,
-    and returns a RemediationPatch with:
-      - the patched source (AST-reconstructed via ast.unparse)
-      - a unified diff ready to display or write to disk
-      - a structured list of what was changed / what needs manual review
+    Takes any Python source file (as a string) and returns a
+    RemediationPatch with a minimal, precise unified diff — only the
+    exact spans that were actually changed, everything else (comments,
+    formatting, unrelated code) preserved byte-for-byte — plus a
+    structured list of what was auto-fixed vs. what still needs a human.
 
-    Works on ANY Python code, any framework, any structure. The only
-    constraint is that the input must be valid Python syntax.
+    Deliberately narrow: every fix here is a case where a correct rewrite
+    genuinely doesn't require knowing anything about the surrounding
+    application (a straight function swap, or removing/flipping a
+    literal keyword argument). SQL injection, path traversal, and other
+    patterns where the correct fix depends on understanding the actual
+    query/path/expression are NOT auto-fixed — they simply aren't
+    reported by this engine at all, the same as before.
     """
 
     def remediate(self, file_name: str, source_code: str) -> RemediationPatch:
@@ -6339,52 +6521,49 @@ class AutoRemediationEngine:
             tree = ast.parse(source_code)
         except SyntaxError as exc:
             return RemediationPatch(
-                file_name=file_name,
-                original_code=source_code,
-                patched_code=source_code,
-                unified_diff="",
-                patches_applied=[f"Cannot parse file — SyntaxError: {exc}"],
-                auto_applied=False,
-                confidence="N/A",
+                file_name=file_name, original_code=source_code, patched_code=source_code,
+                unified_diff="", patches_applied=[f"Cannot parse file — SyntaxError: {exc}"],
+                auto_applied=False, confidence="N/A",
             )
 
-        transformer = _VulnTransformer()
-        new_tree = transformer.visit(tree)
-        ast.fix_missing_locations(new_tree)
+        collector = _VulnFixCollector(source_code)
+        collector.visit(tree)
 
-        try:
-            patched = ast.unparse(new_tree)
-        except Exception as exc:
-            return RemediationPatch(
-                file_name=file_name,
-                original_code=source_code,
-                patched_code=source_code,
-                unified_diff="",
-                patches_applied=transformer.patches_applied
-                + [f"ast.unparse failed: {exc}; original code returned unchanged"],
-                auto_applied=False,
-                confidence="Low",
-            )
+        patched = source_code
+        for start, end, replacement in sorted(collector.edits, key=lambda e: e[0], reverse=True):
+            patched = patched[:start] + replacement + patched[end:]
+
+        if patched != source_code:
+            try:
+                ast.parse(patched)
+            except SyntaxError as exc:
+                # Fail safe: never hand back code we haven't confirmed is
+                # still valid Python. Every fix above is meant to always
+                # produce valid syntax; this is the safety net in case a
+                # future addition to this class gets an edge case wrong.
+                return RemediationPatch(
+                    file_name=file_name, original_code=source_code, patched_code=source_code,
+                    unified_diff="",
+                    patches_applied=collector.notes + [
+                        f"Internal safety check failed — a transformation would have produced "
+                        f"invalid Python ({exc}). No changes were applied; original file returned unchanged."
+                    ],
+                    auto_applied=False, confidence="N/A",
+                )
 
         diff_lines = list(difflib.unified_diff(
             source_code.splitlines(keepends=True),
             patched.splitlines(keepends=True),
-            fromfile=f"a/{file_name}",
-            tofile=f"b/{file_name}",
-            n=3,
+            fromfile=f"a/{file_name}", tofile=f"b/{file_name}", n=3,
         ))
         unified_diff = "".join(diff_lines)
         auto_applied = patched != source_code
-        confidence = "High" if auto_applied else ("Medium" if transformer.patches_applied else "N/A")
+        confidence = "High" if auto_applied else ("Medium" if collector.notes else "N/A")
 
         return RemediationPatch(
-            file_name=file_name,
-            original_code=source_code,
-            patched_code=patched,
-            unified_diff=unified_diff,
-            patches_applied=transformer.patches_applied,
-            auto_applied=auto_applied,
-            confidence=confidence,
+            file_name=file_name, original_code=source_code, patched_code=patched,
+            unified_diff=unified_diff, patches_applied=collector.notes,
+            auto_applied=auto_applied, confidence=confidence,
         )
 
 
@@ -7216,11 +7395,22 @@ class EntropySecretsScanner:
             all_findings += self.scan_python_ast(file_name, content)
         seen: Set[Tuple[str, int]] = set()
         deduped: List[SecretFinding] = []
+        suppression_index = InlineSuppressionIndex(content)
         for f in all_findings:
             key = (f.file_name, f.line_number)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(f)
+            if key in seen:
+                continue
+            # SecretFinding has no stable rule id (secret_type is a free-text
+            # label like "AWS Access Key", not a rule-id token), so only the
+            # BARE '# nosemgrep' / '# sentinelai-ignore' form suppresses a
+            # secret here — a rule-id-scoped directive meant for a code
+            # scanner rule (e.g. '# nosemgrep: SEC-003') correctly does NOT
+            # also suppress an unrelated secret on that same line, since
+            # secret_type won't match that rule-id token.
+            if suppression_index.is_suppressed(f.line_number, f.secret_type):
+                continue
+            seen.add(key)
+            deduped.append(f)
         return deduped
 
 
@@ -9596,6 +9786,13 @@ class ContainerSecurityAnalyzer:
                     checks: List[Dict[str, Any]], prefix: str) -> List[ContainerFinding]:
         findings: List[ContainerFinding] = []
         lines = content.splitlines()
+        # Dockerfile/Compose/K8s YAML all use '#' comments, so the same
+        # '# nosemgrep' / '# sentinelai-ignore' convention used by the code
+        # and secrets scanners applies here too. Only meaningful for the
+        # per-line `pattern` checks below — a `check_fn` whole-file check
+        # (e.g. "no HEALTHCHECK exists anywhere") has no single line to
+        # anchor a comment to, so those still go through BaselineManager only.
+        suppression_index = InlineSuppressionIndex(content)
         for check in checks:
             pattern = check.get("pattern")
             check_fn = check.get("check_fn")
@@ -9603,6 +9800,8 @@ class ContainerSecurityAnalyzer:
                 try:
                     for match in re.finditer(pattern, content, re.MULTILINE | re.DOTALL):
                         line_no = content[: match.start()].count("\n") + 1
+                        if suppression_index.is_suppressed(line_no, check["id"]):
+                            continue
                         snippet = lines[line_no - 1].strip()[:120] if 0 < line_no <= len(lines) else ""
                         findings.append(ContainerFinding(
                             finding_id=f"{file_name}:{line_no}:{check['id']}",
@@ -11280,7 +11479,8 @@ class SwarmOrchestrator:
         # Cross-file taint pass: real vulnerabilities that only appear
         # when tracing across files a swarm run just scanned as separate
         # tasks — see SemanticVulnerabilityScanner.analyze_project()'s
-        # docstring for exact scope (single-hop file-boundary crossing).
+        # docstring for exact scope (multi-hop file-boundary crossing,
+        # bounded by MAX_CROSS_FILE_HOPS).
         # Only runs when there's more than one Python file, since a
         # single file has no file boundary to cross in the first place.
         if "semantic" in engines and hasattr(engines["semantic"], "analyze_project"):
@@ -15308,8 +15508,10 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
      "desc": "CWE-mapped regex pattern rules, Python-focused."},
     {"name": "Semantic Scanner (AST/Taint)", "category": "🔍 Static Detection", "tab": "Semantic Scanner",
      "desc": "Interprocedural taint analysis — real source-to-sink data flow, not just syntax matches. "
-             "Single-file by default; also runs single-hop cross-file resolution via Agent Swarm on "
-             "directory/multi-file scans (a taint source in one file reaching a sink defined in another)."},
+             "Single-file by default; also runs multi-hop cross-file resolution via Agent Swarm on "
+             "directory/multi-file scans (a taint source in one file reaching a sink several files away, "
+             "up to an 8-hop bound). Supports inline '# nosemgrep' / '# sentinelai-ignore' suppression "
+             "comments, same line or the line above, matching the industry-standard convention."},
     {"name": "Pattern Scanner (multi-language)", "category": "🔍 Static Detection", "tab": "Semantic Scanner / Agent Swarm",
      "desc": "Heuristic vulnerability patterns across 9 non-Python languages."},
     {"name": "Malware Pattern Scanner", "category": "🔍 Static Detection", "tab": "Advanced Threat Ops → Malware Detector",
@@ -15376,7 +15578,11 @@ ENGINE_DIRECTORY: List[Dict[str, str]] = [
     {"name": "Auto-Response Engine", "category": "⚡ Response & Remediation", "tab": "Containment",
      "desc": "Rule-based auto-triggering of containment, with a rate-limit circuit breaker and dry-run mode."},
     {"name": "Auto-Remediation Engine", "category": "⚡ Response & Remediation", "tab": "Live Defense → Auto-Remediation",
-     "desc": "AST-based safe rewrites for common Python vulnerability patterns."},
+     "desc": "AST-located, precise-span text patches for mechanically-safe Python fixes — yaml.load, "
+             "weak hashlib digests, requests verify=False, and static-string subprocess shell=True calls. "
+             "Diffs touch only the changed span; everything else (comments, formatting) is preserved "
+             "byte-for-byte. SQL injection, path traversal, and similar patterns aren't auto-fixable "
+             "without understanding the surrounding code, so they're flagged for manual review instead."},
 
     # ── Live Monitoring ───────────────────────────────────────────────────
     {"name": "Live File Watcher", "category": "👁️ Live Monitoring", "tab": "Live Defense → Live File Watcher",
@@ -17765,6 +17971,14 @@ with tab_swarm:
                 help="Skips any file whose content hash matches the last time THIS orchestrator scanned "
                      "it. Useful for repeated campaigns over the same codebase — only re-scans what changed.",
             )
+            force_full_rescan = False
+            if incremental_mode:
+                force_full_rescan = st.checkbox(
+                    "↻ Force full rescan this run (ignore cache)", value=False, key="force_full_rescan",
+                    help="Wipes this orchestrator's incremental cache before running — e.g. after updating "
+                         "rules, or to double-check a file even though its content hasn't changed. Only "
+                         "affects this run; incremental mode resumes normally afterward.",
+                )
             auto_synthesize_mode = st.checkbox(
                 "Auto-generate Intelligence Briefing", value=True, key="auto_synth_mode",
                 help="After the swarm completes, automatically feed all results into the Exploit Chain "
@@ -17862,6 +18076,8 @@ with tab_swarm:
                 if task_count == 0:
                     st.warning("No tasks were built — check your input above.")
                 else:
+                    if force_full_rescan:
+                        swarm_orchestrator.clear_incremental_cache()
                     engines = {
                         "semantic": semantic_scanner, "code": code_scanner,
                         "malware": malware_scanner, "secrets": entropy_scanner,
@@ -17932,8 +18148,8 @@ with tab_swarm:
                 st.caption(
                     "Real vulnerabilities that only appear when tracing taint ACROSS files — invisible "
                     "to any single per-file scan above, including this file's own row in the task table. "
-                    "Single-hop file-boundary crossing (see the Semantic Scanner engine's directory "
-                    "entry for exact scope)."
+                    "Multi-hop file-boundary crossing, up to 8 hops (see the Semantic Scanner engine's "
+                    "directory entry for exact scope)."
                 )
                 for f in report.cross_file_findings:
                     st.markdown(
